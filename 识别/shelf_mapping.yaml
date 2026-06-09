@@ -1,0 +1,34 @@
+# 药品-货架-坐标映射表
+# 根据实际测量数据填写
+
+# 货架配置
+shelves:
+  S01:
+    description: "1号货架"
+    total_layers: 5          # 总层数
+    layer_height: 0.35       # 每层高度(m)
+    base_height: 0.3         # 第一层底部距地面高度(m)
+    width: 1.2               # 货架宽度(m)
+
+# 药品位置映射 (YOLO类别名 -> 货架信息)
+medicine_mapping:
+  # 单类别模型：所有药盒统一识别为 ths
+  # 如需区分不同药品的货架位置，请通过 OCR 文字匹配实现
+  ths:
+    shelf_id: "S01"
+    layer: 2                  # 需实测填写
+    layer_height_m: 1.05      # 该层中心距地面高度(m)
+    horizontal_offset: 0.5    # 水平偏移(从货架左侧算起，单位m)
+    description: "药盒"
+
+# 深度相机参数（用于坐标转换）
+camera_config:
+  # 相机安装高度(距离地面)
+  camera_height: 2.0
+  # 相机俯仰角(度)，正值为向下俯视
+  pitch_angle: 30
+  # 相机到货架的水平距离
+  distance_to_shelf: 1.5
+  # 图像宽度/高度
+  image_width: 640
+  image_height: 480
