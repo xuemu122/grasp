@@ -254,6 +254,33 @@ class ShelfMappingManager:
 # 可视化
 # ============================================================
 
+def _assess_lighting(color_img):
+    """评估图像光照质量，返回 (score浮点, grade字符串, color_bgr元组)"""
+    hsv = cv2.cvtColor(color_img, cv2.COLOR_BGR2HSV)
+    v = hsv[:, :, 2].astype(np.float32)
+    mean_v = float(np.mean(v))
+    # 用标准差剔除纯色背景干扰，取中心区域更可靠
+    h, w = v.shape
+    v_center = v[h//4 : 3*h//4, w//4 : 3*w//4]
+    std_v = float(np.std(v_center))
+    # 评分: 亮度 + 对比度加权 (0~100)
+    # 理想均值 ~120~180, 标准差 >30
+    brightness_score = max(0, min(100, (mean_v - 40) * 100 / 140))  # 40→0, 180→100
+    contrast_bonus = min(30, std_v)  # 最高加30分
+    score = min(100, brightness_score * 0.7 + contrast_bonus * 0.3 / 30 * 100)
+    if mean_v < 50:
+        grade, color_bgr = "过暗", (0, 0, 255)
+    elif mean_v < 85:
+        grade, color_bgr = "偏暗", (0, 165, 255)
+    elif mean_v > 230:
+        grade, color_bgr = "过曝", (0, 0, 255)
+    elif std_v < 10:
+        grade, color_bgr = "低对比度", (0, 200, 255)
+    else:
+        grade, color_bgr = "正常", (0, 255, 120)
+    return score, grade, color_bgr, mean_v, std_v
+
+
 def draw_detection(frame, result, is_selected=False):
     """绘制单个检测结果"""
     x1, y1, x2, y2 = result.bbox
@@ -302,8 +329,10 @@ def draw_detection(frame, result, is_selected=False):
     return frame
 
 
-def draw_info_panel(frame, detections, fps, camera_mode):
-    """绘制信息面板"""
+def draw_info_panel(frame, detections, fps, camera_mode, light_info=None):
+    """绘制信息面板
+    light_info: (score, grade, color_bgr, mean_v, std_v) or None
+    """
     panel_w = 300
     h, w = frame.shape[:2]
     panel = np.full((h, panel_w, 3), 30, dtype=np.uint8)
@@ -313,7 +342,19 @@ def draw_info_panel(frame, detections, fps, camera_mode):
     cv2.putText(panel, f"FPS: {fps:.1f}", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 200), 1)
     cv2.putText(panel, f"数量: {len(detections)}", (10, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 200), 1)
 
-    y = 140
+    # 光照评分
+    y = 130
+    if light_info:
+        score, grade, lcolor, mean_v, std_v = light_info
+        cv2.putText(panel, f"光照: {grade} ({score:.0f}分)", (10, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, lcolor, 1)
+        y += 20
+        cv2.putText(panel, f"  亮度均值:{mean_v:.0f} 对比度:{std_v:.0f}", (10, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1)
+        y += 22
+    else:
+        y = 130
+
     for i, det in enumerate(detections[:5]):  # 最多显示5个
         sp = det.shelf_pos
         if sp:
@@ -542,7 +583,13 @@ class MedicineLocatorSystem:
 
             # 终端打印（每 30 帧一次）
             if self.frame_counter % 30 == 0:
+                # 光照评估
+                lscore, lgrade, _, lv, lstd = _assess_lighting(color_img)
+                light_tag = f"  [光照] {lgrade} ({lscore:.0f}分) 均值:{lv:.0f} std:{lstd:.0f}"
+                if lgrade in ("过暗", "偏暗", "过曝"):
+                    light_tag += " ⚠ 可能影响识别精度！"
                 print(f"\n--- 检测到 {len(detections)} 个药品 ---")
+                print(light_tag)
                 for i, det in enumerate(detections):
                     sel = ">>> 选中 <<< " if i == self.selected_index else ""
                     x1, y1, x2, y2 = det.bbox
@@ -570,9 +617,10 @@ class MedicineLocatorSystem:
             for i, det in enumerate(detections):
                 display = draw_detection(display, det, is_selected=(i == self.selected_index))
 
-            # 面板
+            # 面板（含光照评分）
             cam_mode = "RealSense(深度)" if self.camera.has_depth else "OpenCV(无深度)"
-            display = draw_info_panel(display, detections, self.fps, cam_mode)
+            light_info = _assess_lighting(color_img)
+            display = draw_info_panel(display, detections, self.fps, cam_mode, light_info)
 
             # 深度可视化
             if depth_img is not None:
