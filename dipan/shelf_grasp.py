@@ -17,6 +17,7 @@ from typing import List, Tuple, Optional
 # ── 识别模块 ──
 sys.path.insert(0, "/home/nvidia/grasp/识别")
 from orbbec_detect import MedicineLocatorSystem, RealSenseCamera
+from orbbec_detect import _assess_lighting
 
 # ── Orca 灵巧手 ──
 ORCA_PATH = "/home/nvidia/grasp/orca_core1"
@@ -291,13 +292,34 @@ def main():
                   f"rpy=({flange_pose[3]:.0f}, {flange_pose[4]:.0f}, {flange_pose[5]:.0f})")
             transformer.set_flange(flange_pose)
 
-            # ── 拍照识别 ──
-            color_img, depth_img = camera.read()
-            if color_img is None:
+            # ── 多帧择优拍照：快速连拍 N 帧, 按光照评分选最佳 ──
+            N_FRAMES = 5            # 采集帧数
+            WARMUP = 2              # 前 N 帧丢弃 (等自动曝光稳定)
+            best_img, best_depth = None, None
+            best_score, best_grade = -1, ""
+            best_idx = -1
+
+            print(f"拍照中 ({N_FRAMES + WARMUP} 帧, 丢弃前 {WARMUP})...", end=" ", flush=True)
+            for i in range(N_FRAMES + WARMUP):
+                c, d = camera.read()
+                if c is None:
+                    continue
+                if i < WARMUP:
+                    continue
+                score, grade, _, _, _, _ = _assess_lighting(c)
+                if score > best_score:
+                    best_score, best_grade = score, grade
+                    best_img, best_depth = c, d
+                    best_idx = i
+                # 反光和过暗都有惩罚, 纯正常最高; 有反光也能选出相对最好的
+            print(f"完成")
+            print(f"  → 第 {best_idx} 帧 评分: {best_grade} ({best_score:.0f}分)")
+
+            if best_img is None:
                 print("相机未就绪")
                 continue
 
-            detections = locator.process_frame(color_img, depth_img)
+            detections = locator.process_frame(best_img, best_depth)
             if not detections:
                 print("未检测到盒子")
                 continue
