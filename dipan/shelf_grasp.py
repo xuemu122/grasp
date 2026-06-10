@@ -312,6 +312,8 @@ def main():
 
             # ── 计算抓取位姿 (侧边缘 + 上边缘) ──
             wx, wy, wz = plan_edge_grasp(target, edge, transformer, flange_pose)
+            print(f"\n=== 选中: {edge}侧盒子 bbox=({target.bbox[0]},{target.bbox[1]})-({target.bbox[2]},{target.bbox[3]}) "
+                  f"depth={target.depth_m:.3f}m ===")
             print(f"抓取点 ({edge}上角): ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
 
             # 法兰在指尖上方 HAND_LENGTH
@@ -325,21 +327,107 @@ def main():
             else:
                 flange_x += side_offset
 
-            approach_z = flange_z + 0.08    # 悬停 8cm 上方 (货架空间紧)
+            approach_z = flange_z + 0.04    # 悬停 8cm 上方 (货架空间紧)
             grasp_z = flange_z - 0.02       # 指尖略深入盒面
 
+            # ========================================================
+            # 调试交互: 微调 / 预览 / 执行
+            # ========================================================
+            offset_x, offset_y, offset_z = 0.0, 0.0, 0.0
+            jog_step_mm = 5.0  # 每次微调步长 (mm)
+            preview_target = False  # 是否预览悬停位
+
+            while True:
+                 print(f"\n── 目标位姿 (可微调) ──")
+                 print(f"  法兰: X={flange_x*1000+offset_x:+.0f}({offset_x:+5.0f})  "
+                       f"Y={flange_y*1000+offset_y:+.0f}({offset_y:+5.0f})  "
+                       f"Z={approach_z*1000+offset_z:+.0f}({offset_z:+5.0f}) mm")
+                 print(f"  下降后Z: {(grasp_z+offset_z)*1000:.0f}mm")
+                 print(f"\n  操作:")
+                 print(f"    Enter ← 执行抓取")
+                 print(f"    p     ← 预览悬停位 (不抓取)")
+                 print(f"    wasd  ← 微调 X/Y (±{jog_step_mm:.0f}mm)")
+                 print(f"    e/r   ← 微调 Z (±{jog_step_mm:.0f}mm)")
+                 print(f"    = / - ← 改变步长 (当前 {jog_step_mm:.0f}mm)")
+                 print(f"    f     ← 手动输入偏移 (格式: x,y,z mm)")
+                 print(f"    F5    ← 重新拍照 (复位偏移)")
+                 print(f"    Q     ← 跳过/退出")
+                 choice = input("  > ").strip()
+
+                 if choice == "":
+                     break  # 执行
+                 elif choice == "Q":
+                     return  # 退出主循环
+                 elif choice.lower() == "q" and len(choice) > 1:
+                     return  # 退出
+                 elif choice == "Q" or choice == "q":
+                     break  # 跳过当前, 回到外层
+                 elif choice == "p":
+                     # 预览: 只移动到悬停位, 不抓取
+                     print(f"\n  预览: 移动到 ({flange_x*1000+offset_x:.0f}, "
+                           f"{flange_y*1000+offset_y:.0f}, {approach_z*1000+offset_z:.0f})mm")
+                     arm.movel(flange_x * 1000 + offset_x,
+                               flange_y * 1000 + offset_y,
+                               approach_z * 1000 + offset_z, speed=100)
+                     time.sleep(1)
+                     continue
+                 elif choice.lower() == "f5":
+                     # 重新拍照
+                     offset_x = offset_y = offset_z = 0.0
+                     break  # 跳出微调循环, 走外层重新读图和检测
+                 elif choice in ("w", "s", "a", "d"):
+                     dx = {"a": -jog_step_mm, "d": +jog_step_mm}.get(choice, 0)
+                     dy = {"w": -jog_step_mm, "s": +jog_step_mm}.get(choice, 0)
+                     offset_x += dx
+                     offset_y += dy
+                 elif choice == "e":
+                     offset_z += jog_step_mm
+                 elif choice == "r":
+                     offset_z -= jog_step_mm
+                 elif choice in ("-", "=", "+"):
+                     if choice == "-":
+                         jog_step_mm = max(1, jog_step_mm / 1.5)
+                     else:
+                         jog_step_mm = min(50, jog_step_mm * 1.5)
+                     print(f"  步长 → {jog_step_mm:.0f}mm")
+                     continue
+                 elif choice == "f":
+                     val = input("  输入偏移 (x,y,z mm, 如 10,-5,0): ").strip()
+                     try:
+                         parts = [float(v.strip()) for v in val.split(",")]
+                         if len(parts) == 3:
+                             offset_x, offset_y, offset_z = parts
+                         else:
+                             print("  格式错误, 需要 x,y,z")
+                     except ValueError:
+                         print("  格式错误")
+
+            # 如果选了重新拍照, 跳过执行回到外层
+            if choice.lower() == "f5":
+                continue
+
+            # 如果选了跳过, 跳出
+            if choice in ("Q", "q"):
+                break
+
+            # ========================================================
             # ── 执行 ──
             print("\n执行抓取动作...")
+
+            fx = flange_x * 1000 + offset_x
+            fy = flange_y * 1000 + offset_y
+            a_z = approach_z * 1000 + offset_z
+            g_z = grasp_z * 1000 + offset_z
 
             # 1. 张开手
             hand.open()
 
             # 2. 移动到目标侧上方 (从外侧进入，避开旁边盒子)
-            arm.movel(flange_x * 1000, flange_y * 1000, approach_z * 1000, speed=150)
+            arm.movel(fx, fy, a_z, speed=150)
             time.sleep(1.5)
 
             # 3. 下降
-            arm.movel(flange_x * 1000, flange_y * 1000, grasp_z * 1000, speed=50)
+            arm.movel(fx, fy, g_z, speed=50)
             time.sleep(1.5)
 
             # 4. 抓取
@@ -347,8 +435,8 @@ def main():
             time.sleep(1.5)
 
             # 5. 抬升 (离开货架)
-            lift_z = grasp_z + 0.10
-            arm.movel(flange_x * 1000, flange_y * 1000, lift_z * 1000, speed=100)
+            lift_z = g_z + 100
+            arm.movel(fx, fy, lift_z, speed=100)
             time.sleep(1.5)
 
             print("抓取完成! 拖动到放置位按 Enter 继续 / q 退出")
