@@ -521,7 +521,7 @@ class MedicineLocatorSystem:
             # 映射
             shelf_pos = self.mapping_mgr.get_position(class_name)
 
-            # OCR：逐框裁剪 + 轻量增强 + EasyOCR 识别
+            # OCR：逐框裁剪 + 去反光增强 + EasyOCR 识别
             ocr_text = None
             if self.use_ocr and self.ocr_working and do_ocr_this_frame and self.ocr_model is not None:
                 padding = 10
@@ -529,18 +529,17 @@ class MedicineLocatorSystem:
                 x2c = min(x2 + padding, color_img.shape[1]); y2c = min(y2 + padding, color_img.shape[0])
                 crop = color_img[y1c:y2c, x1c:x2c]
                 if crop.size > 0 and crop.shape[0] >= 15 and crop.shape[1] >= 15:
-                    # 轻量 CLAHE 增强（clipLimit 低，不破坏文字边缘）
-                    lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
-                    l, a, b = cv2.split(lab)
-                    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(4, 4))
-                    l = clahe.apply(l)
-                    crop_enhanced = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
                     try:
+                        # 双边滤波：去噪（反光颗粒）但保留文字边缘
+                        denoised = cv2.bilateralFilter(crop, d=7, sigmaColor=50, sigmaSpace=50)
+                        # 锐化：突出文字纹理
+                        blurred = cv2.GaussianBlur(denoised, (0, 0), 2.0)
+                        sharpened = cv2.addWeighted(denoised, 1.8, blurred, -0.8, 0)
                         results = self.ocr_model.readtext(
-                            crop_enhanced,
-                            text_threshold=0.3,      # 放宽检测阈值
+                            sharpened,
+                            text_threshold=0.3,
                             low_text=0.2,
-                            contrast_ths=0.05,       # 低对比度区域重处理
+                            contrast_ths=0.05,
                             adjust_contrast=0.3,
                         )
                         texts = [r[1].strip() for r in results if r[1].strip()]
