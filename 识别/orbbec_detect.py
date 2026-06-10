@@ -297,6 +297,30 @@ def _assess_lighting(color_img):
     return score, grade, color_bgr, mean_v, std_v, extra
 
 
+def _reduce_glare(color_img):
+    """反光抑制：CLAHE + HSV 高光抑制，返回处理后图像"""
+    result = color_img.copy()
+    # 1. LAB 空间 CLAHE — 均衡局部对比度，压暗高光区域
+    lab = cv2.cvtColor(result, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    lab = cv2.merge([l, a, b])
+    result = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+    # 2. HSV 空间抑制镜面高光：低饱和度 + 高亮度区域用邻域均值填充
+    hsv = cv2.cvtColor(result, cv2.COLOR_BGR2HSV)
+    s = hsv[:, :, 1]
+    v = hsv[:, :, 2]
+    # 高光掩膜：S<30 且 V>220
+    mask = (s < 30) & (v > 220)
+    mask = mask.astype(np.uint8) * 255
+    if np.sum(mask) > 100:
+        # 用 inpaint 修复高光区域
+        result = cv2.inpaint(result, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+    return result
+
+
 def draw_detection(frame, result, is_selected=False):
     """绘制单个检测结果"""
     x1, y1, x2, y2 = result.bbox
@@ -497,11 +521,12 @@ class MedicineLocatorSystem:
         self.frame_counter += 1
         do_ocr_this_frame = (self.frame_counter % self.ocr_interval == 0)
 
-        # OCR：全图检测一次，用于后续匹配
+        # OCR：全图反光抑制后检测一次，用于后续匹配
         ocr_results = []  # [(bbox_xyxy, text, conf), ...]
         if self.use_ocr and self.ocr_working and do_ocr_this_frame and self.ocr_model is not None:
             try:
-                ocr_raw = self.ocr_model.readtext(color_img)
+                ocr_img = _reduce_glare(color_img)
+                ocr_raw = self.ocr_model.readtext(ocr_img)
                 for item in ocr_raw:
                     pts, text, conf = item[0], item[1], item[2]
                     # pts 是 [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]，取外接矩形
