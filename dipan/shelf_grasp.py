@@ -11,6 +11,7 @@ import os
 import time
 import socket
 import re
+import json
 import numpy as np
 from typing import List, Tuple, Optional
 
@@ -108,11 +109,22 @@ class DobotArm:
 # ============================================================
 # 手眼坐标转换
 # ============================================================
+CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib_eye_in_hand.json")
+
+
 class HandEyeTransformer:
     def __init__(self, fx=FX, fy=FY, cx=CX, cy=CY):
         self.fx, self.fy = fx, fy
         self.cx, self.cy = cx, cy
-        self.flange_pose = None  # (x_mm, y_mm, z_mm, rx, ry, rz)
+        self.flange_pose = None
+        # 加载标定结果
+        self.T_flange_to_cam = np.eye(4)
+        if os.path.exists(CALIB_FILE):
+            with open(CALIB_FILE) as f:
+                calib = json.load(f)
+            self.T_flange_to_cam = np.array(calib["T_flange_to_camera"])
+            t = self.T_flange_to_cam[:3, 3]
+            print(f"[标定] 已加载手眼标定: t=({t[0]*1000:.1f},{t[1]*1000:.1f},{t[2]*1000:.1f})mm")
 
     def set_flange(self, pose):
         self.flange_pose = pose
@@ -121,22 +133,38 @@ class HandEyeTransformer:
         """像素 → 相机坐标系 (X右 Y下 Z前, 米)"""
         x = (u - self.cx) * depth_m / self.fx
         y = (v - self.cy) * depth_m / self.fy
-        return np.array([x, y, depth_m])
+        return np.array([x, y, depth_m], dtype=np.float64)
 
     def camera_to_robot(self, p_cam, flange_pose=None):
         """相机坐标系 → 机器人基座 (米)
-        法兰姿态: (x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)
-        相机在法兰根部, 近似同轴, Z方向一致
+        有标定: base←flange * T_flange→cam * p_cam
+        无标定: 近似同轴
         """
         pose = flange_pose or self.flange_pose
         fx_m, fy_m, fz_m = pose[0]/1000, pose[1]/1000, pose[2]/1000
-        rz = np.deg2rad(pose[5])  # 绕Z的旋转影响XY
-        # 简化: 法兰坐标 + 相机坐标 (同轴近似)
+        rz = np.deg2rad(pose[5])
         cos_rz, sin_rz = np.cos(rz), np.sin(rz)
-        x_w = fx_m + cos_rz * p_cam[2] - sin_rz * p_cam[0]  # 相机Z→机器人前
-        y_w = fy_m + sin_rz * p_cam[2] + cos_rz * p_cam[0]
-        z_w = fz_m - p_cam[1]  # 相机Y↓ → 机器人Z↓
-        return np.array([x_w, y_w, z_w])
+
+        # 有标定文件时用精确变换
+        if not np.allclose(self.T_flange_to_cam, np.eye(4)):
+            # 法兰→基座 (用 pose 构造)
+            T_base_flange = np.eye(4)
+            T_base_flange[:3, :3] = np.array([
+                [cos_rz, -sin_rz, 0],
+                [sin_rz,  cos_rz, 0],
+                [0,       0,      1]
+            ])
+            T_base_flange[:3, 3] = [fx_m, fy_m, fz_m]
+            # base←flange * flange←cam * cam←point
+            p_cam_h = np.append(p_cam, 1.0)
+            p_w = T_base_flange @ self.T_flange_to_cam @ p_cam_h
+            return p_w[:3]
+        else:
+            # 无标定 fallback: 同轴近似
+            x_w = fx_m + cos_rz * p_cam[2] - sin_rz * p_cam[0]
+            y_w = fy_m + sin_rz * p_cam[2] + cos_rz * p_cam[0]
+            z_w = fz_m - p_cam[1]
+            return np.array([x_w, y_w, z_w])
 
 
 # ============================================================
@@ -293,7 +321,7 @@ def main():
             transformer.set_flange(flange_pose)
 
             # ── 多帧择优拍照：快速连拍 N 帧, 按光照评分选最佳 ──
-            N_FRAMES = 5            # 采集帧数
+            N_FRAMES = 10            # 采集帧数
             WARMUP = 2              # 前 N 帧丢弃 (等自动曝光稳定)
             best_img, best_depth = None, None
             best_score, best_grade = -1, ""
