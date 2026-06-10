@@ -373,7 +373,6 @@ class MedicineLocatorSystem:
         # OCR — 主进程序初始化 EasyOCR 实例（复用，避免重复加载模型）
         self.ocr_interval = ocr_interval
         self.frame_counter = 0
-        self.ocr_cache: Dict[str, str] = {}
         self.ocr_working = True
         self.ocr_model = None             # EasyOCR Reader 实例
 
@@ -387,30 +386,11 @@ class MedicineLocatorSystem:
             return
         try:
             print("[OCR] 正在初始化 EasyOCR（首次加载模型，约需 20-40 秒）...")
-            self.ocr_model = easyocr.Reader(['ch_sim', 'en'], gpu=False)
+            self.ocr_model = easyocr.Reader(['ch_sim', 'en'], gpu=True)
             print("[OCR] EasyOCR 初始化完成")
         except Exception as e:
             print(f"[OCR] 初始化失败: {e}，文字识别功能已关闭")
             self.ocr_working = False
-
-    def _ocr_one_box(self, cache_key: str, crop_img: np.ndarray) -> Optional[str]:
-        """主进程直接调用 EasyOCR — 复用已加载的模型实例"""
-        if not self.use_ocr or not self.ocr_working or self.ocr_model is None:
-            return None
-
-        # 放大到至少 128px 高（EasyOCR 对分辨率要求低一些）
-        h, w = crop_img.shape[:2]
-        if h < 128:
-            scale = 128.0 / h
-            crop_img = cv2.resize(crop_img, (int(w * scale), 128), interpolation=cv2.INTER_CUBIC)
-
-        try:
-            results = self.ocr_model.readtext(crop_img)
-            texts = [item[1].strip() for item in results if item[1].strip()]
-            return "|".join(texts) if texts else "[无文字]"
-        except Exception as e:
-            print(f"[OCR] 识别异常: {e}")
-            return None
 
     def _mouse_callback(self, event, x, y, flags, param):
         """鼠标点击选择目标药盒"""
@@ -448,12 +428,27 @@ class MedicineLocatorSystem:
         results = self.model.predict(
             source=color_img,
             conf=self.conf_threshold,
-            verbose=False
+            verbose=False,
         )
         result = results[0]
 
         self.frame_counter += 1
         do_ocr_this_frame = (self.frame_counter % self.ocr_interval == 0)
+
+        # OCR：全图检测一次，用于后续匹配
+        ocr_results = []  # [(bbox_xyxy, text, conf), ...]
+        if self.use_ocr and self.ocr_working and do_ocr_this_frame and self.ocr_model is not None:
+            try:
+                ocr_raw = self.ocr_model.readtext(color_img)
+                for item in ocr_raw:
+                    pts, text, conf = item[0], item[1], item[2]
+                    # pts 是 [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]，取外接矩形
+                    xs = [p[0] for p in pts]
+                    ys = [p[1] for p in pts]
+                    ocr_results.append(((min(xs), min(ys), max(xs), max(ys)), text.strip(), conf))
+            except Exception as e:
+                print(f"[OCR] 全图识别异常: {e}")
+                ocr_results = []
 
         for box in result.boxes:
             cls_id = int(box.cls[0])
@@ -476,24 +471,25 @@ class MedicineLocatorSystem:
             # 映射
             shelf_pos = self.mapping_mgr.get_position(class_name)
 
-            # OCR 文字识别（2x 上采样裁剪区，提高识别率）
+            # OCR 匹配：找与 YOLO 框 IoU 最大的 OCR 结果
             ocr_text = None
-            if self.use_ocr and self.ocr_working and do_ocr_this_frame:
-                cache_key = f"{class_name}_{x1}_{y1}_{x2}_{y2}"
-                if cache_key in self.ocr_cache:
-                    ocr_text = self.ocr_cache[cache_key]
-                else:
-                    padding = 5
-                    x1p = max(x1 - padding, 0)
-                    y1p = max(y1 - padding, 0)
-                    x2p = min(x2 + padding, color_img.shape[1])
-                    y2p = min(y2 + padding, color_img.shape[0])
-                    crop = color_img[y1p:y2p, x1p:x2p]
-                    if crop.size > 0:
-                        crop = cv2.resize(crop, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-                        ocr_text = self._ocr_one_box(cache_key, crop)
-                        if ocr_text is not None:
-                            self.ocr_cache[cache_key] = ocr_text
+            if do_ocr_this_frame and ocr_results:
+                best_iou, best_text = 0.0, None
+                for obox, otext, oconf in ocr_results:
+                    ox1, oy1, ox2, oy2 = obox
+                    # 计算 IoU
+                    ix1 = max(x1, ox1); iy1 = max(y1, oy1)
+                    ix2 = min(x2, ox2); iy2 = min(y2, oy2)
+                    if ix1 < ix2 and iy1 < iy2:
+                        inter = (ix2 - ix1) * (iy2 - iy1)
+                        yolo_area = (x2 - x1) * (y2 - y1)
+                        ocr_area = (ox2 - ox1) * (oy2 - oy1)
+                        union = yolo_area + ocr_area - inter
+                        iou = inter / union if union > 0 else 0
+                        if iou > best_iou:
+                            best_iou, best_text = iou, otext
+                if best_iou > 0.15 and best_text:
+                    ocr_text = best_text
 
             results_list.append(DetectionResult(
                 class_name=class_name,
@@ -626,14 +622,7 @@ class MedicineLocatorSystem:
                 print(f"[保存] 截图: {save_img}")
                 print(f"[保存] 结果: {save_json}")
 
-        # 退出时清理（同步模式无需 stop worker）
-        if self.ocr_cache:
-            timestamp = int(time.time())
-            save_json = f"results/ocr_cache_{timestamp}.json"
-            with open(save_json, "w", encoding="utf-8") as f:
-                json.dump(self.ocr_cache, f, ensure_ascii=False, indent=2)
-            print(f"[保存] OCR缓存: {save_json}")
-
+        # 退出时清理
         self.camera.release()
         cv2.destroyAllWindows()
         print("\n[系统] 已退出")
@@ -647,9 +636,10 @@ if __name__ == "__main__":
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
     system = MedicineLocatorSystem(
-        model_path=os.path.join(base_dir, "best.pt"),
-        mapping_path=os.path.join(base_dir, "shelf_mapping.yaml"),
-        conf_threshold=0.45,
-        use_ocr=True,
-    )
+            model_path=os.path.join(base_dir, "best.pt"),
+            mapping_path=os.path.join(base_dir, "shelf_mapping.yaml"),
+            conf_threshold=0.45,
+            use_ocr=True,
+            ocr_interval=30,
+        )
     system.run()
