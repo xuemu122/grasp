@@ -297,30 +297,6 @@ def _assess_lighting(color_img):
     return score, grade, color_bgr, mean_v, std_v, extra
 
 
-def _reduce_glare(color_img):
-    """反光抑制：CLAHE + HSV 高光抑制，返回处理后图像"""
-    result = color_img.copy()
-    # 1. LAB 空间 CLAHE — 均衡局部对比度，压暗高光区域
-    lab = cv2.cvtColor(result, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-    l = clahe.apply(l)
-    lab = cv2.merge([l, a, b])
-    result = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-
-    # 2. HSV 空间抑制镜面高光：低饱和度 + 高亮度区域用邻域均值填充
-    hsv = cv2.cvtColor(result, cv2.COLOR_BGR2HSV)
-    s = hsv[:, :, 1]
-    v = hsv[:, :, 2]
-    # 高光掩膜：S<30 且 V>220
-    mask = (s < 30) & (v > 220)
-    mask = mask.astype(np.uint8) * 255
-    if np.sum(mask) > 100:
-        # 用 inpaint 修复高光区域
-        result = cv2.inpaint(result, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
-    return result
-
-
 def draw_detection(frame, result, is_selected=False):
     """绘制单个检测结果"""
     x1, y1, x2, y2 = result.bbox
@@ -521,21 +497,8 @@ class MedicineLocatorSystem:
         self.frame_counter += 1
         do_ocr_this_frame = (self.frame_counter % self.ocr_interval == 0)
 
-        # OCR：全图反光抑制后检测一次，用于后续匹配
-        ocr_results = []  # [(bbox_xyxy, text, conf), ...]
-        if self.use_ocr and self.ocr_working and do_ocr_this_frame and self.ocr_model is not None:
-            try:
-                ocr_img = _reduce_glare(color_img)
-                ocr_raw = self.ocr_model.readtext(ocr_img)
-                for item in ocr_raw:
-                    pts, text, conf = item[0], item[1], item[2]
-                    # pts 是 [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]，取外接矩形
-                    xs = [p[0] for p in pts]
-                    ys = [p[1] for p in pts]
-                    ocr_results.append(((min(xs), min(ys), max(xs), max(ys)), text.strip(), conf))
-            except Exception as e:
-                print(f"[OCR] 全图识别异常: {e}")
-                ocr_results = []
+        # OCR 由下面的逐框流程处理，不提前全图检测
+        pass
 
         for box in result.boxes:
             cls_id = int(box.cls[0])
@@ -558,25 +521,32 @@ class MedicineLocatorSystem:
             # 映射
             shelf_pos = self.mapping_mgr.get_position(class_name)
 
-            # OCR 匹配：找与 YOLO 框 IoU 最大的 OCR 结果
+            # OCR：逐框裁剪 + 轻量增强 + EasyOCR 识别
             ocr_text = None
-            if do_ocr_this_frame and ocr_results:
-                best_iou, best_text = 0.0, None
-                for obox, otext, oconf in ocr_results:
-                    ox1, oy1, ox2, oy2 = obox
-                    # 计算 IoU
-                    ix1 = max(x1, ox1); iy1 = max(y1, oy1)
-                    ix2 = min(x2, ox2); iy2 = min(y2, oy2)
-                    if ix1 < ix2 and iy1 < iy2:
-                        inter = (ix2 - ix1) * (iy2 - iy1)
-                        yolo_area = (x2 - x1) * (y2 - y1)
-                        ocr_area = (ox2 - ox1) * (oy2 - oy1)
-                        union = yolo_area + ocr_area - inter
-                        iou = inter / union if union > 0 else 0
-                        if iou > best_iou:
-                            best_iou, best_text = iou, otext
-                if best_iou > 0.15 and best_text:
-                    ocr_text = best_text
+            if self.use_ocr and self.ocr_working and do_ocr_this_frame and self.ocr_model is not None:
+                padding = 10
+                x1c = max(x1 - padding, 0); y1c = max(y1 - padding, 0)
+                x2c = min(x2 + padding, color_img.shape[1]); y2c = min(y2 + padding, color_img.shape[0])
+                crop = color_img[y1c:y2c, x1c:x2c]
+                if crop.size > 0 and crop.shape[0] >= 15 and crop.shape[1] >= 15:
+                    # 轻量 CLAHE 增强（clipLimit 低，不破坏文字边缘）
+                    lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
+                    l, a, b = cv2.split(lab)
+                    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(4, 4))
+                    l = clahe.apply(l)
+                    crop_enhanced = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+                    try:
+                        results = self.ocr_model.readtext(
+                            crop_enhanced,
+                            text_threshold=0.3,      # 放宽检测阈值
+                            low_text=0.2,
+                            contrast_ths=0.05,       # 低对比度区域重处理
+                            adjust_contrast=0.3,
+                        )
+                        texts = [r[1].strip() for r in results if r[1].strip()]
+                        ocr_text = "|".join(texts) if texts else None
+                    except Exception:
+                        pass
 
             results_list.append(DetectionResult(
                 class_name=class_name,
