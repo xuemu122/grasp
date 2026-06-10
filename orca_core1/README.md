@@ -1,98 +1,112 @@
-<div align="center" style="line-height: 1;">
-  <a href="https://arxiv.org/abs/2504.04259" target="_blank"><img alt="arXiv" src="https://img.shields.io/badge/arXiv-2504.04259-B31B1B?logo=arxiv"/></a>
-  <a href="https://discord.gg/xvGyxaccRa" target="_blank"><img alt="Discord" src="https://img.shields.io/badge/Discord-orcahand-7289da?logo=discord&logoColor=white&color=7289da"/></a>
-  <a href="https://x.com/orcahand" target="_blank"><img alt="Twitter Follow" src="https://img.shields.io/twitter/follow/orcahand?style=social"/></a>
-  <a href="https://orcahand.com" target="_blank"><img alt="Website" src="https://img.shields.io/badge/Website-orcahand.com-blue?style=flat&logo=google-chrome"/></a>
-  <br>
-  <a href="https://github.com/orcahand/orca_core" target="_blank"><img alt="GitHub stars" src="https://img.shields.io/github/stars/orcahand/orca_core?style=social"/></a>
-  <a href="https://github.com/orcahand/orca_core/actions/workflows/test.yml" target="_blank"><img alt="Tests" src="https://github.com/orcahand/orca_core/actions/workflows/test.yml/badge.svg"/></a>
-</div>
+# orca_core1 — Orca 灵巧手 SDK
 
-Orca Core is the core control package of the ORCA Hand. It's used to abstract hardware, provide scripts for calibration and tensioningm and to control the hand with simple high-level control methods in joint space.
+Orca 17 关节灵巧手控制库，含硬件驱动、校准、手部追踪等。
 
-## Get Started
+## 目录
 
-To get started with Orca Core, follow these steps:
-
-1. **Sync a local development environment with `uv`**:
-
-    ```sh
-    uv sync --group dev
-    ```
-
-    This creates a local `.venv` and installs the package plus development dependencies.
-
-2. **Run commands through `uv`**:
-
-    ```sh
-    uv run pytest
-    ```
-
-    If you prefer an activated shell, you can still use:
-
-    ```sh
-    source .venv/bin/activate
-    ```
-
-    End users who do not use `uv` can still install the package with:
-
-    ```sh
-    pip install .
-    ```
-
-3. **Check the configuration file**:
-
-    - Review the config file (e.g., `orca_core/models/v2/orcahand_right/config.yaml`) and make sure it matches your hardware setup.
-
-4. **Run the tension and calibration scripts**:
-
-    ```sh
-    uv run python scripts/tension.py orca_core/models/v2/orcahand_right/config.yaml
-    uv run python scripts/calibrate.py orca_core/models/v2/orcahand_right/config.yaml
-    ```
-
-    Replace the path with your specific hand model folder if needed.
-
-5. **Move the hand to the neutral position**:
-
-    ```sh
-    uv run python scripts/neutral.py orca_core/models/v2/orcahand_right/config.yaml
-    ```
-
----
-
-## Troubleshooting
-
-### Serial Port Permissions (Linux)
-
-On Linux, the serial port (e.g., `/dev/ttyUSB0`) is owned by the `dialout` group. If your user is not in this group, you will get a **permission denied** error and motors won't be detected.
-
-**Permanent fix** (requires re-login):
-
-```sh
-sudo usermod -aG dialout $USER
+```
+orca_core1/
+├── orca_core/        核心库 (硬件驱动、手配置、关节计算)
+│   ├── hardware/     Feetech / Dynamixel 马达驱动
+│   ├── models/v2/    手模型配置 (orcahand_right)
+│   └── utils/        工具函数
+├── scripts/          官方工具脚本
+├── mine/             **自定义程序**
+└── tests/            单元测试
 ```
 
-**Temporary fix** (resets on reboot/replug):
+## 自定义程序 (mine/)
 
-```sh
-sudo chmod 666 /dev/ttyUSB0
+| 文件 | 说明 |
+|------|------|
+| `hand_tracking.py` | **手部追踪**: 摄像头捕捉人手 → MediaPipe 关键点 → 灵巧手实时跟随 |
+| `preset_action.py` | **预设动作**: 位置1→位置2 平滑过渡 |
+| `preset_action2-5.py` | 不同预设动作序列变体 |
+| `demo.py` | 终端命令控制: 输入 1 抓取, 2 释放 |
+| `read_motor_status.py` | 读取马达状态 |
+| `hand_landmarker.task` | MediaPipe 手部关键点模型 |
+
+### hand_tracking.py
+
+摄像头捕捉人手姿态，MediaPipe 21 点手部关键点映射到 Orca 17 关节电机，实时跟随。
+
+```bash
+cd /home/nvidia/grasp/orca_core1
+
+# 安装依赖
+pip install mediapipe opencv-python
+
+# 启动
+python mine/hand_tracking.py
 ```
 
-### Serial Port Path
+### demo.py
 
-Make sure the `port` field in your `config.yaml` matches your operating system:
+终端命令控制灵巧手。
 
-| OS    | Example port                    |
-|-------|---------------------------------|
-| Linux | `/dev/ttyUSB0`                  |
-| macOS | `/dev/tty.usbserial-XXXXXXXX`   |
+```bash
+python mine/demo.py --steps 40 --delay 0.03
+# 输入 1 抓取
+# 输入 2 释放
+```
 
----
+### preset_action.py
 
-**Note:**
-- Always ensure your `config.yaml` matches your hardware and wiring.
-- All scripts in the `scripts/` folder take the model path as their first argument.
-- For more advanced usage, see the other scripts and the API documentation.
+预设动画演示。
 
----
+```bash
+python mine/preset_action.py
+python mine/preset_action.py --steps 50 --delay 0.03
+```
+
+## 官方工具 (scripts/)
+
+| 脚本 | 功能 |
+|------|------|
+| `main_demo.py` | 完整演示 |
+| `calibrate.py` | 关节校准 |
+| `check_motor.py` | 马达检查 |
+| `configure_motor_chain.py` | 配置马达链 |
+| `record_angles.py` | 记录关节角度 → YAML |
+| `replay_angles.py` | 回放关节角度 |
+| `record_continuous.py` | 连续录制轨迹 |
+| `replay_continuous.py` | 连续回放轨迹 |
+| `tension.py` / `neutral.py` / `zero.py` | 手部姿态预设 |
+| `stress_test.py` | 压力测试 |
+
+### 录制和回放
+
+```bash
+# 录制关节角度 (手动摆姿后记录)
+python scripts/record_angles.py
+
+# 回放
+python scripts/replay_angles.py path/to/sequence.yaml
+```
+
+### 校准
+
+```bash
+python scripts/calibrate.py
+```
+
+## 安装
+
+```bash
+cd /home/nvidia/grasp/orca_core1
+pip install -e .
+```
+
+## 在代码中使用
+
+```python
+import sys
+sys.path.insert(0, "/home/nvidia/grasp/orca_core1")
+from orca_core import OrcaHand, OrcaJointPositions
+
+hand = OrcaHand()
+hand.connect()
+hand.init_joints()
+# ... 控制 ...
+hand.disconnect()
+```
