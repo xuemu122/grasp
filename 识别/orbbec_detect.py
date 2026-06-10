@@ -297,22 +297,6 @@ def _assess_lighting(color_img):
     return score, grade, color_bgr, mean_v, std_v, extra
 
 
-def _auto_exposure(color_img):
-    """自动光线均衡：LAB CLAHE + gamma 校正，处理背光/暗光场景"""
-    lab = cv2.cvtColor(color_img, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    # CLAHE 自适应均衡暗部和亮部
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    l_eq = clahe.apply(l)
-    # 全局亮度补偿：均值低于 90 时做 gamma 提亮
-    mean_l = np.mean(l_eq)
-    if mean_l < 90:
-        gamma = max(0.5, mean_l / 128.0)
-        l_gamma = np.power(l_eq.astype(np.float32) / 255.0, gamma) * 255.0
-        l_eq = l_gamma.astype(np.uint8)
-    return cv2.cvtColor(cv2.merge([l_eq, a, b]), cv2.COLOR_LAB2BGR)
-
-
 def draw_detection(frame, result, is_selected=False):
     """绘制单个检测结果"""
     x1, y1, x2, y2 = result.bbox
@@ -513,11 +497,6 @@ class MedicineLocatorSystem:
         self.frame_counter += 1
         do_ocr_this_frame = (self.frame_counter % self.ocr_interval == 0)
 
-        # 自动光线均衡：OCR 周期时计算一次
-        color_balanced = None
-        if do_ocr_this_frame and self.use_ocr and self.ocr_working:
-            color_balanced = _auto_exposure(color_img)
-
         for box in result.boxes:
             cls_id = int(box.cls[0])
             conf_score = float(box.conf[0])
@@ -539,21 +518,25 @@ class MedicineLocatorSystem:
             # 映射
             shelf_pos = self.mapping_mgr.get_position(class_name)
 
-            # OCR：逐框裁剪 + 自动光线均衡 + EasyOCR 识别
+            # OCR：逐框裁剪 + CLAHE + 2x 放大 + EasyOCR 识别
             ocr_text = None
-            if self.use_ocr and self.ocr_working and do_ocr_this_frame and self.ocr_model is not None and color_balanced is not None:
+            if self.use_ocr and self.ocr_working and do_ocr_this_frame and self.ocr_model is not None:
                 padding = 10
                 x1c = max(x1 - padding, 0); y1c = max(y1 - padding, 0)
-                x2c = min(x2 + padding, color_balanced.shape[1]); y2c = min(y2 + padding, color_balanced.shape[0])
-                crop = color_balanced[y1c:y2c, x1c:x2c]
+                x2c = min(x2 + padding, color_img.shape[1]); y2c = min(y2 + padding, color_img.shape[0])
+                crop = color_img[y1c:y2c, x1c:x2c]
                 if crop.size > 0 and crop.shape[0] >= 15 and crop.shape[1] >= 15:
                     try:
-                        # 2x 放大，让 EasyOCR 的 CRAFT+CRNN 有足够像素分辨中文字形
-                        h_c, w_c = crop.shape[:2]
-                        if h_c < 100:
-                            crop_up = cv2.resize(crop, (w_c * 2, h_c * 2), interpolation=cv2.INTER_CUBIC)
-                        else:
-                            crop_up = crop
+                        # 逐框 CLAHE：tile 大小按裁剪区自适应
+                        lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
+                        l, a, b = cv2.split(lab)
+                        tile = max(2, min(l.shape) // 10)
+                        clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(tile, tile))
+                        l = clahe.apply(l)
+                        crop_eq = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+                        # 始终 2x 放大，中文字形需要足够像素
+                        h_c, w_c = crop_eq.shape[:2]
+                        crop_up = cv2.resize(crop_eq, (w_c * 2, h_c * 2), interpolation=cv2.INTER_CUBIC)
                         results = self.ocr_model.readtext(
                             crop_up,
                             text_threshold=0.3,
