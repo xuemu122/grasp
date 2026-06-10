@@ -31,6 +31,12 @@ except ImportError:
 class RealSenseCamera:
     """Intel RealSense 深度相机封装（OpenCV 回退）"""
 
+    # D405 默认内参（640x480, 约69° HFOV）
+    DEFAULT_FX = 462.0
+    DEFAULT_FY = 462.0
+    DEFAULT_CX = 320.0
+    DEFAULT_CY = 240.0
+
     def __init__(self, width: int = 640, height: int = 480, fps: int = 30,
                  device_id: int = 0):
         self.width = width
@@ -42,6 +48,11 @@ class RealSenseCamera:
         self.cap_color = None
         self.use_sdk = False
         self._connected = False
+        # 相机内参（像素单位）
+        self.fx = self.DEFAULT_FX
+        self.fy = self.DEFAULT_FY
+        self.cx = self.DEFAULT_CX
+        self.cy = self.DEFAULT_CY
         self._connect()
 
     def _connect(self):
@@ -70,6 +81,17 @@ class RealSenseCamera:
                 pass
             for _ in range(30):
                 self._pipeline.wait_for_frames()
+
+            # 读取实际内参
+            try:
+                profile = self._pipeline.get_active_profile()
+                color_stream = profile.get_stream(rs.stream.color)
+                intr = color_stream.as_video_stream_profile().get_intrinsics()
+                self.fx, self.fy = intr.fx, intr.fy
+                self.cx, self.cy = intr.ppx, intr.ppy
+                print(f"[相机] 内参: fx={self.fx:.1f} fy={self.fy:.1f} cx={self.cx:.1f} cy={self.cy:.1f}")
+            except Exception:
+                pass
 
             print(f"[相机] RealSense 已连接 ({self.width}x{self.height}@{self.fps}fps)")
         except ImportError:
@@ -159,6 +181,13 @@ class RealSenseCamera:
         # RealSense 深度单位：毫米 → 米
         return float(np.median(valid)) / 1000.0
 
+    def pixel_to_camera_3d(self, u: float, v: float, depth_m: float) -> Tuple[float, float, float]:
+        """像素坐标 + 深度 → 相机坐标系 3D (X右 Y下 Z前, 单位米)"""
+        x = (u - self.cx) * depth_m / self.fx
+        y = (v - self.cy) * depth_m / self.fy
+        z = depth_m
+        return (x, y, z)
+
     def release(self):
         self._connected = False
         if self._pipeline:
@@ -191,7 +220,8 @@ class DetectionResult:
     bbox: Tuple[int, int, int, int]
     center_pixel: Tuple[int, int]
     depth_m: Optional[float]
-    shelf_pos: Optional[ShelfPosition]
+    camera_xyz: Optional[Tuple[float, float, float]] = None  # 相机坐标系3D (米)
+    shelf_pos: Optional[ShelfPosition] = None
     ocr_text: Optional[str] = None  # OCR 识别的文字
 
 
@@ -252,6 +282,9 @@ def draw_detection(frame, result, is_selected=False):
             f"货架:{sp.shelf_id} 第{sp.layer}层",
             f"高度:{sp.layer_height_m}m 偏移:{sp.horizontal_offset}m",
         ])
+    if result.camera_xyz:
+        x3d, y3d, z3d = result.camera_xyz
+        lines.append(f"3D:({x3d:.2f},{y3d:.2f},{z3d:.2f})m")
     elif result.depth_m:
         lines.append(f"深度:{result.depth_m:.2f}m")
     if result.ocr_text:
@@ -297,6 +330,12 @@ def draw_info_panel(frame, detections, fps, camera_mode):
         box_text = f"    框:({x1},{y1})-({x2},{y2}) 中心:({cx},{cy})"
         cv2.putText(panel, box_text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1)
         y += 22
+        # 三维坐标
+        if det.camera_xyz:
+            x3d, y3d, z3d = det.camera_xyz
+            xyz_text = f"    3D:({x3d:.3f},{y3d:.3f},{z3d:.3f})m"
+            cv2.putText(panel, xyz_text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
+            y += 22
         # OCR 文字
         if det.ocr_text:
             ocr_text_short = det.ocr_text[:30] + ("..." if len(det.ocr_text) > 30 else "")
@@ -429,6 +468,11 @@ class MedicineLocatorSystem:
             if self.camera and depth_img is not None:
                 depth_m = self.camera.get_depth_at(depth_img, cx, cy, (x1, y1, x2, y2))
 
+            # 三维坐标（相机坐标系，米）
+            camera_xyz = None
+            if self.camera and depth_m is not None:
+                camera_xyz = self.camera.pixel_to_camera_3d(cx, cy, depth_m)
+
             # 映射
             shelf_pos = self.mapping_mgr.get_position(class_name)
 
@@ -457,6 +501,7 @@ class MedicineLocatorSystem:
                 bbox=(x1, y1, x2, y2),
                 center_pixel=(cx, cy),
                 depth_m=depth_m,
+                camera_xyz=camera_xyz,
                 shelf_pos=shelf_pos,
                 ocr_text=ocr_text,
             ))
@@ -512,10 +557,16 @@ class MedicineLocatorSystem:
                         pos_info = f"货架:{sp.shelf_id} 第{sp.layer}层 高度:{sp.layer_height_m}m 偏移:{sp.horizontal_offset}m"
                     else:
                         pos_info = "未映射到货架"
+                    # 三维坐标
+                    if det.camera_xyz:
+                        x3d, y3d, z3d = det.camera_xyz
+                        xyz_info = f"3D:({x3d:.3f},{y3d:.3f},{z3d:.3f})m"
+                    else:
+                        xyz_info = "3D:无深度"
                     ocr_info = f"文字:{det.ocr_text}" if det.ocr_text else "文字:识别中..."
                     print(f"  {sel}[{i+1}] {det.class_name} | "
                           f"YOLO位置:({x1},{y1})-({x2},{y2}) 中心:({cx},{cy}) | "
-                          f"置信度:{det.confidence:.2f} | {pos_info} | {ocr_info}")
+                          f"置信度:{det.confidence:.2f} | {xyz_info} | {pos_info} | {ocr_info}")
                 print("-" * 50)
 
             # 绘制
