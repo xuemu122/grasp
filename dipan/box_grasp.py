@@ -314,9 +314,11 @@ def run_with_realsense():
     """
     import sys
     import socket
+    import os
 
     # 把识别模块路径加入
-    sys.path.insert(0, "/home/nvidia/识别")
+    recognition_dir = "/home/nvidia/grasp/识别"
+    sys.path.insert(0, recognition_dir)
     from orbbec_detect import MedicineLocatorSystem
 
     print("=" * 50)
@@ -326,8 +328,8 @@ def run_with_realsense():
 
     # ---- 1. 初始化识别系统 ----
     locator = MedicineLocatorSystem(
-        model_path="/home/nvidia/识别/best.pt",
-        mapping_path="/home/nvidia/识别/shelf_mapping.yaml",
+        model_path=os.path.join(recognition_dir, "best.pt"),
+        mapping_path=os.path.join(recognition_dir, "shelf_mapping.yaml"),
         conf_threshold=0.5,
         use_ocr=True,
         ocr_interval=90,

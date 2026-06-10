@@ -593,9 +593,11 @@ class MedicineLocatorSystem:
 # ============================================================
 
 if __name__ == "__main__":
+    import os
+    base_dir = os.path.dirname(os.path.abspath(__file__))
     system = MedicineLocatorSystem(
-        model_path="/home/nvidia/识别/best.pt",
-        mapping_path="shelf_mapping.yaml",
+        model_path=os.path.join(base_dir, "best.pt"),
+        mapping_path=os.path.join(base_dir, "shelf_mapping.yaml"),
         conf_threshold=0.45,
         use_ocr=True,
     )
