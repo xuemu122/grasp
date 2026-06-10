@@ -242,25 +242,41 @@ def pick_target_box(detections):
     return target, edge
 
 
-def plan_edge_grasp(det, edge, transformer, flange_pose):
+def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4):
     """
-    边缘抓取: 侧边缘 (x1 或 x2) × 上边缘 (y1)
-    从盒子外侧边缘和上边缘抓取，手从外上方进入
-    返回: (world_x, world_y, world_z, 是否需要旋转法兰)
+    边缘抓取: 
+      - 盒宽 ≤ 8cm: 侧边缘 (x1/x2) + 上边缘 (y1), 手从外侧进入
+      - 盒宽 > 8cm: 上边缘 (y1) + 中心 X, 手从上方进入
+    返回: (world_x, world_y, world_z, grasp_mode)
     """
     x1, y1, x2, y2 = det.bbox
     depth = det.depth_m or 0.5
 
-    if edge == "left":
-        edge_u = x1           # 左边缘
+    # 计算盒子实际宽度 (米)
+    pixel_w = x2 - x1
+    real_w = pixel_w * depth / fx  # 小孔模型: pixel = fx * real / depth
+    print(f"  盒宽: {pixel_w}px → {real_w*100:.1f}cm")
+
+    if real_w <= 0.08:
+        # 窄盒 → 侧边抓
+        if edge == "left":
+            edge_u = x1
+        else:
+            edge_u = x2
+        edge_v = y1
+        mode = f"{edge}_side"
+        print(f"  → 窄盒 ({real_w*100:.1f}cm ≤ 8cm), 从{edge}侧边缘抓取")
     else:
-        edge_u = x2           # 右边缘
-    edge_v = y1               # 上边缘
+        # 宽盒 → 上方抓
+        edge_u = (x1 + x2) / 2  # 中心 X
+        edge_v = y1
+        mode = "top_center"
+        print(f"  → 宽盒 ({real_w*100:.1f}cm > 8cm), 从上边缘中心抓取")
 
     # 像素 → 相机 3D → 机器人基座
     p_cam = transformer.pixel_to_camera(edge_u, edge_v, depth)
     p_robot = transformer.camera_to_robot(p_cam, flange_pose)
-    return p_robot[0], p_robot[1], p_robot[2]
+    return p_robot[0], p_robot[1], p_robot[2], mode
 
 
 # ============================================================
@@ -360,24 +376,23 @@ def main():
             print(f"\n=== 选中: {edge}侧盒子 bbox=({target.bbox[0]},{target.bbox[1]})-({target.bbox[2]},{target.bbox[3]}) "
                   f"depth={target.depth_m:.3f}m ===")
 
-            # ── 计算抓取位姿 (侧边缘 + 上边缘) ──
-            wx, wy, wz = plan_edge_grasp(target, edge, transformer, flange_pose)
-            print(f"\n=== 选中: {edge}侧盒子 bbox=({target.bbox[0]},{target.bbox[1]})-({target.bbox[2]},{target.bbox[3]}) "
-                  f"depth={target.depth_m:.3f}m ===")
-            print(f"抓取点 ({edge}上角): ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
+            # ── 计算抓取位姿 ──
+            wx, wy, wz, grip_mode = plan_edge_grasp(target, edge, transformer, flange_pose, fx=camera.fx)
+            print(f"抓取点 ({grip_mode}): ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
 
             # 法兰在指尖上方 HAND_LENGTH
             flange_z = wz + HAND_LENGTH
             flange_x, flange_y = wx, wy
 
-            # 偏置: 手稍微偏出盒子外侧，避免撞到旁边的盒子
-            side_offset = 0.03  # 3cm 向外偏
-            if edge == "left":
-                flange_x -= side_offset
-            else:
-                flange_x += side_offset
+            # 偏置: 侧边抓时向外偏, 上方抓时不偏
+            if grip_mode.endswith("_side"):
+                side_offset = 0.03  # 3cm 向外偏
+                if "left" in grip_mode:
+                    flange_x -= side_offset
+                else:
+                    flange_x += side_offset
 
-            approach_z = flange_z + 0.04    # 悬停 8cm 上方 (货架空间紧)
+            approach_z = flange_z + 0.04    # 悬停 4cm 上方 (货架空间紧)
             grasp_z = flange_z - 0.02       # 指尖略深入盒面
 
             # ========================================================
