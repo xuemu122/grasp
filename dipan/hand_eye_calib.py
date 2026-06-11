@@ -147,38 +147,36 @@ class DobotClient:
 # ============================================================
 def hand_eye_calib(A_list, B_list):
     """求解 AX=XB (OpenCV Tsai 方法)
-    A_list: [4x4] base→flange
-    B_list: [4x4] camera→marker
-    返回: X (4x4) flange→camera
+    A_list: [4x4] base→flange (每帧法兰在基座标系下)
+    B_list: [4x4] camera→marker (每帧 marker 在相机坐标系下)
+    返回: X (4x4) flange→camera (相机在法兰坐标系下)
     """
-    R_cam2base = []
-    t_cam2base = []
-    R_base2cam = []
-    t_base2cam = []
-
-    # OpenCV calibrateHandEye 需要:
-    # R_gripper2base, t_gripper2base: flange→base (即 A 的逆)
-    # R_target2cam, t_target2cam: marker→camera (即 B 的逆)
+    R_gripper2base = []   # flange → base
+    t_gripper2base = []
+    R_target2cam = []     # marker → camera
+    t_target2cam = []
 
     for A, B in zip(A_list, B_list):
-        # A = base→flange; inverse = flange→base
-        A_inv = np.linalg.inv(A)
-        R_cam2base.append(A_inv[:3, :3])
-        t_cam2base.append(A_inv[:3, 3])
-        # B = camera→marker; inverse = marker→camera
-        B_inv = np.linalg.inv(B)
-        R_base2cam.append(B_inv[:3, :3])
-        t_base2cam.append(B_inv[:3, 3])
+        A_inv = np.linalg.inv(A)       # base→flange → flange→base
+        R_gripper2base.append(A_inv[:3, :3])
+        t_gripper2base.append(A_inv[:3, 3])
+        B_inv = np.linalg.inv(B)       # camera→marker → marker→camera
+        R_target2cam.append(B_inv[:3, :3])
+        t_target2cam.append(B_inv[:3, 3])
 
-    R_f2c, t_f2c = cv2.calibrateHandEye(
-        R_cam2base, t_cam2base,
-        R_base2cam, t_base2cam,
+    # OpenCV 返回: camera → flange (相机在法兰坐标系下)
+    R_cam2gripper, t_cam2gripper = cv2.calibrateHandEye(
+        R_gripper2base, t_gripper2base,
+        R_target2cam, t_target2cam,
         method=cv2.CALIB_HAND_EYE_TSAI,
     )
-    X = np.eye(4)
-    X[:3, :3] = R_f2c
-    X[:3, 3] = t_f2c.flatten()
-    return X
+    T_cam2flange = np.eye(4)
+    T_cam2flange[:3, :3] = R_cam2gripper
+    T_cam2flange[:3, 3] = t_cam2gripper.flatten()
+
+    # 我们要的是 flange→camera = inv(camera→flange)
+    T_flange2cam = np.linalg.inv(T_cam2flange)
+    return T_flange2cam
 
 
 # ============================================================
