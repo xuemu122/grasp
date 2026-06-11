@@ -3,7 +3,7 @@
 货架边缘抓取系统
 - YOLO 检测盒子 → 选最外侧（深度最小）
 - 边缘抓取（bbox 下边缘 = 盒子前缘，而不是中心）
-- DOBOT Nova5 TCP 控制 + Orca 灵巧手
+- DOBOT Nova5 TCP 控制 + Aero Hand 灵巧手
 """
 
 import sys
@@ -20,10 +20,10 @@ sys.path.insert(0, "/home/nvidia/grasp/识别")
 from orbbec_detect import MedicineLocatorSystem, RealSenseCamera
 from orbbec_detect import _assess_lighting
 
-# ── Orca 灵巧手 ──
-ORCA_PATH = "/home/nvidia/grasp/orca_core1"
-sys.path.insert(0, ORCA_PATH)
-from orca_core import OrcaHand, OrcaJointPositions
+# ── Aero Hand 灵巧手 ──
+AERO_SDK_PATH = "/home/nvidia/grasp/aero-hand-open/sdk/src"
+sys.path.insert(0, AERO_SDK_PATH)
+from aero_open_sdk.aero_hand import AeroHand
 
 
 # ============================================================
@@ -41,6 +41,9 @@ HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 # D405 内参（自动读取，这里是 fallback）
 FX, FY = 390.4, 390.0
 CX, CY = 324.5, 241.2
+
+# 调试开关: 屏蔽手, 只测试手眼标定 + 机械臂走位
+SKIP_HAND = True
 
 
 # ============================================================
@@ -168,53 +171,32 @@ class HandEyeTransformer:
 
 
 # ============================================================
-# Orca 灵巧手
+# Aero Hand 灵巧手
 # ============================================================
-class OrcaGripper:
-    OPEN = {
-        "thumb_cmc": 0.70, "thumb_abd": 0.80, "thumb_mcp": 0.85, "thumb_dip": 0.75,
-        "index_abd": 0.10, "middle_abd": 0.50, "ring_abd": 0.70, "pinky_abd": 0.85,
-        "index_mcp": 0.15, "middle_mcp": 0.15, "ring_mcp": 0.15, "pinky_mcp": 0.15,
-        "index_pip": 0.10, "middle_pip": 0.10, "ring_pip": 0.10, "pinky_pip": 0.10,
-        "wrist": 0.30,
-    }
-    GRASP = {
-        "thumb_cmc": 0.35, "thumb_abd": 0.55, "thumb_mcp": 0.20, "thumb_dip": 0.85,
-        "index_abd": 0.10, "middle_abd": 0.50, "ring_abd": 0.70, "pinky_abd": 0.85,
-        "index_mcp": 0.85, "middle_mcp": 0.85, "ring_mcp": 0.85, "pinky_mcp": 0.85,
-        "index_pip": 0.90, "middle_pip": 0.90, "ring_pip": 0.90, "pinky_pip": 0.90,
-        "wrist": 0.55,
-    }
+# 7 关节: thumb_abd, thumb_flex, thumb_mcp, index, middle, ring, pinky (度)
+class AeroGripper:
+    # 完全张开
+    OPEN = [0, 0, 0, 0, 0, 42, 0]
+    # 抓取 (四指弯曲包络)
+    GRASP = [0, 18, 52, 70, 58, 59, 53]
 
-    def __init__(self):
-        self.hand = OrcaHand()
+    def __init__(self, port=None):
+        self.hand = AeroHand(port=port)
 
     def connect(self):
-        ok, msg = self.hand.connect()
-        if not ok:
-            raise RuntimeError(f"灵巧手连接失败: {msg}")
-        print(f"[Orca] {msg}")
-        self.hand.init_joints()
+        print(f"[Aero] 已连接")
 
     def disconnect(self):
-        self.hand.disable_torque()
-        self.hand.disconnect()
+        self.hand.close()
+        print("[Aero] 已断开")
 
-    def _to_positions(self, fractions):
-        p = dict(self.hand.config.neutral_position)
-        for j, f in fractions.items():
-            if j in self.hand.config.joint_roms_dict:
-                lo, hi = self.hand.config.joint_roms_dict[j]
-                p[j] = lo + f * (hi - lo)
-        return OrcaJointPositions.from_dict(p)
+    def open(self):
+        self.hand.set_joint_positions(self.OPEN)
+        print("[Aero] 张开")
 
-    def open(self, steps=16):
-        self.hand.set_joint_positions(self._to_positions(self.OPEN), num_steps=steps, step_size=0.02)
-        print("[Orca] 张开")
-
-    def close(self, steps=24):
-        self.hand.set_joint_positions(self._to_positions(self.GRASP), num_steps=steps, step_size=0.02)
-        print("[Orca] 握拳抓取")
+    def close(self):
+        self.hand.set_joint_positions(self.GRASP)
+        print("[Aero] 抓取")
 
 
 # ============================================================
@@ -306,9 +288,13 @@ def main():
     arm.connect()
 
     # ── 3. 连接灵巧手 ──
-    print("\n[3/4] 连接 Orca 灵巧手 ...")
-    hand = OrcaGripper()
-    hand.connect()
+    if SKIP_HAND:
+        print("\n[3/4] 灵巧手 已屏蔽 (SKIP_HAND=True)")
+        hand = None
+    else:
+        print("\n[3/4] 连接 Aero Hand 灵巧手 ...")
+        hand = AeroGripper()
+        hand.connect()
 
     # ── 4. 手眼标定 ──
     print("\n[4/4] 手眼标定 ...")
@@ -485,7 +471,8 @@ def main():
             g_z = grasp_z * 1000 + offset_z
 
             # 1. 张开手
-            hand.open()
+            if not SKIP_HAND:
+                hand.open()
 
             # 2. 移动到目标侧上方 (从外侧进入，避开旁边盒子)
             arm.movel(fx, fy, a_z, speed=150)
@@ -496,8 +483,9 @@ def main():
             time.sleep(1.5)
 
             # 4. 抓取
-            hand.close()
-            time.sleep(1.5)
+            if not SKIP_HAND:
+                hand.close()
+                time.sleep(1.5)
 
             # 5. 抬升 (离开货架)
             lift_z = g_z + 100
@@ -509,7 +497,8 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        hand.disconnect()
+        if not SKIP_HAND:
+            hand.disconnect()
         arm.close()
         camera.release()
         print("\n已退出")

@@ -48,6 +48,7 @@ class RealSenseCamera:
         self.cap_color = None
         self.use_sdk = False
         self._connected = False
+        self._depth_scale = None  # RealSense depth_units (m/raw)
         # 相机内参（像素单位）
         self.fx = self.DEFAULT_FX
         self.fy = self.DEFAULT_FY
@@ -155,6 +156,10 @@ class RealSenseCamera:
             depth_img = None
             if depth_frame:
                 depth_img = np.asanyarray(depth_frame.get_data())
+                # 首次获取 depth_scale（单位: 米/raw_unit）
+                if self._depth_scale is None:
+                    self._depth_scale = depth_frame.get_units()
+                    print(f"[相机] depth_scale={self._depth_scale:.6f} (raw→m)")
 
             return color_img, depth_img
 
@@ -163,7 +168,7 @@ class RealSenseCamera:
             return None, None
 
     def get_depth_at(self, depth_img, cx, cy, box, radius=15):
-        """获取目标区域的中位数深度值（米）"""
+        """获取目标区域的中位数深度值（米），无效时返回 None"""
         if depth_img is None:
             return None
         x1, y1, x2, y2 = box
@@ -178,8 +183,13 @@ class RealSenseCamera:
         valid = roi[roi > 0]
         if len(valid) == 0:
             return None
-        # RealSense 深度单位：毫米 → 米
-        return float(np.median(valid)) / 1000.0
+        # 用实际 depth_scale 转换（fallback: /1000 即 1mm/unit）
+        scale = self._depth_scale or 0.001
+        depth_m = float(np.median(valid)) * scale
+        # D405 有效范围 ~0.1-2m，超范围视为无效
+        if depth_m < 0.05 or depth_m > 3.0:
+            return None
+        return depth_m
 
     def pixel_to_camera_3d(self, u: float, v: float, depth_m: float) -> Tuple[float, float, float]:
         """像素坐标 + 深度 → 相机坐标系 3D (X右 Y下 Z前, 单位米)"""
