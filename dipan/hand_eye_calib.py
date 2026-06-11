@@ -39,7 +39,7 @@ CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib_eye_in_hand.json")
 # ArUco 参数
 ARUCO_DICT = cv2.aruco.DICT_6X6_250
 MARKER_ID = 42
-MARKER_SIZE_MM = 50  # 打印出来的 marker 边长 (mm), 量一下然后改这里
+MARKER_SIZE_MM = 51  # 打印出来的 marker 边长 (mm), 量一下然后改这里
 
 
 # ============================================================
@@ -85,27 +85,63 @@ def flange_pose_to_4x4(pose):
     return T
 
 
-def dobot_command(sock, cmd):
-    if not cmd.endswith("\n"):
-        cmd += "\n"
-    sock.sendall(cmd.encode())
-    resp = b""
-    while True:
-        chunk = sock.recv(4096)
-        if not chunk:
-            break
-        resp += chunk
-        if b";" in chunk:
-            break
-    return resp.decode().strip()
+class DobotClient:
+    """带自动重连的 DOBOT TCP 客户端"""
+    def __init__(self, ip, port):
+        self.ip = ip
+        self.port = port
+        self.sock = None
+        self._connect()
 
+    def _connect(self):
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(5)
+        self.sock.connect((self.ip, self.port))
+        print(f"[DOBOT] 已连接 {self.ip}:{self.port}")
 
-def dobot_get_pose(sock):
-    resp = dobot_command(sock, "GetPose()")
-    nums = re.findall(r"[-+]?\d*\.?\d+", resp)
-    if len(nums) >= 6:
-        return tuple(map(float, nums[-6:]))
-    raise RuntimeError(f"无法解析位姿: {resp}")
+    def cmd(self, msg, timeout=3.0):
+        """发送命令, 如果管道断开则自动重连一次"""
+        if not msg.endswith("\n"):
+            msg += "\n"
+        for attempt in range(2):
+            try:
+                self.sock.sendall(msg.encode())
+                self.sock.settimeout(timeout)
+                resp = b""
+                while True:
+                    chunk = self.sock.recv(65536)
+                    if not chunk:
+                        break
+                    resp += chunk
+                    if b";" in chunk or b"}" in chunk:
+                        break
+                self.sock.settimeout(5)
+                return resp.decode().strip()
+            except (BrokenPipeError, ConnectionResetError, OSError) as e:
+                if attempt == 0:
+                    print(f"  [重连] {e}")
+                    self._connect()
+                else:
+                    raise
+
+    def get_pose(self):
+        resp = self.cmd("GetPose()")
+        nums = re.findall(r"[-+]?\d*\.?\d+", resp)
+        if len(nums) >= 6:
+            return tuple(map(float, nums[-6:]))
+        raise RuntimeError(f"无法解析位姿: {resp}")
+
+    def close(self):
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
 
 
 # ============================================================
@@ -160,13 +196,10 @@ def main():
     print(f"  3. 连接机械臂 + RealSense")
 
     # ── 连接 DOBOT ──
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(10)
-    sock.connect((DOBOT_IP, DOBOT_PORT))
-    dobot_command(sock, "EnableRobot()")
+    robot = DobotClient(DOBOT_IP, DOBOT_PORT)
+    robot.cmd("EnableRobot()")
     time.sleep(0.5)
-    dobot_command(sock, "StartDrag()")
-    print(f"\n[DOBOT] 已连接 + 拖动示教模式")
+    print(f"\n[DOBOT] 已使能 (请手动在机械臂上进入拖动示教模式)")
 
     # ── 相机 ──
     camera = RealSenseCamera(width=640, height=480, fps=30)
@@ -206,7 +239,7 @@ def main():
                 break
 
             # 读法兰位姿
-            pose = dobot_get_pose(sock)
+            pose = robot.get_pose()
             A = flange_pose_to_4x4(pose)
             print(f"  法兰: ({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f})mm "
                   f"rpy=({pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
@@ -226,14 +259,15 @@ def main():
             found = False
             if ids is not None and MARKER_ID in ids:
                 idx = list(ids.flatten()).index(MARKER_ID)
-                rvec, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(
-                    [corners[idx]], MARKER_SIZE_MM / 1000, camera_matrix, dist_coeffs
-                )
-                if rvec is not None:
-                    R, _ = cv2.Rodrigues(rvec[0])
+                # estimatePoseSingleMarkers 在 OpenCV 4.7+ 已移除, 改用 solvePnP
+                s = MARKER_SIZE_MM / 1000.0 / 2
+                obj_pts = np.array([[-s, s, 0], [s, s, 0], [s, -s, 0], [-s, -s, 0]], dtype=np.float32)
+                ok, rvec, tvec = cv2.solvePnP(obj_pts, corners[idx][0], camera_matrix, dist_coeffs)
+                if ok:
+                    R, _ = cv2.Rodrigues(rvec)
                     B = np.eye(4)
                     B[:3, :3] = R
-                    B[:3, 3] = tvec[0]
+                    B[:3, 3] = tvec.flatten()
                     found = True
 
             if not found:
@@ -247,9 +281,8 @@ def main():
             print(f"    平移 t=({B[0,3]:.3f},{B[1,3]:.3f},{B[2,3]:.3f})m")
 
     finally:
-        dobot_command(sock, "StopDrag()")
-        dobot_command(sock, "DisableRobot()")
-        sock.close()
+        robot.cmd("DisableRobot()")
+        robot.close()
         camera.release()
 
     if len(A_list) < 4:

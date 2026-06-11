@@ -33,7 +33,7 @@ DOBOT_IP = os.getenv("DOBOT_IP", "192.168.1.6")
 DOBOT_PORT = 29999
 
 HAND_LENGTH = 0.35      # 法兰 → 指尖 (米)
-HAND_WEIGHT = 1.2       # 末端重量 (kg)
+HAND_WEIGHT = 1.4       # 末端重量 (kg), 手 1.2 + 连接件 0.2
 HAND_COG_Z = 0.10       # 重心距法兰 (米)
 HAND_W_Y = 0.095        # 手 Y 方向宽度 (米)
 HAND_W_X = 0.08         # 手 X 方向宽度 (米)
@@ -54,7 +54,7 @@ class DobotArm:
 
     def connect(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.settimeout(10)
+        self.sock.settimeout(3)
         self.sock.connect((self.ip, self.port))
         print(f"[DOBOT] 已连接 {self.ip}:{self.port}")
         # 设置负载
@@ -67,9 +67,7 @@ class DobotArm:
         # 使能
         self.send("EnableRobot()")
         time.sleep(0.5)
-        # 拖动示教（零重力）
-        self.send("StartDrag()")
-        print("[DOBOT] 已使能 + 进入拖动示教模式")
+        print("[DOBOT] 已使能 (请手动进入拖动示教模式)")
 
     def send(self, cmd: str) -> str:
         if not cmd.endswith("\n"):
@@ -77,11 +75,14 @@ class DobotArm:
         self.sock.sendall(cmd.encode())
         resp = b""
         while True:
-            chunk = self.sock.recv(4096)
-            if not chunk:
-                break
-            resp += chunk
-            if b";" in chunk:
+            try:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    break
+                resp += chunk
+                if b";" in chunk or b"}" in chunk:
+                    break
+            except socket.timeout:
                 break
         return resp.decode().strip()
 
@@ -100,7 +101,6 @@ class DobotArm:
         print(f"  <<< {resp}")
 
     def close(self):
-        self.send("StopDrag()")
         self.send("DisableRobot()")
         self.sock.close()
         print("[DOBOT] 已断开")
