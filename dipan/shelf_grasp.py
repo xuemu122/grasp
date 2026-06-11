@@ -138,7 +138,7 @@ class HandEyeTransformer:
         y = (v - self.cy) * depth_m / self.fy
         return np.array([x, y, depth_m], dtype=np.float64)
 
-    def camera_to_robot(self, p_cam, flange_pose=None):
+    def camera_to_robot(self, p_cam, flange_pose=None, debug=False):
         """相机坐标系 → 机器人基座 (米)
         有标定: base←flange * T_flange→cam * p_cam
         无标定: 近似同轴
@@ -154,7 +154,20 @@ class HandEyeTransformer:
             T_base_flange[:3, 3] = [fx_m, fy_m, fz_m]
             # base←flange * flange←cam * cam←point
             p_cam_h = np.append(p_cam, 1.0)
+
+            # 中间结果：相机在世界坐标系下的位置
+            cam_w = T_base_flange @ self.T_flange_to_cam @ np.array([0, 0, 0, 1.0])
+
             p_w = T_base_flange @ self.T_flange_to_cam @ p_cam_h
+
+            if debug:
+                print(f"\n  [DEBUG 手眼变换]")
+                print(f"    法兰(基座): ({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f})mm  rpy=({pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
+                print(f"    T_flange→cam (mm): ({self.T_flange_to_cam[0,3]*1000:.0f}, {self.T_flange_to_cam[1,3]*1000:.0f}, {self.T_flange_to_cam[2,3]*1000:.0f})")
+                print(f"    相机在世界: ({cam_w[0]:.3f},{cam_w[1]:.3f},{cam_w[2]:.3f})m")
+                print(f"    盒子在相机: ({p_cam[0]:.3f},{p_cam[1]:.3f},{p_cam[2]:.3f})m")
+                print(f"    盒子在世界: ({p_w[0]:.3f},{p_w[1]:.3f},{p_w[2]:.3f})m")
+
             return p_w[:3]
         else:
             # 无标定 fallback: 同轴近似
@@ -163,6 +176,8 @@ class HandEyeTransformer:
             x_w = fx_m + cos_rz * p_cam[2] - sin_rz * p_cam[0]
             y_w = fy_m + sin_rz * p_cam[2] + cos_rz * p_cam[0]
             z_w = fz_m - p_cam[1]
+            if debug:
+                print(f"\n  [DEBUG 无标定] 法兰:({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f}) 盒({x_w:.3f},{y_w:.3f},{z_w:.3f})m")
             return np.array([x_w, y_w, z_w])
 
     @staticmethod
@@ -268,7 +283,7 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4):
 
     # 像素 → 相机 3D → 机器人基座
     p_cam = transformer.pixel_to_camera(edge_u, edge_v, depth)
-    p_robot = transformer.camera_to_robot(p_cam, flange_pose)
+    p_robot = transformer.camera_to_robot(p_cam, flange_pose, debug=True)
     return p_robot[0], p_robot[1], p_robot[2], mode
 
 
