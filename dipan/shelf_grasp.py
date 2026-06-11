@@ -12,6 +12,7 @@ import time
 import socket
 import re
 import json
+import cv2
 import numpy as np
 from typing import List, Tuple, Optional
 
@@ -378,6 +379,10 @@ def main():
             detections = locator.process_frame(best_img, best_depth)
             if not detections:
                 print("未检测到盒子")
+                # 保存原图排查
+                cv2_path = "/tmp/shelf_no_detection.jpg"
+                cv2.imwrite(cv2_path, best_img)
+                print(f"  → 原图已保存: {cv2_path}")
                 continue
 
             # ── 选最靠边的盒子 ──
@@ -387,6 +392,29 @@ def main():
                 continue
             print(f"\n=== 选中: {edge}侧盒子 bbox=({target.bbox[0]},{target.bbox[1]})-({target.bbox[2]},{target.bbox[3]}) "
                   f"depth={target.depth_m:.3f}m ===")
+
+            # ── 画检测框并保存 ──
+            viz = best_img.copy()
+            for d in detections:
+                col = (0, 255, 0)
+                if d is target:
+                    col = (0, 0, 255)  # 选中的用红色
+                cv2.rectangle(viz, (int(d.bbox[0]), int(d.bbox[1])),
+                              (int(d.bbox[2]), int(d.bbox[3])), col, 2)
+                cv2.putText(viz, f"{d.label or '?'} {d.depth_m:.2f}m",
+                            (int(d.bbox[0]), int(d.bbox[1]) - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
+                # 画抓取点 (上边缘/侧边缘)
+                if d is target:
+                    x1, y1, x2, y2 = d.bbox
+                    gx = int((x1 + x2) / 2)
+                    gy = int(y1)
+                    cv2.circle(viz, (gx, gy), 6, (0, 255, 255), -1)
+                    cv2.putText(viz, "GRIP", (gx + 8, gy - 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+            cv2_path = "/tmp/shelf_detection.jpg"
+            cv2.imwrite(cv2_path, viz)
+            print(f"  → 检测画面已保存: {cv2_path}  (绿框=检测, 红框=目标, 黄点=抓取点)")
 
             # ── 计算抓取位姿 ──
             wx, wy, wz, grip_mode = plan_edge_grasp(target, edge, transformer, flange_pose, fx=camera.fx)
