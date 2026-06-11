@@ -145,18 +145,12 @@ class HandEyeTransformer:
         """
         pose = flange_pose or self.flange_pose
         fx_m, fy_m, fz_m = pose[0]/1000, pose[1]/1000, pose[2]/1000
-        rz = np.deg2rad(pose[5])
-        cos_rz, sin_rz = np.cos(rz), np.sin(rz)
 
         # 有标定文件时用精确变换
         if not np.allclose(self.T_flange_to_cam, np.eye(4)):
-            # 法兰→基座 (用 pose 构造)
+            # 法兰→基座 (用完整 RPY pose 构造)
             T_base_flange = np.eye(4)
-            T_base_flange[:3, :3] = np.array([
-                [cos_rz, -sin_rz, 0],
-                [sin_rz,  cos_rz, 0],
-                [0,       0,      1]
-            ])
+            T_base_flange[:3, :3] = self._rpy_to_rot(pose[3], pose[4], pose[5])
             T_base_flange[:3, 3] = [fx_m, fy_m, fz_m]
             # base←flange * flange←cam * cam←point
             p_cam_h = np.append(p_cam, 1.0)
@@ -164,10 +158,27 @@ class HandEyeTransformer:
             return p_w[:3]
         else:
             # 无标定 fallback: 同轴近似
+            rz = np.deg2rad(pose[5])
+            cos_rz, sin_rz = np.cos(rz), np.sin(rz)
             x_w = fx_m + cos_rz * p_cam[2] - sin_rz * p_cam[0]
             y_w = fy_m + sin_rz * p_cam[2] + cos_rz * p_cam[0]
             z_w = fz_m - p_cam[1]
             return np.array([x_w, y_w, z_w])
+
+    @staticmethod
+    def _rpy_to_rot(rx_deg, ry_deg, rz_deg):
+        """RPY (度, extrinsic ZYX) → 3×3 旋转矩阵"""
+        rx, ry, rz = np.deg2rad([rx_deg, ry_deg, rz_deg])
+        Rz = np.array([[np.cos(rz), -np.sin(rz), 0],
+                        [np.sin(rz),  np.cos(rz), 0],
+                        [0, 0, 1]])
+        Ry = np.array([[ np.cos(ry), 0, np.sin(ry)],
+                        [0, 1, 0],
+                        [-np.sin(ry), 0, np.cos(ry)]])
+        Rx = np.array([[1, 0, 0],
+                        [0, np.cos(rx), -np.sin(rx)],
+                        [0, np.sin(rx),  np.cos(rx)]])
+        return Rz @ Ry @ Rx
 
 
 # ============================================================
