@@ -383,8 +383,8 @@ def main():
     print("\n[1/4] 初始化相机 + YOLO ...")
     camera = RealSenseCamera(width=640, height=480, fps=30)
     locator = MedicineLocatorSystem(
-        model_path="/home/nvidia/grasp/识别1/best.pt",
-        mapping_path="/home/nvidia/grasp/识别1/shelf_mapping.yaml",
+        model_path="/home/nvidia/grasp/识别/best.pt",
+        mapping_path="/home/nvidia/grasp/识别/shelf_mapping.yaml",
         conf_threshold=0.5,
         use_ocr=False,
     )
