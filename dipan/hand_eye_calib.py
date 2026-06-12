@@ -198,9 +198,13 @@ def main():
 
     # ── 连接 DOBOT ──
     robot = DobotClient(DOBOT_IP, DOBOT_PORT)
+    robot.cmd("ClearError()")
+    robot.cmd("RequestControl()")
+    robot.cmd("PowerOn()")
+    print(f"\n[DOBOT] 上电中 (等待 10 秒)...")
+    time.sleep(10)
     robot.cmd("EnableRobot()")
-    time.sleep(0.5)
-    print(f"\n[DOBOT] 已使能 (请手动在机械臂上进入拖动示教模式)")
+    print(f"[DOBOT] 已使能")
 
     # ── 相机 ──
     camera = RealSenseCamera(width=640, height=480, fps=30)
