@@ -39,7 +39,7 @@ CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib_eye_in_hand.json")
 # ArUco 参数
 ARUCO_DICT = cv2.aruco.DICT_6X6_250
 MARKER_ID = 42
-MARKER_SIZE_MM = 44  # 打印后量一下 marker 黑框实际边长 (mm)，改这里
+MARKER_SIZE_MM = 53  # 打印后量一下 marker 黑框实际边长 (mm)，改这里
 
 
 # ============================================================
@@ -150,9 +150,9 @@ class DobotClient:
 # ============================================================
 def hand_eye_calib(A_list, B_list):
     """求解 AX=XB (OpenCV Tsai 方法)
-    A_list: [4x4] base→flange (每帧法兰在基座标系下)
-    B_list: [4x4] camera→marker (每帧 marker 在相机坐标系下)
-    返回: X (4x4) flange→camera (相机在法兰坐标系下)
+    A_list: [4x4] T_base←flange (法兰位姿, gripper→base)
+    B_list: [4x4] T_marker←camera 即 solvePnP 返回值 (target→cam)
+    返回: X (4x4) T_flange←camera (相机在法兰坐标系下)
     """
     R_gripper2base = []   # flange → base
     t_gripper2base = []
@@ -160,12 +160,12 @@ def hand_eye_calib(A_list, B_list):
     t_target2cam = []
 
     for A, B in zip(A_list, B_list):
-        A_inv = np.linalg.inv(A)       # base→flange → flange→base
-        R_gripper2base.append(A_inv[:3, :3])
-        t_gripper2base.append(A_inv[:3, 3])
-        B_inv = np.linalg.inv(B)       # camera→marker → marker→camera
-        R_target2cam.append(B_inv[:3, :3])
-        t_target2cam.append(B_inv[:3, 3])
+        # A = T_base←flange (gripper→base), 直接就是 OpenCV 要的 gripper2base
+        R_gripper2base.append(A[:3, :3])
+        t_gripper2base.append(A[:3, 3])
+        # B = T_marker→camera (target→cam), 直接就是 OpenCV 要的 target2cam
+        R_target2cam.append(B[:3, :3])
+        t_target2cam.append(B[:3, 3])
 
     # OpenCV 返回: camera → flange (相机在法兰坐标系下)
     R_cam2gripper, t_cam2gripper = cv2.calibrateHandEye(
@@ -264,10 +264,11 @@ def main():
             found = False
             if ids is not None and MARKER_ID in ids:
                 idx = list(ids.flatten()).index(MARKER_ID)
-                # estimatePoseSingleMarkers 在 OpenCV 4.7+ 已移除, 改用 solvePnP
+                # ArUco 角点顺序: 左上→右上→右下→左下 (OpenCV 约定)
                 s = MARKER_SIZE_MM / 1000.0 / 2
-                obj_pts = np.array([[-s, s, 0], [s, s, 0], [s, -s, 0], [-s, -s, 0]], dtype=np.float32)
+                obj_pts = np.array([[-s, -s, 0], [s, -s, 0], [s, s, 0], [-s, s, 0]], dtype=np.float32)
                 ok, rvec, tvec = cv2.solvePnP(obj_pts, corners[idx][0], camera_matrix, dist_coeffs)
+                # solvePnP 返回 T_marker→camera (marker 在相机系下的位姿)
                 if ok:
                     R, _ = cv2.Rodrigues(rvec)
                     B = np.eye(4)

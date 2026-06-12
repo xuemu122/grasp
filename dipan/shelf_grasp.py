@@ -191,8 +191,7 @@ CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib_eye_in_hand.json")
 
 class HandEyeTransformer:
     # 手动覆盖相机在法兰系的位姿 (mm)。设为 None 则使用标定文件。
-    # [-130, 0, 0] = 相机在法兰 X=-130mm, 相机光轴∥法兰Z
-    MANUAL_OFFSET_MM = [-130, 0, 0]
+    MANUAL_OFFSET_MM = None   # 使用 calib_eye_in_hand.json
 
     def __init__(self, fx=FX, fy=FY, cx=CX, cy=CY):
         self.fx, self.fy = fx, fy
@@ -563,7 +562,7 @@ def main():
             fz_dir = R_f[:, 2]   # 法兰+Z → 手指方向 (世界系)
 
             # ── 指尖世界偏移 (基座系, 米): -X=前 +Y=左 +Z=上 ──
-            GRASP_OFFSET_M = (-0.20, -0.05, -0.02)  # (前20cm=-X, 左5cm=+Y, 下2cm=-Z)
+            GRASP_OFFSET_M = (0.0, 0.0, 0.0)  # 标定到位后清零，偏差用 wasd 微调
             fingertip_w = np.array([wx, wy, wz]) + np.array(GRASP_OFFSET_M)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
 
