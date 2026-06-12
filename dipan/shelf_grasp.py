@@ -383,8 +383,8 @@ def main():
     print("\n[1/4] 初始化相机 + YOLO ...")
     camera = RealSenseCamera(width=640, height=480, fps=30)
     locator = MedicineLocatorSystem(
-        model_path="/home/nvidia/grasp/识别/best.pt",
-        mapping_path="/home/nvidia/grasp/识别/shelf_mapping.yaml",
+        model_path="/home/nvidia/grasp/识别1/best.pt",
+        mapping_path="/home/nvidia/grasp/识别1/shelf_mapping.yaml",
         conf_threshold=0.5,
         use_ocr=False,
     )
@@ -563,7 +563,7 @@ def main():
             fz_dir = R_f[:, 2]   # 法兰+Z 指向指尖方向 (世界系)
             fy_dir = R_f[:, 1]   # 法兰+Y (手宽方向)
 
-            fingertip_w = np.array([wx, wy, wz])
+            fingertip_w = np.array([wx, wy, wz + 0.06])  # +6cm 手工补偿标定Z偏
             flange_pt  = fingertip_w - HAND_LENGTH * fz_dir   # 法兰 = 指尖后退手长
 
             # 侧边抓: 沿法兰Y偏移 (right → +Y, left → -Y)

@@ -1,5 +1,5 @@
 """
-RealSense D405 深度相机 + YOLO 药品识别与货架定位系统 + EasyOCR 文字识别
+RealSense D405 深度相机 + YOLO 零售商品检测与货架定位系统 + EasyOCR 文字识别
 """
 
 import cv2
@@ -186,7 +186,7 @@ class RealSenseCamera:
         # 用实际 depth_scale 转换（fallback: /1000 即 1mm/unit）
         scale = self._depth_scale or 0.001
         depth_m = float(np.median(valid)) * scale
-        # D405 有效范围 ~0.1-2m，超范围视为无效
+        # D405 有效范围 ~0.05-3m，超范围视为无效
         if depth_m < 0.05 or depth_m > 3.0:
             return None
         return depth_m
@@ -225,6 +225,7 @@ class ShelfPosition:
 
 @dataclass
 class DetectionResult:
+    class_id: int
     class_name: str
     confidence: float
     bbox: Tuple[int, int, int, int]
@@ -232,6 +233,14 @@ class DetectionResult:
     depth_m: Optional[float]
     camera_xyz: Optional[Tuple[float, float, float]] = None  # 相机坐标系3D (米)
     shelf_pos: Optional[ShelfPosition] = None
+    product_id: Optional[str] = None       # 商品库ID / SKU ID
+    product_name: Optional[str] = None     # OCR 匹配到的商品标准名
+    category: Optional[str] = None         # 商品类别，如 drink / snack / medicine
+    package_type: Optional[str] = None     # 包装形态，如 box / bottle / can / bag
+    medicine_name: Optional[str] = None    # 兼容旧药品抓取链路，等同 product_name
+    mapping_source: str = "none"           # ocr / yolo_fallback / none
+    match_confidence: float = 0.0          # 预留给OCR/检索/条码融合
+    match_sources: Tuple[str, ...] = ()    # 预留: ocr / barcode / visual_retrieval
     ocr_text: Optional[str] = None  # OCR 识别的文字
 
 
@@ -239,16 +248,88 @@ class DetectionResult:
 # 映射表管理器
 # ============================================================
 
-class ShelfMappingManager:
-    def __init__(self, config_path: str = "shelf_mapping.yaml"):
+class ProductMappingManager:
+    def __init__(self, config_path: str = "shelf_mapping.yaml",
+                 dataset_config_path: Optional[str] = None):
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = yaml.safe_load(f)
-        self.medicine_mapping = self.config["medicine_mapping"]
+        # product_catalog: product_id -> aliases + shelf position + category/package metadata.
+        # 兼容旧配置：medicine_catalog 的 key 是药品标准名，这里自动转为商品条目。
+        self.product_catalog = self.config.get("product_catalog")
+        if self.product_catalog is None:
+            self.product_catalog = {
+                key: {"name": key, **value}
+                for key, value in self.config.get("medicine_catalog", {}).items()
+            }
+        self.medicine_catalog = self.product_catalog
+        self.yolo_fallback_mapping = self.config.get(
+            "yolo_fallback_mapping",
+            self.config.get("medicine_mapping", {}),
+        )
+        self.category_fallback_mapping = self.config.get("category_fallback_mapping", {})
+        matching_cfg = self.config.get("matching", {})
+        self.min_ocr_alias_chars = int(matching_cfg.get("min_ocr_alias_chars", 3))
+        self.prefer_ocr_over_yolo = bool(matching_cfg.get("prefer_ocr_over_yolo", False))
+        self.medicine_mapping = self.yolo_fallback_mapping
+        self.dataset_classes = self._load_dataset_classes(dataset_config_path)
         self.shelves = self.config["shelves"]
-        print(f"[映射表] 已加载 {len(self.medicine_mapping)} 种药品映射")
+        print(
+            f"[映射表] 已加载 {len(self.product_catalog)} 种OCR商品映射，"
+            f"{len(self.yolo_fallback_mapping)} 个YOLO兜底映射，"
+            f"{len(self.category_fallback_mapping)} 个品类兜底映射，"
+            f"{len(self.dataset_classes)} 个数据集类别"
+        )
 
-    def get_position(self, medicine_name: str) -> Optional[ShelfPosition]:
-        info = self.medicine_mapping.get(medicine_name)
+    @staticmethod
+    def _load_dataset_classes(dataset_config_path: Optional[str]) -> Dict[int, dict]:
+        if dataset_config_path:
+            path = Path(dataset_config_path)
+        else:
+            base_dir = Path(__file__).resolve().parent
+            candidates = [
+                base_dir.parent / "dataset" / "yolo_rpc_test" / "dataset.yaml",
+                base_dir.parent / "yolo_rpc_test" / "dataset.yaml",
+                base_dir / "madata.yaml",
+            ]
+            path = next((p for p in candidates if p.exists()), None)
+            if path is None:
+                return {}
+        if not path.exists():
+            return {}
+        with open(path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        names = cfg.get("names", {})
+        if isinstance(names, list):
+            items = enumerate(names)
+        elif isinstance(names, dict):
+            items = ((int(k), v) for k, v in names.items())
+        else:
+            return {}
+
+        classes = {}
+        for class_id, raw_name in items:
+            category = str(raw_name).strip()
+            classes[class_id] = {
+                "product_id": f"rpc_{class_id:03d}",
+                "product_name": f"{category} #{class_id + 1}",
+                "category": category,
+                "package_type": None,
+            }
+        return classes
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """统一 OCR 文本格式，便于药名/别名做宽松匹配。"""
+        if not text:
+            return ""
+        drop_chars = " \t\r\n|,，.。:：;；()（）[]【】{}<>《》\"'`"
+        normalized = text.lower()
+        for ch in drop_chars:
+            normalized = normalized.replace(ch, "")
+        return normalized
+
+    @staticmethod
+    def _to_position(info: dict) -> ShelfPosition:
         if info is None:
             return None
         return ShelfPosition(
@@ -258,6 +339,133 @@ class ShelfMappingManager:
             horizontal_offset=info["horizontal_offset"],
             description=info.get("description", ""),
         )
+
+    def _get_catalog_position(self, product_id: str) -> Optional[ShelfPosition]:
+        entry = self.product_catalog.get(product_id)
+        if not entry:
+            return None
+        return self._to_position(entry)
+
+    def match_product_from_ocr(self, ocr_text: str) -> Optional[Tuple[str, dict, float]]:
+        """用 OCR 文本匹配标准商品名，支持别名和包含关系。"""
+        norm_ocr = self._normalize_text(ocr_text)
+        if not norm_ocr:
+            return None
+
+        best_product_id = None
+        best_entry = None
+        best_len = 0
+        for product_id, entry in self.product_catalog.items():
+            product_name = entry.get("name", product_id)
+            aliases = [product_name, product_id] + list(entry.get("aliases", []))
+            for alias in aliases:
+                norm_alias = self._normalize_text(alias)
+                if not norm_alias:
+                    continue
+                # 避免用 "500ml"、"vc" 这类短/弱特征误命中大量商品。
+                if len(norm_alias) < self.min_ocr_alias_chars and norm_alias != self._normalize_text(product_name):
+                    continue
+                # OCR 往往会多字/漏字，先用包含关系做轻量匹配。
+                if norm_alias in norm_ocr or norm_ocr in norm_alias:
+                    if len(norm_alias) > best_len:
+                        best_product_id = product_id
+                        best_entry = entry
+                        best_len = len(norm_alias)
+        if best_product_id is None:
+            return None
+        confidence = min(1.0, best_len / max(len(norm_ocr), 1))
+        return best_product_id, best_entry, confidence
+
+    def match_medicine_from_ocr(self, ocr_text: str) -> Optional[str]:
+        """兼容旧接口：返回 OCR 命中的标准商品名。"""
+        match = self.match_product_from_ocr(ocr_text)
+        if not match:
+            return None
+        _, entry, _ = match
+        return entry.get("name")
+
+    def resolve_position(self, ocr_text: Optional[str], class_name: str,
+                         class_id: Optional[int] = None):
+        """融合 OCR 与 YOLO。
+
+        对 RPC 这类 200 类 SKU 数据集，YOLO class_id 是主要商品身份；
+        OCR 默认只作为辅助，除非配置 prefer_ocr_over_yolo=true。
+        """
+        dataset_entry = self.dataset_classes.get(class_id) if class_id is not None else None
+        match = self.match_product_from_ocr(ocr_text or "")
+        if match and (self.prefer_ocr_over_yolo or dataset_entry is None):
+            product_id, entry, confidence = match
+            product_name = entry.get("name", product_id)
+            return {
+                "product_id": product_id,
+                "product_name": product_name,
+                "medicine_name": product_name,
+                "category": entry.get("category"),
+                "package_type": entry.get("package_type"),
+                "shelf_pos": self._get_catalog_position(product_id),
+                "mapping_source": "ocr",
+                "match_confidence": confidence,
+                "match_sources": ("ocr",),
+            }
+
+        fallback = self.get_position(class_name)
+        if dataset_entry:
+            catalog_entry = self.product_catalog.get(dataset_entry["product_id"], {})
+            product_name = catalog_entry.get("name", dataset_entry["product_name"])
+            category = catalog_entry.get("category", dataset_entry["category"])
+            category_fallback = self.get_category_position(dataset_entry["category"])
+            return {
+                "product_id": dataset_entry["product_id"],
+                "product_name": product_name,
+                "medicine_name": product_name,
+                "category": category,
+                "package_type": catalog_entry.get("package_type", dataset_entry["package_type"]),
+                "shelf_pos": self._get_catalog_position(dataset_entry["product_id"]) or fallback or category_fallback,
+                "mapping_source": "yolo_class",
+                "match_confidence": 1.0,
+                "match_sources": ("yolo",),
+            }
+
+        if fallback:
+            return {
+                "product_id": None,
+                "product_name": None,
+                "medicine_name": None,
+                "category": None,
+                "package_type": class_name,
+                "shelf_pos": fallback,
+                "mapping_source": "yolo_fallback",
+                "match_confidence": 0.0,
+                "match_sources": (),
+            }
+
+        return {
+            "product_id": None,
+            "product_name": None,
+            "medicine_name": None,
+            "category": None,
+            "package_type": class_name,
+            "shelf_pos": None,
+            "mapping_source": "none",
+            "match_confidence": 0.0,
+            "match_sources": (),
+        }
+
+    def get_position(self, class_name: str) -> Optional[ShelfPosition]:
+        """按 YOLO 类别名取兜底货架位置，保留旧接口兼容。"""
+        info = self.yolo_fallback_mapping.get(class_name)
+        return self._to_position(info) if info else None
+
+    def get_category_position(self, category: Optional[str]) -> Optional[ShelfPosition]:
+        """按 RPC 数据集大类取货架兜底位置。"""
+        if not category:
+            return None
+        info = self.category_fallback_mapping.get(category)
+        return self._to_position(info) if info else None
+
+
+# 兼容旧名称，避免其他脚本导入 ShelfMappingManager 时失效。
+ShelfMappingManager = ProductMappingManager
 
 
 # ============================================================
@@ -331,6 +539,8 @@ def draw_detection(frame, result, is_selected=False):
         lines.insert(0, ">>> 已选中 <<<")
     if result.shelf_pos:
         sp = result.shelf_pos
+        if result.product_name:
+            lines.append(f"商品:{result.product_name}")
         lines.extend([
             f"货架:{sp.shelf_id} 第{sp.layer}层",
             f"高度:{sp.layer_height_m}m 偏移:{sp.horizontal_offset}m",
@@ -363,7 +573,7 @@ def draw_info_panel(frame, detections, fps, camera_mode, light_info=None):
     h, w = frame.shape[:2]
     panel = np.full((h, panel_w, 3), 30, dtype=np.uint8)
 
-    cv2.putText(panel, "药品定位系统 + OCR", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 1)
+    cv2.putText(panel, "零售商品定位系统 + OCR", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 1)
     cv2.putText(panel, f"模式: {camera_mode}", (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 200), 1)
     cv2.putText(panel, f"FPS: {fps:.1f}", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 200), 1)
     cv2.putText(panel, f"数量: {len(detections)}", (10, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 200), 1)
@@ -389,7 +599,8 @@ def draw_info_panel(frame, detections, fps, camera_mode, light_info=None):
     for i, det in enumerate(detections[:5]):  # 最多显示5个
         sp = det.shelf_pos
         if sp:
-            text = f"[{i+1}] {det.class_name} -> {sp.shelf_id}-L{sp.layer}({sp.layer_height_m}m)"
+            name = det.product_name or det.class_name
+            text = f"[{i+1}] {name} -> {sp.shelf_id}-L{sp.layer}({sp.layer_height_m}m)"
             color = (0, 255, 120)
         else:
             text = f"[{i+1}] {det.class_name} 未映射"
@@ -422,10 +633,11 @@ def draw_info_panel(frame, detections, fps, camera_mode, light_info=None):
 # 主系统
 # ============================================================
 
-class MedicineLocatorSystem:
+class RetailProductLocatorSystem:
     def __init__(self,
-                 model_path: str = "runs/detect/medicine_final/weights/best.pt",
+                 model_path: str = "runs/detect/retail_product/weights/best.pt",
                  mapping_path: str = "shelf_mapping.yaml",
+                 dataset_config_path: Optional[str] = None,
                  conf_threshold: float = 0.4,
                  use_ocr: bool = True,
                  ocr_interval: int = 90):
@@ -439,7 +651,7 @@ class MedicineLocatorSystem:
         self.selected_index = None     # 鼠标点击选中的框索引
         self.detections = []           # 当前帧检测结果（供鼠标回调使用）
 
-        self.mapping_mgr = ShelfMappingManager(mapping_path)
+        self.mapping_mgr = ProductMappingManager(mapping_path, dataset_config_path=dataset_config_path)
         self.camera = None
 
         # OCR — 主进程序初始化 EasyOCR 实例（复用，避免重复加载模型）
@@ -447,6 +659,8 @@ class MedicineLocatorSystem:
         self.frame_counter = 0
         self.ocr_working = True
         self.ocr_model = None             # EasyOCR Reader 实例
+        self.ocr_cache = []               # 跨帧 OCR 缓存，减少非 OCR 帧结果闪烁
+        self.ocr_cache_ttl_frames = max(ocr_interval * 4, 120)
 
         self.prev_time = time.time()
         self.fps = 0.0
@@ -465,7 +679,7 @@ class MedicineLocatorSystem:
             self.ocr_working = False
 
     def _mouse_callback(self, event, x, y, flags, param):
-        """鼠标点击选择目标药盒"""
+        """鼠标点击选择目标商品"""
         if event != cv2.EVENT_LBUTTONDOWN:
             return
         # 坐标从 2x 显示画面缩回 640x480
@@ -491,6 +705,43 @@ class MedicineLocatorSystem:
 
     def init_camera(self, device_id: int = 0):
         self.camera = RealSenseCamera(width=640, height=480, fps=30, device_id=device_id)
+
+    @staticmethod
+    def _bbox_iou(a, b) -> float:
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+        inter = iw * ih
+        area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+        area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+        union = area_a + area_b - inter
+        return inter / union if union > 0 else 0.0
+
+    def _lookup_cached_ocr(self, class_id: int, bbox) -> Optional[str]:
+        best = None
+        best_iou = 0.0
+        min_frame = self.frame_counter - self.ocr_cache_ttl_frames
+        self.ocr_cache = [item for item in self.ocr_cache if item["frame"] >= min_frame]
+        for item in self.ocr_cache:
+            if item["class_id"] != class_id:
+                continue
+            iou = self._bbox_iou(item["bbox"], bbox)
+            if iou > best_iou:
+                best = item
+                best_iou = iou
+        return best["ocr_text"] if best and best_iou >= 0.5 else None
+
+    def _remember_ocr(self, class_id: int, bbox, ocr_text: str):
+        if not ocr_text:
+            return
+        self.ocr_cache.append({
+            "class_id": class_id,
+            "bbox": bbox,
+            "ocr_text": ocr_text,
+            "frame": self.frame_counter,
+        })
 
     def process_frame(self, color_img, depth_img=None):
         """处理单帧"""
@@ -525,11 +776,9 @@ class MedicineLocatorSystem:
             if self.camera and depth_m is not None:
                 camera_xyz = self.camera.pixel_to_camera_3d(cx, cy, depth_m)
 
-            # 映射
-            shelf_pos = self.mapping_mgr.get_position(class_name)
-
             # OCR：逐框裁剪 + CLAHE + 2x 放大 + EasyOCR 识别
             ocr_text = None
+            bbox = (x1, y1, x2, y2)
             if self.use_ocr and self.ocr_working and do_ocr_this_frame and self.ocr_model is not None:
                 padding = 10
                 x1c = max(x1 - padding, 0); y1c = max(y1 - padding, 0)
@@ -556,17 +805,37 @@ class MedicineLocatorSystem:
                         )
                         texts = [r[1].strip() for r in results if r[1].strip()]
                         ocr_text = "|".join(texts) if texts else None
+                        if ocr_text:
+                            self._remember_ocr(cls_id, bbox, ocr_text)
                     except Exception:
                         pass
+            if ocr_text is None:
+                ocr_text = self._lookup_cached_ocr(cls_id, bbox)
+
+            # 映射：优先 OCR 商品名匹配；OCR 无结果/未命中时用 YOLO 类别兜底
+            product_match = self.mapping_mgr.resolve_position(
+                ocr_text=ocr_text,
+                class_name=class_name,
+                class_id=cls_id,
+            )
 
             results_list.append(DetectionResult(
+                class_id=cls_id,
                 class_name=class_name,
                 confidence=conf_score,
                 bbox=(x1, y1, x2, y2),
                 center_pixel=(cx, cy),
                 depth_m=depth_m,
                 camera_xyz=camera_xyz,
-                shelf_pos=shelf_pos,
+                shelf_pos=product_match["shelf_pos"],
+                product_id=product_match["product_id"],
+                product_name=product_match["product_name"],
+                category=product_match["category"],
+                package_type=product_match["package_type"],
+                medicine_name=product_match["medicine_name"],
+                mapping_source=product_match["mapping_source"],
+                match_confidence=product_match["match_confidence"],
+                match_sources=product_match["match_sources"],
                 ocr_text=ocr_text,
             ))
 
@@ -585,12 +854,12 @@ class MedicineLocatorSystem:
         results_dir.mkdir(exist_ok=True)
 
         print("\n" + "=" * 50)
-        print("  药品识别与货架定位系统")
+        print("  零售商品识别与货架定位系统")
         print("  按 'q' 退出  |  按 's' 截图  |  点击画面选目标")
         print("=" * 50 + "\n")
 
-        cv2.namedWindow("Medicine Locator")
-        cv2.setMouseCallback("Medicine Locator", self._mouse_callback)
+        cv2.namedWindow("Retail Product Locator")
+        cv2.setMouseCallback("Retail Product Locator", self._mouse_callback)
 
         while True:
             start_t = time.time()
@@ -618,7 +887,7 @@ class MedicineLocatorSystem:
                 bad = ("过暗", "偏暗", "过曝", "反光")
                 if any(g in lgrade for g in bad):
                     light_tag += " ⚠ 可能影响识别精度！"
-                print(f"\n--- 检测到 {len(detections)} 个药品 ---")
+                print(f"\n--- 检测到 {len(detections)} 个商品 ---")
                 print(light_tag)
                 for i, det in enumerate(detections):
                     sel = ">>> 选中 <<< " if i == self.selected_index else ""
@@ -627,7 +896,12 @@ class MedicineLocatorSystem:
                     pos_info = ""
                     if det.shelf_pos:
                         sp = det.shelf_pos
-                        pos_info = f"货架:{sp.shelf_id} 第{sp.layer}层 高度:{sp.layer_height_m}m 偏移:{sp.horizontal_offset}m"
+                        name_info = f"商品:{det.product_name} " if det.product_name else ""
+                        pos_info = (
+                            f"{name_info}货架:{sp.shelf_id} 第{sp.layer}层 "
+                            f"高度:{sp.layer_height_m}m 偏移:{sp.horizontal_offset}m "
+                            f"映射:{det.mapping_source} 匹配:{det.match_confidence:.2f}"
+                        )
                     else:
                         pos_info = "未映射到货架"
                     # 三维坐标
@@ -662,7 +936,7 @@ class MedicineLocatorSystem:
 
             # 2x 放大显示（640x480 在高分屏上太小）
             display_show = cv2.resize(display, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)
-            cv2.imshow("Medicine Locator", display_show)
+            cv2.imshow("Retail Product Locator", display_show)
 
             # FPS
             self.frame_count += 1
@@ -685,9 +959,18 @@ class MedicineLocatorSystem:
                 with open(save_json, "w", encoding="utf-8") as f:
                     json.dump([{
                         "class": d.class_name,
+                        "class_id": d.class_id,
                         "confidence": round(d.confidence, 3),
                         "bbox": d.bbox,
                         "center_pixel": d.center_pixel,
+                        "product_id": d.product_id,
+                        "product_name": d.product_name,
+                        "category": d.category,
+                        "package_type": d.package_type,
+                        "medicine_name": d.medicine_name,
+                        "mapping_source": d.mapping_source,
+                        "match_confidence": round(d.match_confidence, 3),
+                        "match_sources": list(d.match_sources),
                         "shelf": {
                             "shelf_id": d.shelf_pos.shelf_id,
                             "layer": d.shelf_pos.layer,
@@ -695,6 +978,8 @@ class MedicineLocatorSystem:
                             "horizontal_offset": d.shelf_pos.horizontal_offset,
                         } if d.shelf_pos else None,
                         "ocr_text": d.ocr_text,
+                        "depth_m": round(d.depth_m, 4) if d.depth_m is not None else None,
+                        "camera_xyz": [round(v, 4) for v in d.camera_xyz] if d.camera_xyz else None,
                     } for d in detections], f, ensure_ascii=False, indent=2)
 
                 print(f"[保存] 截图: {save_img}")
@@ -706,6 +991,10 @@ class MedicineLocatorSystem:
         print("\n[系统] 已退出")
 
 
+# 兼容旧名称，避免 dipan 或旧脚本导入 MedicineLocatorSystem 时失效。
+MedicineLocatorSystem = RetailProductLocatorSystem
+
+
 # ============================================================
 # 入口
 # ============================================================
@@ -713,9 +1002,10 @@ class MedicineLocatorSystem:
 if __name__ == "__main__":
     import os
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    system = MedicineLocatorSystem(
+    system = RetailProductLocatorSystem(
             model_path=os.path.join(base_dir, "best.pt"),
             mapping_path=os.path.join(base_dir, "shelf_mapping.yaml"),
+            dataset_config_path=os.path.abspath(os.path.join(base_dir, "..", "dataset", "yolo_rpc_test", "dataset.yaml")),
             conf_threshold=0.45,
             use_ocr=True,
             ocr_interval=30,

@@ -1,0 +1,16 @@
+# Optional dependencies for retail-scene generalization.
+# Install these only when enabling the corresponding feature.
+
+# Barcode / QR code recognition from product crops.
+pyzbar>=0.1.9
+
+# Visual product retrieval / SKU matching.
+# Use CLIP or similar image encoders to compare product crops with a product image gallery.
+faiss-cpu>=1.8.0
+sentence-transformers>=3.0.0
+
+# More robust OCR post-processing and fuzzy product-name matching.
+rapidfuzz>=3.9.0
+
+# Dataset annotation / conversion helpers for retail detection datasets.
+labelme>=5.5.0

@@ -1,5 +1,5 @@
-# 药品-货架-坐标映射表
-# 根据实际测量数据填写
+# 零售商品-货架-坐标映射表
+# 根据实际门店/货架测量数据填写
 
 # 货架配置
 shelves:
@@ -10,16 +10,218 @@ shelves:
     base_height: 0.3         # 第一层底部距地面高度(m)
     width: 1.2               # 货架宽度(m)
 
-# 药品位置映射 (YOLO类别名 -> 货架信息)
-medicine_mapping:
-  # 单类别模型：所有药盒统一识别为 ths
-  # 如需区分不同药品的货架位置，请通过 OCR 文字匹配实现
+# 商品词典映射 (OCR商品名/别名 -> 货架信息)
+# YOLO 只负责检测“商品区域/包装形态”，具体商品由 OCR 文本匹配这里的 name 和 aliases。
+product_catalog:
+  amoxicillin_capsule:
+    name: "阿莫西林胶囊"
+    aliases: ["阿莫西林", "阿莫西林胶囊", "amoxicillin"]
+    category: "medicine"
+    package_type: "box"
+    shelf_id: "S01"
+    layer: 2
+    layer_height_m: 1.05
+    horizontal_offset: 0.5
+    description: "阿莫西林胶囊"
+
+  vitamin_c_tablet:
+    name: "维生素C片"
+    aliases: ["维生素C", "维生素c", "维C", "维c", "vc"]
+    category: "medicine"
+    package_type: "box"
+    shelf_id: "S01"
+    layer: 2
+    layer_height_m: 1.05
+    horizontal_offset: 0.6
+    description: "维生素C片"
+
+  coca_cola_500ml:
+    name: "可口可乐 500ml"
+    aliases: ["可口可乐", "可乐", "coca cola", "coke"]
+    barcode: ["6928804011148"]
+    category: "drink"
+    package_type: "bottle"
+    shelf_id: "S01"
+    layer: 3
+    layer_height_m: 1.40
+    horizontal_offset: 0.3
+    description: "便利店饮料示例"
+
+  nongfu_spring_550ml:
+    name: "农夫山泉 550ml"
+    aliases: ["农夫山泉", "农夫山泉天然水"]
+    category: "drink"
+    package_type: "bottle"
+    shelf_id: "S01"
+    layer: 3
+    layer_height_m: 1.40
+    horizontal_offset: 0.45
+    description: "便利店饮料示例"
+
+  lays_chips:
+    name: "乐事薯片"
+    aliases: ["乐事", "薯片", "lays", "lay's"]
+    category: "snack"
+    package_type: "bag"
+    shelf_id: "S01"
+    layer: 4
+    layer_height_m: 1.75
+    horizontal_offset: 0.7
+    description: "便利店零食示例"
+
+# OCR 匹配策略
+matching:
+  # 过滤过短别名，避免用 500ml、vc 等弱特征误匹配大量商品。
+  min_ocr_alias_chars: 3
+  # 当前 yolo_rpc_test 是 200 类 SKU 数据集，默认使用 YOLO 类别作为主身份。
+  prefer_ocr_over_yolo: false
+
+# RPC 数据集大类兜底映射
+# yolo_rpc_test 是 200 类 SKU 数据集，但类别名只有大类+编号。
+# 如果没有精确 SKU 货架位置，可先按大类落到默认货架层。
+category_fallback_mapping:
+  膨化食品:
+    shelf_id: "S01"
+    layer: 4
+    layer_height_m: 1.75
+    horizontal_offset: 0.5
+    description: "膨化食品默认层"
+  果干:
+    shelf_id: "S01"
+    layer: 4
+    layer_height_m: 1.75
+    horizontal_offset: 0.6
+    description: "果干默认层"
+  干货:
+    shelf_id: "S01"
+    layer: 4
+    layer_height_m: 1.75
+    horizontal_offset: 0.7
+    description: "干货默认层"
+  速溶饮料:
+    shelf_id: "S01"
+    layer: 3
+    layer_height_m: 1.40
+    horizontal_offset: 0.6
+    description: "速溶饮料默认层"
+  方便面:
+    shelf_id: "S01"
+    layer: 2
+    layer_height_m: 1.05
+    horizontal_offset: 0.7
+    description: "方便面默认层"
+  甜点:
+    shelf_id: "S01"
+    layer: 4
+    layer_height_m: 1.75
+    horizontal_offset: 0.8
+    description: "甜点默认层"
+  drink:
+    shelf_id: "S01"
+    layer: 3
+    layer_height_m: 1.40
+    horizontal_offset: 0.4
+    description: "饮料默认层"
+  酒类:
+    shelf_id: "S01"
+    layer: 3
+    layer_height_m: 1.40
+    horizontal_offset: 0.8
+    description: "酒类默认层"
+  牛奶:
+    shelf_id: "S01"
+    layer: 3
+    layer_height_m: 1.40
+    horizontal_offset: 0.7
+    description: "牛奶默认层"
+  罐头食品:
+    shelf_id: "S01"
+    layer: 2
+    layer_height_m: 1.05
+    horizontal_offset: 0.8
+    description: "罐头食品默认层"
+  巧克力:
+    shelf_id: "S01"
+    layer: 4
+    layer_height_m: 1.75
+    horizontal_offset: 0.9
+    description: "巧克力默认层"
+  口香糖:
+    shelf_id: "S01"
+    layer: 5
+    layer_height_m: 2.10
+    horizontal_offset: 0.4
+    description: "口香糖默认层"
+  糖果:
+    shelf_id: "S01"
+    layer: 5
+    layer_height_m: 2.10
+    horizontal_offset: 0.5
+    description: "糖果默认层"
+  调味品:
+    shelf_id: "S01"
+    layer: 2
+    layer_height_m: 1.05
+    horizontal_offset: 0.9
+    description: "调味品默认层"
+  个人护理:
+    shelf_id: "S01"
+    layer: 5
+    layer_height_m: 2.10
+    horizontal_offset: 0.7
+    description: "个人护理默认层"
+  纸巾:
+    shelf_id: "S01"
+    layer: 1
+    layer_height_m: 0.70
+    horizontal_offset: 0.5
+    description: "纸巾默认层"
+  文具:
+    shelf_id: "S01"
+    layer: 5
+    layer_height_m: 2.10
+    horizontal_offset: 0.9
+    description: "文具默认层"
+
+# YOLO类别兜底映射
+# OCR 无结果或未命中商品词典时，才使用这里的类别映射。
+yolo_fallback_mapping:
+  product_box:
+    shelf_id: "S01"
+    layer: 2
+    layer_height_m: 1.05
+    horizontal_offset: 0.5
+    description: "未知盒装商品"
+  product_bottle:
+    shelf_id: "S01"
+    layer: 3
+    layer_height_m: 1.40
+    horizontal_offset: 0.4
+    description: "未知瓶装商品"
+  product_can:
+    shelf_id: "S01"
+    layer: 3
+    layer_height_m: 1.40
+    horizontal_offset: 0.5
+    description: "未知罐装商品"
+  product_bag:
+    shelf_id: "S01"
+    layer: 4
+    layer_height_m: 1.75
+    horizontal_offset: 0.7
+    description: "未知袋装商品"
+  medicine-box:
+    shelf_id: "S01"
+    layer: 2
+    layer_height_m: 1.05
+    horizontal_offset: 0.5
+    description: "未知药盒"
   ths:
     shelf_id: "S01"
     layer: 2                  # 需实测填写
     layer_height_m: 1.05      # 该层中心距地面高度(m)
     horizontal_offset: 0.5    # 水平偏移(从货架左侧算起，单位m)
-    description: "药盒"
+    description: "旧模型类别兜底"
 
 # 深度相机参数（用于坐标转换）
 camera_config:
