@@ -39,7 +39,7 @@ CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib_eye_in_hand.json")
 # ArUco 参数
 ARUCO_DICT = cv2.aruco.DICT_6X6_250
 MARKER_ID = 42
-MARKER_SIZE_MM = 51  # 打印出来的 marker 边长 (mm), 量一下然后改这里
+MARKER_SIZE_MM = 44  # 打印后量一下 marker 黑框实际边长 (mm)，改这里
 
 
 # ============================================================
@@ -51,14 +51,17 @@ def print_aruco_marker():
     img = cv2.copyMakeBorder(img, 50, 50, 50, 50, cv2.BORDER_CONSTANT, value=255)
     out = os.path.join(os.path.dirname(__file__), "aruco_marker.png")
     cv2.imwrite(out, img)
-    # 也生成 PDF 方便打印
+    # 也保存到大图方便打印
+    a4_path = os.path.join(os.path.dirname(__file__), "aruco_marker_print.png")
     img_a4 = np.ones((1754, 1240, 3), dtype=np.uint8) * 255
     marker_resized = cv2.resize(img, (500, 500))
     img_a4[600:1100, 370:870] = cv2.cvtColor(marker_resized, cv2.COLOR_GRAY2BGR)
-    pdf_out = out.replace(".png", ".png")
-    cv2.imwrite(out, img_a4)
-    print(f"\n[标定板] 已生成: {out}")
-    print(f"  打印出来贴在墙上，量一下 marker 边长 (mm)，改脚本里 MARKER_SIZE_MM")
+    cv2.imwrite(a4_path, img_a4)
+    print(f"\n[标定板] 已生成:")
+    print(f"  原始: {out} (可直接打开查看)")
+    print(f"  打印用: {a4_path} (放纸上打印)")
+    print(f"  打印出来后请用尺子量一下 marker 黑框边长 (mm)，确认是 {MARKER_SIZE_MM}mm")
+    print(f"  如果不是 {MARKER_SIZE_MM}mm，请改脚本里的 MARKER_SIZE_MM")
     return out
 
 

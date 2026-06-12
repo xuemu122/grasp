@@ -63,17 +63,14 @@ class DobotArm:
         self.sock.settimeout(3)
         self.sock.connect((self.ip, self.port))
         print(f"[DOBOT] 已连接 {self.ip}:{self.port}")
-        # 设置负载
-        cmds = [
-            f"SetPayload(mass={HAND_WEIGHT}, centerX={HAND_COG_X*1000:.0f}, centerY={HAND_COG_Y*1000:.0f}, centerZ={HAND_COG_Z*1000:.0f})",
-            "Tool(index=1)",
-        ]
-        for c in cmds:
-            self.send(c)
-        # 使能
-        self.send("EnableRobot()")
+        # 直接使能 (带负载参数)
+        resp = self.send(f"EnableRobot({HAND_WEIGHT}, {HAND_COG_X*1000:.0f}, {HAND_COG_Y*1000:.0f}, {HAND_COG_Z*1000:.0f})")
+        print(f"[DOBOT] EnableRobot 返回: {resp}")
         time.sleep(0.5)
-        print("[DOBOT] 已使能 (请手动进入拖动示教模式)")
+        # 验证是否使能成功
+        resp = self.send("RobotMode()")
+        print(f"[DOBOT] RobotMode: {resp}")
+        print("[DOBOT] 注意: 拖动示教模式下 MovL 不可用, 请先松开拖动按钮")
 
     def send(self, cmd: str) -> str:
         if not cmd.endswith("\n"):
@@ -100,7 +97,11 @@ class DobotArm:
             return tuple(map(float, nums[-6:]))
         raise RuntimeError(f"无法解析位姿: {resp}")
 
-    def movel(self, x_mm, y_mm, z_mm, rx=180.0, ry=0.0, rz=0.0, speed=100):
+    def movel(self, x_mm, y_mm, z_mm, rx=None, ry=None, rz=None, speed=100):
+        """MovL，rx/ry/rz=None 则保持当前姿态"""
+        if rx is None:
+            pose = self.get_pose()
+            rx, ry, rz = pose[3], pose[4], pose[5]
         cmd = f"MovL(x={x_mm:.1f}, y={y_mm:.1f}, z={z_mm:.1f}, rx={rx:.1f}, ry={ry:.1f}, rz={rz:.1f}, speed={speed:.0f})"
         print(f"  >>> {cmd}")
         resp = self.send(cmd)
@@ -119,6 +120,10 @@ CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib_eye_in_hand.json")
 
 
 class HandEyeTransformer:
+    # 手动覆盖标定位移 (mm, 法兰坐标系)。设为 None 则使用标定文件。
+    # 相机在法兰上方 13cm: 一般是 Z 偏移。按需改 X/Y。
+    MANUAL_OFFSET_MM = None  # 例: [-50, 0, 130] 表示相机在法兰 X=-50mm, Y=0, Z=+130mm
+
     def __init__(self, fx=FX, fy=FY, cx=CX, cy=CY):
         self.fx, self.fy = fx, fy
         self.cx, self.cy = cx, cy
@@ -129,8 +134,12 @@ class HandEyeTransformer:
             with open(CALIB_FILE) as f:
                 calib = json.load(f)
             self.T_flange_to_cam = np.array(calib["T_flange_to_camera"])
-            t = self.T_flange_to_cam[:3, 3]
-            print(f"[标定] 已加载手眼标定: t=({t[0]*1000:.1f},{t[1]*1000:.1f},{t[2]*1000:.1f})mm")
+        # 手动覆盖位移
+        if self.MANUAL_OFFSET_MM is not None:
+            self.T_flange_to_cam[:3, 3] = np.array(self.MANUAL_OFFSET_MM) / 1000.0
+            print(f"[标定] 手动覆盖相机偏移: ({self.MANUAL_OFFSET_MM[0]},{self.MANUAL_OFFSET_MM[1]},{self.MANUAL_OFFSET_MM[2]})mm")
+        t = self.T_flange_to_cam[:3, 3]
+        print(f"[标定] 已加载手眼标定: t=({t[0]*1000:.1f},{t[1]*1000:.1f},{t[2]*1000:.1f})mm")
 
     def set_flange(self, pose):
         self.flange_pose = pose
@@ -287,7 +296,7 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4):
     # 像素 → 相机 3D → 机器人基座
     p_cam = transformer.pixel_to_camera(edge_u, edge_v, depth)
     p_robot = transformer.camera_to_robot(p_cam, flange_pose, debug=True)
-    return p_robot[0], p_robot[1], p_robot[2], mode
+    return p_robot[0], p_robot[1], p_robot[2], mode, p_cam
 
 
 # ============================================================
@@ -337,14 +346,42 @@ def main():
     print("  - 拖动机械臂到观察位姿 (能看到货架盒子)")
     print("  - 按 Enter ← 拍照识别并抓取最外侧盒子")
     print("  - 输入 v   ← 实时画面预览 (YOLO 检测)")
+    print("  - 输入 j   ← 手动点动 (wasd/e/r 微调法兰)")
     print("  - 输入 q   ← 退出")
     print("=" * 60)
 
     try:
         while True:
-            cmd = input("\n按 Enter 抓取 | v 预览 | q 退出 > ").strip()
+            cmd = input("\n按 Enter 抓取 | v 预览 | j 点动 | q 退出 > ").strip()
             if cmd.lower() == "q":
                 break
+
+            if cmd.lower() == "j":
+                step = 20  # mm
+                print(f"\n  点动模式 (步长 {step}mm), 输入 q 退出")
+                print(f"  wasd = XY, e/r = Z")
+                while True:
+                    jc = input("  点动 > ").strip().lower()
+                    if jc == "q":
+                        break
+                    pose = arm.get_pose()
+                    dx, dy, dz = 0, 0, 0
+                    if jc == "a": dx = -step
+                    elif jc == "d": dx = step
+                    elif jc == "w": dy = step
+                    elif jc == "s": dy = -step
+                    elif jc == "e": dz = step
+                    elif jc == "r": dz = -step
+                    else:
+                        print(f"  无效: {jc}")
+                        continue
+                    tx = pose[0] + dx
+                    ty = pose[1] + dy
+                    tz = pose[2] + dz
+                    print(f"  MovL({tx:.0f},{ty:.0f},{tz:.0f}) ← ({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f}) + ({dx},{dy},{dz})")
+                    resp = arm.movel(tx, ty, tz, speed=50)
+                    time.sleep(0.5)
+                continue
 
             if cmd.lower() == "v":
                 print("实时预览中… 按任意键退出预览")
@@ -447,7 +484,7 @@ def main():
             print(f"  → 检测画面已保存: {cv2_path}  (绿框=检测, 红框=目标, 黄点=抓取点)")
 
             # ── 计算抓取位姿 ──
-            wx, wy, wz, grip_mode = plan_edge_grasp(target, edge, transformer, flange_pose, fx=camera.fx)
+            wx, wy, wz, grip_mode, p_cam = plan_edge_grasp(target, edge, transformer, flange_pose, fx=camera.fx)
             print(f"抓取点 ({grip_mode}): ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
 
             # 法兰在指尖上方 HAND_LENGTH
@@ -481,6 +518,8 @@ def main():
                  print(f"\n  操作:")
                  print(f"    Enter ← 执行抓取")
                  print(f"    p     ← 预览悬停位 (不抓取)")
+                 print(f"    t     ← 相对移动 (含标定位移)")
+                 print(f"    m     ← 简化移动 (零标定: 沿法兰Z前移)")
                  print(f"    wasd  ← 微调 X/Y (±{jog_step_mm:.0f}mm)")
                  print(f"    e/r   ← 微调 Z (±{jog_step_mm:.0f}mm)")
                  print(f"    = / - ← 改变步长 (当前 {jog_step_mm:.0f}mm)")
@@ -497,6 +536,36 @@ def main():
                      return  # 退出
                  elif choice == "Q" or choice == "q":
                      break  # 跳过当前, 回到外层
+                 elif choice == "t":
+                     # 相对移动: 用标定 T_flange→cam, 跳过基座变换
+                     p_cam_h = np.append(p_cam, 1.0)
+                     p_flange = transformer.T_flange_to_cam @ p_cam_h  # 盒在法兰系
+                     delta = p_flange[:3] + np.array([0, 0, HAND_LENGTH + 0.04])  # +手长+悬停
+                     print(f"\n  法兰系偏移: ({delta[0]*1000:.0f}, {delta[1]*1000:.0f}, {delta[2]*1000:.0f})mm")
+                     # 用当前法兰 RPY 转世界
+                     R = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
+                     delta_w = R @ delta
+                     new_x = flange_pose[0] + delta_w[0] * 1000
+                     new_y = flange_pose[1] + delta_w[1] * 1000
+                     new_z = flange_pose[2] + delta_w[2] * 1000
+                     print(f"  目标法兰: ({new_x:.0f}, {new_y:.0f}, {new_z:.0f})mm")
+                     arm.movel(new_x, new_y, new_z, speed=100)
+                     time.sleep(1)
+                     continue
+                 elif choice == "m":
+                     # 简化模式: 假设相机指向法兰Z, 走 p_cam 深度距离
+                     dist = np.linalg.norm(p_cam)   # 相机→盒子距离
+                     delta = np.array([0, 0, dist + HAND_LENGTH + 0.04])  # 法兰Z前移
+                     print(f"\n  [简化模式] 盒距={dist:.3f}m → ΔZ={delta[2]*1000:.0f}mm")
+                     R = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
+                     delta_w = R @ delta
+                     new_x = flange_pose[0] + delta_w[0] * 1000
+                     new_y = flange_pose[1] + delta_w[1] * 1000
+                     new_z = flange_pose[2] + delta_w[2] * 1000
+                     print(f"  目标法兰: ({new_x:.0f}, {new_y:.0f}, {new_z:.0f})mm")
+                     arm.movel(new_x, new_y, new_z, speed=60)
+                     time.sleep(1)
+                     continue
                  elif choice == "p":
                      # 预览: 只移动到悬停位, 不抓取
                      print(f"\n  预览: 移动到 ({flange_x*1000+offset_x:.0f}, "
