@@ -531,51 +531,45 @@ def main():
             print(f"\n=== 选中: {edge}侧盒子 bbox=({target.bbox[0]},{target.bbox[1]})-({target.bbox[2]},{target.bbox[3]}) "
                   f"depth={target.depth_m:.3f}m ===")
 
-            # ── 画检测框并保存 ──
+            # ── 计算抓取位姿 ──
+            wx, wy, wz, grip_mode, p_cam = plan_edge_grasp(target, edge, transformer, flange_pose, fx=camera.fx)
+            print(f"抓取点 ({grip_mode}): ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
+
+            # 重新画正确的抓取点 (覆盖上面简单画的黄点)
             viz = best_img.copy()
             for d in detections:
-                col = (0, 255, 0)
-                if d is target:
-                    col = (0, 0, 255)  # 选中的用红色
+                col = (0, 0, 255) if d is target else (0, 255, 0)
                 cv2.rectangle(viz, (int(d.bbox[0]), int(d.bbox[1])),
                               (int(d.bbox[2]), int(d.bbox[3])), col, 2)
                 cv2.putText(viz, f"{d.class_name or '?'} {d.depth_m:.2f}m",
                             (int(d.bbox[0]), int(d.bbox[1]) - 8),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
-                # 画抓取点 (上边缘/侧边缘)
-                if d is target:
-                    x1, y1, x2, y2 = d.bbox
-                    gx = int((x1 + x2) / 2)
-                    gy = int(y1)
-                    cv2.circle(viz, (gx, gy), 6, (0, 255, 255), -1)
-                    cv2.putText(viz, "GRIP", (gx + 8, gy - 4),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-            cv2_path = "/tmp/shelf_detection.jpg"
-            cv2.imwrite(cv2_path, viz)
-            print(f"  → 检测画面已保存: {cv2_path}  (绿框=检测, 红框=目标, 黄点=抓取点)")
-
-            # ── 计算抓取位姿 ──
-            wx, wy, wz, grip_mode, p_cam = plan_edge_grasp(target, edge, transformer, flange_pose, fx=camera.fx)
-            print(f"抓取点 ({grip_mode}): ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
+            # 目标抓取点: 侧边抓取用边缘中点, 上方抓取用顶边中心
+            x1, y1, x2, y2 = target.bbox
+            if "side" in grip_mode:
+                gx = int(x2 if "right" in grip_mode else x1)
+                gy = int((y1 + y2) / 2)
+            else:
+                gx = int((x1 + x2) / 2)
+                gy = int(y1)
+            cv2.circle(viz, (gx, gy), 6, (0, 255, 255), -1)
+            cv2.putText(viz, "GRIP", (gx + 8, gy - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+            cv2.imwrite("/tmp/shelf_detection.jpg", viz)
+            print(f"  → 检测画面已保存: /tmp/shelf_detection.jpg  (绿框=检测, 红框=目标, 黄点=抓取点)")
 
             # ── 用法兰局部轴计算法兰/悬停/抓取位姿 (世界坐标, 米) ──
             R_f = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
-            fz_dir = R_f[:, 2]   # 法兰+Z 指向指尖方向 (世界系)
-            fy_dir = R_f[:, 1]   # 法兰+Y (手宽方向)
+            fz_dir = R_f[:, 2]   # 法兰+Z → 手指方向 (世界系)
 
-            fingertip_w = np.array([wx, wy, wz + 0.06])  # +6cm 手工补偿标定Z偏
-            flange_pt  = fingertip_w - HAND_LENGTH * fz_dir   # 法兰 = 指尖后退手长
+            fingertip_w = np.array([wx, wy, wz - 0.20])  # Z 手工补偿 (负值=下移)
+            flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
 
-            # 侧边抓: 沿法兰Y偏移 (right → +Y, left → -Y)
-            if grip_mode.endswith("_side"):
-                sign = 1.0 if "right" in grip_mode else -1.0
-                flange_pt = flange_pt + sign * 0.03 * fy_dir
+            # 悬停: 法兰比目标高 4cm (世界 Z↑, 不受法兰倾斜影响)
+            approach_pt = flange_pt + np.array([0.0, 0.0, 0.04])
 
-            # 前向补偿: 深度/标定累计误差 ~130mm
-            flange_pt = flange_pt + 0.13 * fz_dir
-
-            approach_pt = flange_pt - 0.04 * fz_dir  # 悬停: 沿法兰-Z 回退 4cm
-            grasp_pt    = flange_pt + 0.02 * fz_dir  # 抓取: 沿法兰+Z 前进 2cm 深入盒面
+            # 抓取: 沿手指方向前进 2cm 探入盒面 (法兰+Z)
+            grasp_pt = flange_pt + 0.02 * fz_dir
 
             # ── 转为 mm (python float) 供后续微调 ──
             fx, fy, fz  = float(flange_pt[0]*1000),  float(flange_pt[1]*1000),  float(flange_pt[2]*1000)
@@ -590,11 +584,11 @@ def main():
 
             while True:
                  print(f"\n── 目标位姿 (可微调) ──")
+                 print(f"  指尖世界: ({wx*1000:.0f}, {wy*1000:.0f}, {wz*1000:.0f})mm")
                  print(f"  法兰(悬停): X={ax+offset_x:+.0f}({offset_x:+5.0f})  "
                        f"Y={ay+offset_y:+.0f}({offset_y:+5.0f})  "
                        f"Z={az+offset_z:+.0f}({offset_z:+5.0f}) mm")
                  print(f"  法兰(抓取): X={gx+offset_x:+.0f}  Y={gy+offset_y:+.0f}  Z={gz+offset_z:+.0f} mm")
-                 print(f"  指尖世界: ({wx*1000:.0f}, {wy*1000:.0f}, {wz*1000:.0f})mm")
                  print(f"\n  操作:")
                  print(f"    Enter ← 执行抓取")
                  print(f"    p     ← 预览悬停位 (不抓取)")
