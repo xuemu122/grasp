@@ -541,7 +541,7 @@ def main():
                 col = (0, 0, 255) if d is target else (0, 255, 0)
                 cv2.rectangle(viz, (int(d.bbox[0]), int(d.bbox[1])),
                               (int(d.bbox[2]), int(d.bbox[3])), col, 2)
-                cv2.putText(viz, f"{d.class_name or '?'} {d.depth_m:.2f}m",
+                cv2.putText(viz, f"{d.class_name or '?'} {d.depth_m:.2f}m" if d.depth_m else f"{d.class_name or '?'}",
                             (int(d.bbox[0]), int(d.bbox[1]) - 8),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
             # 目标抓取点: 侧边抓取用边缘中点, 上方抓取用顶边中心
