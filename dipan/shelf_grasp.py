@@ -349,17 +349,17 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4):
     print(f"  盒宽: {pixel_w}px → {real_w*100:.1f}cm")
 
     if real_w <= 0.08:
-        # 窄盒 → 侧边抓
+        # 窄盒 → 侧边抓: 侧边缘(u) + 垂直中点(v)
         if edge == "left":
             edge_u = x1
         else:
             edge_u = x2
-        edge_v = y1
+        edge_v = (y1 + y2) / 2
         mode = f"{edge}_side"
-        print(f"  → 窄盒 ({real_w*100:.1f}cm ≤ 8cm), 从{edge}侧边缘抓取")
+        print(f"  → 窄盒 ({real_w*100:.1f}cm ≤ 8cm), 从{edge}侧边缘中点抓取")
     else:
-        # 宽盒 → 上方抓
-        edge_u = (x1 + x2) / 2  # 中心 X
+        # 宽盒 → 上方抓: 中心 X + 上边缘
+        edge_u = (x1 + x2) / 2
         edge_v = y1
         mode = "top_center"
         print(f"  → 宽盒 ({real_w*100:.1f}cm > 8cm), 从上边缘中心抓取")
@@ -566,10 +566,13 @@ def main():
             fingertip_w = np.array([wx, wy, wz])
             flange_pt  = fingertip_w - HAND_LENGTH * fz_dir   # 法兰 = 指尖后退手长
 
-            # 侧边抓: 沿法兰Y偏移 (避免手体撞到相邻盒子)
+            # 侧边抓: 沿法兰Y偏移 (right → +Y, left → -Y)
             if grip_mode.endswith("_side"):
-                sign = -1.0 if "left" in grip_mode else 1.0
+                sign = 1.0 if "right" in grip_mode else -1.0
                 flange_pt = flange_pt + sign * 0.03 * fy_dir
+
+            # 前向补偿: 深度/标定累计误差 ~130mm
+            flange_pt = flange_pt + 0.13 * fz_dir
 
             approach_pt = flange_pt - 0.04 * fz_dir  # 悬停: 沿法兰-Z 回退 4cm
             grasp_pt    = flange_pt + 0.02 * fz_dir  # 抓取: 沿法兰+Z 前进 2cm 深入盒面
@@ -703,9 +706,9 @@ def main():
                 hand.close()
                 time.sleep(1.5)
 
-            # 5. 抬升 (离开货架)
-            lift_z = gz + offset_z + 100
-            arm.movel(gx + offset_x, gy + offset_y, lift_z, speed=100)
+            # 5. 后退 (沿法兰-Z 退 10cm, 离开货架)
+            retreat_pt = np.array([gx+offset_x, gy+offset_y, gz+offset_z]) - 100.0 * fz_dir
+            arm.movel(float(retreat_pt[0]), float(retreat_pt[1]), float(retreat_pt[2]), speed=100)
             time.sleep(1.5)
 
             print("抓取完成! 拖动到放置位按 Enter 继续 / q 退出")
