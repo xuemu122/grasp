@@ -157,26 +157,22 @@ class DobotArm:
             if rx is None:
                 pose = self.get_pose()
                 rx, ry, rz = pose[3], pose[4], pose[5]
-            # 安全检查: Z 超出工作范围
-            if z_mm > 1000:
-                print(f"  [警告] 目标 Z={z_mm:.0f}mm 可能超出工作范围 (>1000mm)，已截断到 1000mm")
-                z_mm = 1000.0
-            if z_mm < -200:
-                print(f"  [警告] 目标 Z={z_mm:.0f}mm 过低 (<-200mm)，已截断到 -200mm")
-                z_mm = -200.0
+            # 安全兜底: Z 超出 Nova5 绝对工作范围时警告但不截断
+            if z_mm > 1100 or z_mm < -300:
+                print(f"  [警告] Z={z_mm:.0f}mm 可能超出工作范围, 请注意!")
             cmd = f"MovL(pose = {{{x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f}, {rx:.1f}, {ry:.1f}, {rz:.1f}}})"
             print(f"  >>> {cmd}")
             resp = self.send(cmd)
             print(f"  <<< {resp}")
             if resp.startswith("-"):
-                print(f"  [MovL 失败] {resp}")
-            # 运动后检查是否报警
-            time.sleep(0.3)
+                print(f"  [MovL 被拒绝] 错误码={resp.split(',')[0]}, 可能是位姿不可达")
+                return  # -1/-2 等是立即拒绝, 不是报警, 不调 clear_alarm
+            # 命令已被接受(0,...), 等待运动完成后检查是否途中报警
+            time.sleep(0.5)
             err = self.get_error_id()
-            # GetErrorID 返回格式: 0,{[]},GetErrorID(); (无报警) 或 0,{[id,..]},GetErrorID(); (有报警)
             if "[]" not in err:
-                print(f"  [报警!] 机器人报警码: {err}")
-                print(f"  → 程序即将执行 clear_alarm() 自动恢复...")
+                print(f"  [报警!] 运动中触发报警: {err}")
+                print(f"  → 自动 clear_alarm() 恢复...")
                 self.clear_alarm()
         except Exception as e:
             print(f"  [MovL 异常] {e}")
@@ -562,34 +558,40 @@ def main():
             wx, wy, wz, grip_mode, p_cam = plan_edge_grasp(target, edge, transformer, flange_pose, fx=camera.fx)
             print(f"抓取点 ({grip_mode}): ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
 
-            # 法兰在指尖上方 HAND_LENGTH
-            flange_z = wz + HAND_LENGTH
-            flange_x, flange_y = wx, wy
+            # ── 用法兰局部轴计算法兰/悬停/抓取位姿 (世界坐标, 米) ──
+            R_f = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
+            fz_dir = R_f[:, 2]   # 法兰+Z 指向指尖方向 (世界系)
+            fy_dir = R_f[:, 1]   # 法兰+Y (手宽方向)
 
-            # 偏置: 侧边抓时向外偏, 上方抓时不偏
+            fingertip_w = np.array([wx, wy, wz])
+            flange_pt  = fingertip_w - HAND_LENGTH * fz_dir   # 法兰 = 指尖后退手长
+
+            # 侧边抓: 沿法兰Y偏移 (避免手体撞到相邻盒子)
             if grip_mode.endswith("_side"):
-                side_offset = 0.03  # 3cm 向外偏
-                if "left" in grip_mode:
-                    flange_x -= side_offset
-                else:
-                    flange_x += side_offset
+                sign = -1.0 if "left" in grip_mode else 1.0
+                flange_pt = flange_pt + sign * 0.03 * fy_dir
 
-            approach_z = flange_z + 0.04    # 悬停 4cm 上方 (货架空间紧)
-            grasp_z = flange_z - 0.02       # 指尖略深入盒面
+            approach_pt = flange_pt - 0.04 * fz_dir  # 悬停: 沿法兰-Z 回退 4cm
+            grasp_pt    = flange_pt + 0.02 * fz_dir  # 抓取: 沿法兰+Z 前进 2cm 深入盒面
+
+            # ── 转为 mm (python float) 供后续微调 ──
+            fx, fy, fz  = float(flange_pt[0]*1000),  float(flange_pt[1]*1000),  float(flange_pt[2]*1000)
+            ax, ay, az  = float(approach_pt[0]*1000), float(approach_pt[1]*1000), float(approach_pt[2]*1000)
+            gx, gy, gz  = float(grasp_pt[0]*1000),    float(grasp_pt[1]*1000),    float(grasp_pt[2]*1000)
 
             # ========================================================
-            # 调试交互: 微调 / 预览 / 执行
+            # 调试交互: 微调 / 预览 / 执行  (offset 均为 mm)
             # ========================================================
             offset_x, offset_y, offset_z = 0.0, 0.0, 0.0
-            jog_step_mm = 5.0  # 每次微调步长 (mm)
-            preview_target = False  # 是否预览悬停位
+            jog_step_mm = 5.0
 
             while True:
                  print(f"\n── 目标位姿 (可微调) ──")
-                 print(f"  法兰: X={flange_x*1000+offset_x:+.0f}({offset_x:+5.0f})  "
-                       f"Y={flange_y*1000+offset_y:+.0f}({offset_y:+5.0f})  "
-                       f"Z={approach_z*1000+offset_z:+.0f}({offset_z:+5.0f}) mm")
-                 print(f"  下降后Z: {(grasp_z+offset_z)*1000:.0f}mm")
+                 print(f"  法兰(悬停): X={ax+offset_x:+.0f}({offset_x:+5.0f})  "
+                       f"Y={ay+offset_y:+.0f}({offset_y:+5.0f})  "
+                       f"Z={az+offset_z:+.0f}({offset_z:+5.0f}) mm")
+                 print(f"  法兰(抓取): X={gx+offset_x:+.0f}  Y={gy+offset_y:+.0f}  Z={gz+offset_z:+.0f} mm")
+                 print(f"  指尖世界: ({wx*1000:.0f}, {wy*1000:.0f}, {wz*1000:.0f})mm")
                  print(f"\n  操作:")
                  print(f"    Enter ← 执行抓取")
                  print(f"    p     ← 预览悬停位 (不抓取)")
@@ -617,7 +619,6 @@ def main():
                      p_flange = transformer.T_flange_to_cam @ p_cam_h  # 盒在法兰系
                      delta = p_flange[:3] + np.array([0, 0, HAND_LENGTH + 0.04])  # +手长+悬停
                      print(f"\n  法兰系偏移: ({delta[0]*1000:.0f}, {delta[1]*1000:.0f}, {delta[2]*1000:.0f})mm")
-                     # 用当前法兰 RPY 转世界
                      R = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
                      delta_w = R @ delta
                      new_x = flange_pose[0] + delta_w[0] * 1000
@@ -628,9 +629,9 @@ def main():
                      time.sleep(1)
                      continue
                  elif choice == "m":
-                     # 简化模式: 假设相机指向法兰Z, 走 p_cam 深度距离
-                     dist = np.linalg.norm(p_cam)   # 相机→盒子距离
-                     delta = np.array([0, 0, dist + HAND_LENGTH + 0.04])  # 法兰Z前移
+                     # 简化模式: 沿法兰Z前移
+                     dist = np.linalg.norm(p_cam)
+                     delta = np.array([0, 0, dist + HAND_LENGTH + 0.04])
                      print(f"\n  [简化模式] 盒距={dist:.3f}m → ΔZ={delta[2]*1000:.0f}mm")
                      R = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
                      delta_w = R @ delta
@@ -642,18 +643,13 @@ def main():
                      time.sleep(1)
                      continue
                  elif choice == "p":
-                     # 预览: 只移动到悬停位, 不抓取
-                     print(f"\n  预览: 移动到 ({flange_x*1000+offset_x:.0f}, "
-                           f"{flange_y*1000+offset_y:.0f}, {approach_z*1000+offset_z:.0f})mm")
-                     arm.movel(flange_x * 1000 + offset_x,
-                               flange_y * 1000 + offset_y,
-                               approach_z * 1000 + offset_z, speed=100)
+                     print(f"\n  预览: 移动到 ({ax+offset_x:.0f}, {ay+offset_y:.0f}, {az+offset_z:.0f})mm")
+                     arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=100)
                      time.sleep(1)
                      continue
                  elif choice.lower() == "f5":
-                     # 重新拍照
                      offset_x = offset_y = offset_z = 0.0
-                     break  # 跳出微调循环, 走外层重新读图和检测
+                     break
                  elif choice in ("w", "s", "a", "d"):
                      dx = {"a": -jog_step_mm, "d": +jog_step_mm}.get(choice, 0)
                      dy = {"w": -jog_step_mm, "s": +jog_step_mm}.get(choice, 0)
@@ -681,11 +677,8 @@ def main():
                      except ValueError:
                          print("  格式错误")
 
-            # 如果选了重新拍照, 跳过执行回到外层
             if choice.lower() == "f5":
                 continue
-
-            # 如果选了跳过, 跳出
             if choice in ("Q", "q"):
                 break
 
@@ -693,21 +686,16 @@ def main():
             # ── 执行 ──
             print("\n执行抓取动作...")
 
-            fx = flange_x * 1000 + offset_x
-            fy = flange_y * 1000 + offset_y
-            a_z = approach_z * 1000 + offset_z
-            g_z = grasp_z * 1000 + offset_z
-
             # 1. 张开手
             if not SKIP_HAND:
                 hand.open()
 
-            # 2. 移动到目标侧上方 (从外侧进入，避开旁边盒子)
-            arm.movel(fx, fy, a_z, speed=150)
+            # 2. 悬停位 (法兰退回 4cm)
+            arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=150)
             time.sleep(1.5)
 
-            # 3. 下降
-            arm.movel(fx, fy, g_z, speed=50)
+            # 3. 下降抓取 (法兰前进，指尖探入盒面)
+            arm.movel(gx + offset_x, gy + offset_y, gz + offset_z, speed=50)
             time.sleep(1.5)
 
             # 4. 抓取
@@ -716,8 +704,8 @@ def main():
                 time.sleep(1.5)
 
             # 5. 抬升 (离开货架)
-            lift_z = g_z + 100
-            arm.movel(fx, fy, lift_z, speed=100)
+            lift_z = gz + offset_z + 100
+            arm.movel(gx + offset_x, gy + offset_y, lift_z, speed=100)
             time.sleep(1.5)
 
             print("抓取完成! 拖动到放置位按 Enter 继续 / q 退出")
