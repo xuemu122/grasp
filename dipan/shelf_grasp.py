@@ -32,6 +32,7 @@ from aero_open_sdk.aero_hand import AeroHand
 # ============================================================
 DOBOT_IP = os.getenv("DOBOT_IP", "192.168.1.6")
 DOBOT_PORT = 29999
+DOBOT_MOTION_PORT = 30003  # 运动指令走这个端口
 
 HAND_LENGTH = 0.35      # 法兰 → 指尖 (米)
 HAND_WEIGHT = 0.6       # 末端重量 (kg), Aero Hand
@@ -56,30 +57,41 @@ class DobotArm:
     def __init__(self, ip=DOBOT_IP, port=DOBOT_PORT):
         self.ip = ip
         self.port = port
-        self.sock = None
+        self.motion_port = DOBOT_MOTION_PORT
+        self.sock = None        # Dashboard 29999
+        self.motion_sock = None  # Motion 30003
 
     def connect(self):
+        # Dashboard 连接
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.settimeout(3)
         self.sock.connect((self.ip, self.port))
-        print(f"[DOBOT] 已连接 {self.ip}:{self.port}")
-        # 直接使能 (带负载参数)
-        resp = self.send(f"EnableRobot({HAND_WEIGHT}, {HAND_COG_X*1000:.0f}, {HAND_COG_Y*1000:.0f}, {HAND_COG_Z*1000:.0f})")
+        print(f"[DOBOT] Dashboard 已连接 {self.ip}:{self.port}")
+        # 清错 + 使能
+        resp = self._send(self.sock, "ClearError()")
+        print(f"[DOBOT] ClearError 返回: {resp}")
+        time.sleep(1)
+        resp = self._send(self.sock, f"EnableRobot({HAND_WEIGHT}, {HAND_COG_X*1000:.0f}, {HAND_COG_Y*1000:.0f}, {HAND_COG_Z*1000:.0f})")
         print(f"[DOBOT] EnableRobot 返回: {resp}")
-        time.sleep(0.5)
-        # 验证是否使能成功
-        resp = self.send("RobotMode()")
+        time.sleep(1)
+        resp = self._send(self.sock, "RobotMode()")
         print(f"[DOBOT] RobotMode: {resp}")
-        print("[DOBOT] 注意: 拖动示教模式下 MovL 不可用, 请先松开拖动按钮")
+        resp = self._send(self.sock, "GetErrorID()")
+        print(f"[DOBOT] ErrorID: {resp}")
+        # 运动端口连接
+        self.motion_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.motion_sock.settimeout(5)
+        self.motion_sock.connect((self.ip, self.motion_port))
+        print(f"[DOBOT] Motion 已连接 {self.ip}:{self.motion_port}")
 
-    def send(self, cmd: str) -> str:
+    def _send(self, sock, cmd: str) -> str:
         if not cmd.endswith("\n"):
             cmd += "\n"
-        self.sock.sendall(cmd.encode())
+        sock.sendall(cmd.encode())
         resp = b""
         while True:
             try:
-                chunk = self.sock.recv(4096)
+                chunk = sock.recv(4096)
                 if not chunk:
                     break
                 resp += chunk
@@ -88,6 +100,10 @@ class DobotArm:
             except socket.timeout:
                 break
         return resp.decode().strip()
+
+    def send(self, cmd: str) -> str:
+        """发送 Dashboard 命令 (29999)"""
+        return self._send(self.sock, cmd)
 
     def get_pose(self) -> Tuple[float, float, float, float, float, float]:
         """返回 (x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)"""
@@ -98,18 +114,20 @@ class DobotArm:
         raise RuntimeError(f"无法解析位姿: {resp}")
 
     def movel(self, x_mm, y_mm, z_mm, rx=None, ry=None, rz=None, speed=100):
-        """MovL，rx/ry/rz=None 则保持当前姿态"""
+        """MovL 发到运动端口 30003，rx/ry/rz=None 则保持当前姿态"""
         if rx is None:
             pose = self.get_pose()
             rx, ry, rz = pose[3], pose[4], pose[5]
         cmd = f"MovL(x={x_mm:.1f}, y={y_mm:.1f}, z={z_mm:.1f}, rx={rx:.1f}, ry={ry:.1f}, rz={rz:.1f}, speed={speed:.0f})"
         print(f"  >>> {cmd}")
-        resp = self.send(cmd)
+        resp = self._send(self.motion_sock, cmd)
         print(f"  <<< {resp}")
 
     def close(self):
         self.send("DisableRobot()")
         self.sock.close()
+        if self.motion_sock:
+            self.motion_sock.close()
         print("[DOBOT] 已断开")
 
 
