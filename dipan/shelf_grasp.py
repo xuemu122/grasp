@@ -130,18 +130,54 @@ class DobotArm:
 
     _last_pose = None
 
+    def get_error_id(self) -> str:
+        """查询当前报警码，返回错误码字符串"""
+        resp = self.send("GetErrorID()")
+        return resp
+
+    def clear_alarm(self):
+        """清除报警并重新使能"""
+        print("[DOBOT] 清除报警并重新使能...")
+        self.send("ClearError()")
+        time.sleep(0.5)
+        # 检查是否还有报警
+        err = self.get_error_id()
+        print(f"[DOBOT] GetErrorID: {err}")
+        self.send("RequestControl()")
+        self.send("PowerOn()")
+        print("[DOBOT] 等待上电 10s...")
+        time.sleep(10)
+        self.send(f"EnableRobot({HAND_WEIGHT}, {HAND_COG_X*1000:.0f}, {HAND_COG_Y*1000:.0f}, {HAND_COG_Z*1000:.0f})")
+        resp = self.send("RobotMode()")
+        print(f"[DOBOT] RobotMode: {resp}")
+
     def movel(self, x_mm, y_mm, z_mm, rx=None, ry=None, rz=None, speed=100):
         """MovL V4: pose = {x, y, z, rx, ry, rz}，rx/ry/rz=None 则保持当前姿态"""
         try:
             if rx is None:
                 pose = self.get_pose()
                 rx, ry, rz = pose[3], pose[4], pose[5]
+            # 安全检查: Z 超出工作范围
+            if z_mm > 1000:
+                print(f"  [警告] 目标 Z={z_mm:.0f}mm 可能超出工作范围 (>1000mm)，已截断到 1000mm")
+                z_mm = 1000.0
+            if z_mm < -200:
+                print(f"  [警告] 目标 Z={z_mm:.0f}mm 过低 (<-200mm)，已截断到 -200mm")
+                z_mm = -200.0
             cmd = f"MovL(pose = {{{x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f}, {rx:.1f}, {ry:.1f}, {rz:.1f}}})"
             print(f"  >>> {cmd}")
             resp = self.send(cmd)
             print(f"  <<< {resp}")
             if resp.startswith("-"):
                 print(f"  [MovL 失败] {resp}")
+            # 运动后检查是否报警
+            time.sleep(0.3)
+            err = self.get_error_id()
+            # GetErrorID 返回格式: 0,{[]},GetErrorID(); (无报警) 或 0,{[id,..]},GetErrorID(); (有报警)
+            if "[]" not in err:
+                print(f"  [报警!] 机器人报警码: {err}")
+                print(f"  → 程序即将执行 clear_alarm() 自动恢复...")
+                self.clear_alarm()
         except Exception as e:
             print(f"  [MovL 异常] {e}")
 
@@ -158,9 +194,9 @@ CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib_eye_in_hand.json")
 
 
 class HandEyeTransformer:
-    # 手动覆盖标定位移 (mm, 法兰坐标系)。设为 None 则使用标定文件。
-    # 相机在法兰上方 13cm: 一般是 Z 偏移。按需改 X/Y。
-    MANUAL_OFFSET_MM = None  # None=用标定文件, 例: [0, 0, 130]=手动指定相机偏移
+    # 手动覆盖相机在法兰系的位姿 (mm)。设为 None 则使用标定文件。
+    # [-130, 0, 0] = 相机在法兰 X=-130mm, 相机光轴∥法兰Z
+    MANUAL_OFFSET_MM = [-130, 0, 0]
 
     def __init__(self, fx=FX, fy=FY, cx=CX, cy=CY):
         self.fx, self.fy = fx, fy
@@ -172,10 +208,11 @@ class HandEyeTransformer:
             with open(CALIB_FILE) as f:
                 calib = json.load(f)
             self.T_flange_to_cam = np.array(calib["T_flange_to_camera"])
-        # 手动覆盖位移
+        # 手动覆盖位移 + 旋转 (相机光轴 ∥ 法兰Z)
         if self.MANUAL_OFFSET_MM is not None:
             self.T_flange_to_cam[:3, 3] = np.array(self.MANUAL_OFFSET_MM) / 1000.0
-            print(f"[标定] 手动覆盖相机偏移: ({self.MANUAL_OFFSET_MM[0]},{self.MANUAL_OFFSET_MM[1]},{self.MANUAL_OFFSET_MM[2]})mm")
+            self.T_flange_to_cam[:3, :3] = np.eye(3)  # 相机与法兰同轴
+            print(f"[标定] 手动覆盖相机偏移: ({self.MANUAL_OFFSET_MM[0]},{self.MANUAL_OFFSET_MM[1]},{self.MANUAL_OFFSET_MM[2]})mm, 旋转=I")
         t = self.T_flange_to_cam[:3, 3]
         print(f"[标定] 已加载手眼标定: t=({t[0]*1000:.1f},{t[1]*1000:.1f},{t[2]*1000:.1f})mm")
 
