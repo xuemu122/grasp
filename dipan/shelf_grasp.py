@@ -34,8 +34,10 @@ DOBOT_IP = os.getenv("DOBOT_IP", "192.168.1.6")
 DOBOT_PORT = 29999
 
 HAND_LENGTH = 0.35      # 法兰 → 指尖 (米)
-HAND_WEIGHT = 1.4       # 末端重量 (kg), 手 1.2 + 连接件 0.2
-HAND_COG_Z = 0.10       # 重心距法兰 (米)
+HAND_WEIGHT = 0.6       # 末端重量 (kg), Aero Hand
+HAND_COG_X = -0.15      # 重心 X 偏移 (米)
+HAND_COG_Y = 0.14       # 重心 Y 偏移 (米)
+HAND_COG_Z = 0.27       # 重心 Z 偏移 (米)
 HAND_W_Y = 0.095        # 手 Y 方向宽度 (米)
 HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 
@@ -63,7 +65,7 @@ class DobotArm:
         print(f"[DOBOT] 已连接 {self.ip}:{self.port}")
         # 设置负载
         cmds = [
-            f"SetPayload(mass={HAND_WEIGHT}, centerX=0, centerY=0, centerZ={HAND_COG_Z})",
+            f"SetPayload(mass={HAND_WEIGHT}, centerX={HAND_COG_X*1000:.0f}, centerY={HAND_COG_Y*1000:.0f}, centerZ={HAND_COG_Z*1000:.0f})",
             "Tool(index=1)",
         ]
         for c in cmds:
@@ -334,14 +336,42 @@ def main():
     print("  操作说明:")
     print("  - 拖动机械臂到观察位姿 (能看到货架盒子)")
     print("  - 按 Enter ← 拍照识别并抓取最外侧盒子")
-    print("  - 输入 q ← 退出")
+    print("  - 输入 v   ← 实时画面预览 (YOLO 检测)")
+    print("  - 输入 q   ← 退出")
     print("=" * 60)
 
     try:
         while True:
-            cmd = input("\n按 Enter 抓取 | q 退出 > ").strip()
+            cmd = input("\n按 Enter 抓取 | v 预览 | q 退出 > ").strip()
             if cmd.lower() == "q":
                 break
+
+            if cmd.lower() == "v":
+                print("实时预览中… 按任意键退出预览")
+                cv2.namedWindow("Live YOLO", cv2.WINDOW_NORMAL)
+                cv2.destroyAllWindows()  # 清除旧窗口
+                cv2.namedWindow("Live YOLO", cv2.WINDOW_NORMAL)
+                while True:
+                    color, depth = camera.read()
+                    if color is None:
+                        time.sleep(0.1)
+                        continue
+                    dets = locator.process_frame(color, depth)
+                    viz = color.copy()
+                    if dets:
+                        for d in dets:
+                            cv2.rectangle(viz, (int(d.bbox[0]), int(d.bbox[1])),
+                                          (int(d.bbox[2]), int(d.bbox[3])), (0, 255, 0), 2)
+                            cv2.putText(viz, f"{d.class_name} {d.depth_m or 0:.2f}m",
+                                        (int(d.bbox[0]), int(d.bbox[1]) - 8),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    cv2.imshow("Live YOLO", viz)
+                    key = cv2.waitKey(30) & 0xFF
+                    if key != 0xFF:
+                        break
+                cv2.destroyWindow("Live YOLO")
+                print("预览结束")
+                continue
 
             # ── 获取当前法兰位姿 ──
             flange_pose = arm.get_pose()
@@ -401,7 +431,7 @@ def main():
                     col = (0, 0, 255)  # 选中的用红色
                 cv2.rectangle(viz, (int(d.bbox[0]), int(d.bbox[1])),
                               (int(d.bbox[2]), int(d.bbox[3])), col, 2)
-                cv2.putText(viz, f"{d.label or '?'} {d.depth_m:.2f}m",
+                cv2.putText(viz, f"{d.class_name or '?'} {d.depth_m:.2f}m",
                             (int(d.bbox[0]), int(d.bbox[1]) - 8),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
                 # 画抓取点 (上边缘/侧边缘)
