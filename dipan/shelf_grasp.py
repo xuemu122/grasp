@@ -113,22 +113,37 @@ class DobotArm:
         print(f"[DOBOT] 重连后 RobotMode: {resp}")
 
     def get_pose(self) -> Tuple[float, float, float, float, float, float]:
-        """返回 (x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)"""
-        resp = self.send("GetPose()")
-        nums = re.findall(r"[-+]?\d*\.?\d+", resp)
-        if len(nums) >= 6:
-            return tuple(map(float, nums[-6:]))
+        """返回 (x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)，失败时重试"""
+        for attempt in range(3):
+            resp = self.send("GetPose()")
+            nums = re.findall(r"[-+]?\d*\.?\d+", resp)
+            if len(nums) >= 6:
+                pose = tuple(map(float, nums[-6:]))
+                self._last_pose = pose
+                return pose
+            print(f"  [GetPose 重试 {attempt+1}]: {resp}")
+            time.sleep(0.3)
+        if self._last_pose is not None:
+            print(f"  [GetPose] 用缓存位姿")
+            return self._last_pose
         raise RuntimeError(f"无法解析位姿: {resp}")
+
+    _last_pose = None
 
     def movel(self, x_mm, y_mm, z_mm, rx=None, ry=None, rz=None, speed=100):
         """MovL V4: pose = {x, y, z, rx, ry, rz}，rx/ry/rz=None 则保持当前姿态"""
-        if rx is None:
-            pose = self.get_pose()
-            rx, ry, rz = pose[3], pose[4], pose[5]
-        cmd = f"MovL(pose = {{{x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f}, {rx:.1f}, {ry:.1f}, {rz:.1f}}})"
-        print(f"  >>> {cmd}")
-        resp = self.send(cmd)
-        print(f"  <<< {resp}")
+        try:
+            if rx is None:
+                pose = self.get_pose()
+                rx, ry, rz = pose[3], pose[4], pose[5]
+            cmd = f"MovL(pose = {{{x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f}, {rx:.1f}, {ry:.1f}, {rz:.1f}}})"
+            print(f"  >>> {cmd}")
+            resp = self.send(cmd)
+            print(f"  <<< {resp}")
+            if resp.startswith("-"):
+                print(f"  [MovL 失败] {resp}")
+        except Exception as e:
+            print(f"  [MovL 异常] {e}")
 
     def close(self):
         self.send("DisableRobot()")
@@ -145,7 +160,7 @@ CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib_eye_in_hand.json")
 class HandEyeTransformer:
     # 手动覆盖标定位移 (mm, 法兰坐标系)。设为 None 则使用标定文件。
     # 相机在法兰上方 13cm: 一般是 Z 偏移。按需改 X/Y。
-    MANUAL_OFFSET_MM = None  # 例: [-50, 0, 130] 表示相机在法兰 X=-50mm, Y=0, Z=+130mm
+    MANUAL_OFFSET_MM = None  # None=用标定文件, 例: [0, 0, 130]=手动指定相机偏移
 
     def __init__(self, fx=FX, fy=FY, cx=CX, cy=CY):
         self.fx, self.fy = fx, fy
