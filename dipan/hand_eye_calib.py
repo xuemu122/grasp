@@ -167,16 +167,17 @@ def hand_eye_calib(A_list, B_list):
         R_target2cam.append(B[:3, :3])
         t_target2cam.append(B[:3, 3])
 
-    # OpenCV 返回: camera → flange (相机在法兰坐标系下)
-    R_cam2gripper, t_cam2gripper = cv2.calibrateHandEye(
+    # OpenCV calibrateHandEye 返回 camera→flange (相机在法兰系下)
+    # 我们要求的是 flange→camera = inv(camera→flange)
+    R_cam2flange, t_cam2flange = cv2.calibrateHandEye(
         R_gripper2base, t_gripper2base,
         R_target2cam, t_target2cam,
         method=cv2.CALIB_HAND_EYE_TSAI,
     )
-    T_flange2cam = np.eye(4)
-    T_flange2cam[:3, :3] = R_cam2gripper
-    T_flange2cam[:3, 3] = t_cam2gripper.flatten()
-    # calibrateHandEye 返回的 R_cam2gripper 就是 T_flange←camera (相机在法兰系)
+    T_cam2flange = np.eye(4)
+    T_cam2flange[:3, :3] = R_cam2flange
+    T_cam2flange[:3, 3] = t_cam2flange.flatten()
+    T_flange2cam = np.linalg.inv(T_cam2flange)
     return T_flange2cam
 
 
