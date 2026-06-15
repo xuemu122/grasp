@@ -629,8 +629,8 @@ def main():
             R_f = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
             fz_dir = R_f[:, 2]   # 法兰+Z → 手指方向 (世界系)
 
-            # ── 指尖世界偏移 (基座系, 米): +X=前 +Y=左 +Z=上 ──
-            GRASP_OFFSET_M = (0.00, 0.02, 0.05)  # 前10cm, 右13cm, 上5cm
+            # ── 指尖世界偏移 (基座系, 米): -X=前 +Y=右 +Z=上 ──
+            GRASP_OFFSET_M = (-0.05, 0.02, 0.05)  # 前10cm, 右13cm, 上5cm
             fingertip_w = np.array([wx, wy, wz]) + np.array(GRASP_OFFSET_M)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
 
