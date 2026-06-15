@@ -246,8 +246,9 @@ CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib_eye_in_hand.json")
 
 class HandEyeTransformer:
     # 手动覆盖相机在法兰系的位姿 (mm)。设为 None 则使用标定文件。
-    # 相机光轴 ∥ 法兰+Z (手指方向), 法兰中点→相机 13cm
-    MANUAL_OFFSET_MM = [0, 0, 130]
+    # 相机在法兰 -X 方向约 12cm, 光轴 ∥ 法兰+Z (手指方向), 相机+X→法兰-Y (rz≈-90°)
+    MANUAL_OFFSET_MM = [-120, 0, 0]
+    #MANUAL_OFFSET_MM = None
 
     def __init__(self, fx=FX, fy=FY, cx=CX, cy=CY):
         self.fx, self.fy = fx, fy
@@ -260,11 +261,16 @@ class HandEyeTransformer:
             with open(CALIB_FILE) as f:
                 calib = json.load(f)
             self.T_flange_to_cam = np.array(calib["T_flange_to_camera"])
-        # 手动覆盖: 相机∥法兰, depth 沿法兰+Z
+        # 手动覆盖: 相机光轴∥法兰+Z, 相机+X→法兰-Y (≈ rz=-90°)
         if self.MANUAL_OFFSET_MM is not None:
             self.T_flange_to_cam[:3, 3] = np.array(self.MANUAL_OFFSET_MM) / 1000.0
-            self.T_flange_to_cam[:3, :3] = np.eye(3)
-            print(f"[标定] 手动覆盖: 法兰→相机 平移=({self.MANUAL_OFFSET_MM[0]},{self.MANUAL_OFFSET_MM[1]},{self.MANUAL_OFFSET_MM[2]})mm, 光轴∥法兰Z")
+            rz = np.deg2rad(-90)  # 相机相对于法兰绕 Z 转了 -90°
+            self.T_flange_to_cam[:3, :3] = np.array([
+                [np.cos(rz), -np.sin(rz), 0],
+                [np.sin(rz),  np.cos(rz), 0],
+                [0, 0, 1]
+            ])
+            print(f"[标定] 手动覆盖: 法兰→相机 平移=({self.MANUAL_OFFSET_MM[0]},{self.MANUAL_OFFSET_MM[1]},{self.MANUAL_OFFSET_MM[2]})mm, rz={np.rad2deg(rz):.0f}°")
         t = self.T_flange_to_cam[:3, 3]
         print(f"[标定] 已加载手眼标定: t=({t[0]*1000:.1f},{t[1]*1000:.1f},{t[2]*1000:.1f})mm")
 
@@ -625,16 +631,16 @@ def main():
             R_f = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
             fz_dir = R_f[:, 2]   # 法兰+Z → 手指方向 (世界系)
 
-            # ── 指尖世界偏移 (基座系, 米): -X=前 +Y=左 +Z=上 ──
-            GRASP_OFFSET_M = (0.00, -0.25, 0.25)  # 上15cm +Z, 右5cm -Y
+            # ── 指尖世界偏移 (基座系, 米): +X=前 +Y=左 +Z=上 ──
+            GRASP_OFFSET_M = (0.10, -0.05, 0.10)  # 前10cm X, 右5cm -Y, 上10cm Z (降Z防报警)
             fingertip_w = np.array([wx, wy, wz]) + np.array(GRASP_OFFSET_M)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
 
-            # 悬停: 世界Z抬高 8cm (不后退，避免不可达)
+            # 悬停: 世界Z↑8cm
             approach_pt = flange_pt + np.array([0.0, 0.0, 0.08])
 
-            # 抓取: 沿手指方向前进 12cm 探入盒面
-            grasp_pt = flange_pt + 0.29 * fz_dir
+            # 抓取: 沿手指方向仅前进 2cm
+            grasp_pt = flange_pt + 0.02 * fz_dir
 
             # ── 转为 mm (python float) 供后续微调 ──
             fx, fy, fz  = float(flange_pt[0]*1000),  float(flange_pt[1]*1000),  float(flange_pt[2]*1000)

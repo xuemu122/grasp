@@ -173,12 +173,10 @@ def hand_eye_calib(A_list, B_list):
         R_target2cam, t_target2cam,
         method=cv2.CALIB_HAND_EYE_TSAI,
     )
-    T_cam2flange = np.eye(4)
-    T_cam2flange[:3, :3] = R_cam2gripper
-    T_cam2flange[:3, 3] = t_cam2gripper.flatten()
-
-    # 我们要的是 flange→camera = inv(camera→flange)
-    T_flange2cam = np.linalg.inv(T_cam2flange)
+    T_flange2cam = np.eye(4)
+    T_flange2cam[:3, :3] = R_cam2gripper
+    T_flange2cam[:3, 3] = t_cam2gripper.flatten()
+    # calibrateHandEye 返回的 R_cam2gripper 就是 T_flange←camera (相机在法兰系)
     return T_flange2cam
 
 
