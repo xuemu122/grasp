@@ -246,7 +246,8 @@ CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib_eye_in_hand.json")
 
 class HandEyeTransformer:
     # 手动覆盖相机在法兰系的位姿 (mm)。设为 None 则使用标定文件。
-    MANUAL_OFFSET_MM = None   # 使用 calib_eye_in_hand.json
+    # 相机光轴 ∥ 法兰+Z (手指方向), 法兰中点→相机 13cm
+    MANUAL_OFFSET_MM = [0, 0, 130]
 
     def __init__(self, fx=FX, fy=FY, cx=CX, cy=CY):
         self.fx, self.fy = fx, fy
@@ -259,11 +260,11 @@ class HandEyeTransformer:
             with open(CALIB_FILE) as f:
                 calib = json.load(f)
             self.T_flange_to_cam = np.array(calib["T_flange_to_camera"])
-        # 手动覆盖位移 + 旋转 (相机光轴 ∥ 法兰Z)
+        # 手动覆盖: 相机∥法兰, depth 沿法兰+Z
         if self.MANUAL_OFFSET_MM is not None:
             self.T_flange_to_cam[:3, 3] = np.array(self.MANUAL_OFFSET_MM) / 1000.0
-            self.T_flange_to_cam[:3, :3] = np.eye(3)  # 相机与法兰同轴
-            print(f"[标定] 手动覆盖相机偏移: ({self.MANUAL_OFFSET_MM[0]},{self.MANUAL_OFFSET_MM[1]},{self.MANUAL_OFFSET_MM[2]})mm, 旋转=I")
+            self.T_flange_to_cam[:3, :3] = np.eye(3)
+            print(f"[标定] 手动覆盖: 法兰→相机 平移=({self.MANUAL_OFFSET_MM[0]},{self.MANUAL_OFFSET_MM[1]},{self.MANUAL_OFFSET_MM[2]})mm, 光轴∥法兰Z")
         t = self.T_flange_to_cam[:3, 3]
         print(f"[标定] 已加载手眼标定: t=({t[0]*1000:.1f},{t[1]*1000:.1f},{t[2]*1000:.1f})mm")
 
@@ -625,7 +626,7 @@ def main():
             fz_dir = R_f[:, 2]   # 法兰+Z → 手指方向 (世界系)
 
             # ── 指尖世界偏移 (基座系, 米): -X=前 +Y=左 +Z=上 ──
-            GRASP_OFFSET_M = (0.0, 0.0, 0.0)  # 运行时用 wasd/ef 交互微调
+            GRASP_OFFSET_M = (0.00, -0.05, 0.15)  # 上15cm +Z, 右5cm -Y
             fingertip_w = np.array([wx, wy, wz]) + np.array(GRASP_OFFSET_M)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
 
