@@ -763,8 +763,8 @@ def main():
             # 4. 抓取 (动作二) 并等待 5s 握紧
             if not SKIP_HAND:
                 hand.close()
-                print("  灵巧手 → 动作二 (闭合), 等待 5s ...")
-                time.sleep(5.0)
+                print("  灵巧手 → 动作二 (闭合), 等待 3s ...")
+                time.sleep(3.0)
 
             # 5. 后退 (沿法兰-Z 退 10cm, 离开货架)
             retreat_pt = np.array([gx+offset_x, gy+offset_y, gz+offset_z]) - 100.0 * fz_dir
