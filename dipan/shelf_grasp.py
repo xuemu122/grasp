@@ -30,14 +30,12 @@ from aero_open_sdk.aero_hand import AeroHand
 # ============================================================
 # 参数
 # ============================================================
-DOBOT_IP = os.getenv("DOBOT_IP", "192.168.1.6")
+DOBOT_IP = os.getenv("DOBOT_IP", "192.168.5.1")
 DOBOT_PORT = 29999
 
-HAND_LENGTH = 0.35      # 法兰 → 指尖 (米)
+HAND_LENGTH = 0.25      # 法兰 → 指尖 (米)
 HAND_WEIGHT = 0.6       # 末端重量 (kg), Aero Hand
-HAND_COG_X = -0.15      # 重心 X 偏移 (米)
-HAND_COG_Y = 0.14       # 重心 Y 偏移 (米)
-HAND_COG_Z = 0.27       # 重心 Z 偏移 (米)
+HAND_COG_Z = 0.12       # 重心 Z 偏移 (米), 12cm 法兰+Z 方向
 HAND_W_Y = 0.095        # 手 Y 方向宽度 (米)
 HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 
@@ -46,7 +44,10 @@ FX, FY = 390.4, 390.0
 CX, CY = 324.5, 241.2
 
 # 调试开关: 屏蔽手, 只测试手眼标定 + 机械臂走位
-SKIP_HAND = True
+SKIP_HAND = False
+
+# 机械臂初始观察位姿 (角度制)
+HOME_JOINTS_DEG = [-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]
 
 
 # ============================================================
@@ -63,7 +64,7 @@ class DobotArm:
         self.sock.settimeout(3)
         self.sock.connect((self.ip, self.port))
         print(f"[DOBOT] 已连接 {self.ip}:{self.port}")
-        # V4 协议: ClearError → RequestControl → PowerOn → EnableRobot
+        # V4 协议: ClearError → RequestControl → PowerOn → SetPayload → EnableRobot
         resp = self.send("ClearError()")
         print(f"[DOBOT] ClearError: {resp}")
         resp = self.send("RequestControl()")
@@ -71,10 +72,43 @@ class DobotArm:
         resp = self.send("PowerOn()")
         print(f"[DOBOT] PowerOn: {resp}  (等待 10 秒上电...)")
         time.sleep(10)
-        resp = self.send(f"EnableRobot({HAND_WEIGHT}, {HAND_COG_X*1000:.0f}, {HAND_COG_Y*1000:.0f}, {HAND_COG_Z*1000:.0f})")
+
+        # 设置负载
+        resp = self.send(f"SetPayload({HAND_WEIGHT}, 0, 0, {HAND_COG_Z*1000:.0f})")
+        print(f"[DOBOT] SetPayload: {resp}")
+
+        # 使能 (不带负载参数，负载已用 SetPayload 设置)
+        resp = self.send("EnableRobot()")
         print(f"[DOBOT] EnableRobot: {resp}")
+        time.sleep(0.5)
+
         resp = self.send("RobotMode()")
         print(f"[DOBOT] RobotMode: {resp}")
+        if ",{5}," in resp:
+            print("[DOBOT] 警告! RobotMode=5 (POWER_OFF), 使能未生效")
+            self.do_enable()
+
+    def do_enable(self):
+        """重新使能"""
+        for attempt in range(3):
+            self.send("ClearError()")
+            time.sleep(0.3)
+            self.send("RequestControl()")
+            time.sleep(0.3)
+            self.send("PowerOn()")
+            print(f"[DOBOT] 等待上电 10s (重试 {attempt+1}/3)...")
+            time.sleep(10)
+            self.send(f"SetPayload({HAND_WEIGHT}, 0, 0, {HAND_COG_Z*1000:.0f})")
+            resp = self.send("EnableRobot()")
+            print(f"[DOBOT] EnableRobot: {resp}")
+            time.sleep(0.5)
+            resp = self.send("RobotMode()")
+            print(f"[DOBOT] RobotMode: {resp}")
+            if ",{5}," not in resp:
+                print("[DOBOT] 使能成功!")
+                return True
+        print("[DOBOT] 使能失败! 请手动检查机械臂状态")
+        return False
 
     def send(self, cmd: str) -> str:
         if not cmd.endswith("\n"):
@@ -103,14 +137,7 @@ class DobotArm:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.settimeout(3)
         self.sock.connect((self.ip, self.port))
-        self.send("ClearError()")
-        self.send("RequestControl()")
-        self.send("PowerOn()")
-        print("[DOBOT] 等待上电 10s...")
-        time.sleep(10)
-        self.send(f"EnableRobot({HAND_WEIGHT}, {HAND_COG_X*1000:.0f}, {HAND_COG_Y*1000:.0f}, {HAND_COG_Z*1000:.0f})")
-        resp = self.send("RobotMode()")
-        print(f"[DOBOT] 重连后 RobotMode: {resp}")
+        self.do_enable()
 
     def get_pose(self) -> Tuple[float, float, float, float, float, float]:
         """返回 (x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)，失败时重试"""
@@ -140,16 +167,9 @@ class DobotArm:
         print("[DOBOT] 清除报警并重新使能...")
         self.send("ClearError()")
         time.sleep(0.5)
-        # 检查是否还有报警
         err = self.get_error_id()
         print(f"[DOBOT] GetErrorID: {err}")
-        self.send("RequestControl()")
-        self.send("PowerOn()")
-        print("[DOBOT] 等待上电 10s...")
-        time.sleep(10)
-        self.send(f"EnableRobot({HAND_WEIGHT}, {HAND_COG_X*1000:.0f}, {HAND_COG_Y*1000:.0f}, {HAND_COG_Z*1000:.0f})")
-        resp = self.send("RobotMode()")
-        print(f"[DOBOT] RobotMode: {resp}")
+        self.do_enable()
 
     def movel(self, x_mm, y_mm, z_mm, rx=None, ry=None, rz=None, speed=100):
         """MovL V4: pose = {x, y, z, rx, ry, rz}，rx/ry/rz=None 则保持当前姿态"""
@@ -157,7 +177,10 @@ class DobotArm:
             if rx is None:
                 pose = self.get_pose()
                 rx, ry, rz = pose[3], pose[4], pose[5]
-            # 安全兜底: Z 超出 Nova5 绝对工作范围时警告但不截断
+            # 安全: Z<50mm 拒绝执行, 防止撞击底座
+            if z_mm < 50:
+                print(f"  [拒绝!] Z={z_mm:.0f}mm 太低, 可能碰撞, 跳过低抓取")
+                return
             if z_mm > 1100 or z_mm < -300:
                 print(f"  [警告] Z={z_mm:.0f}mm 可能超出工作范围, 请注意!")
             cmd = f"MovL(pose = {{{x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f}, {rx:.1f}, {ry:.1f}, {rz:.1f}}})"
@@ -167,15 +190,47 @@ class DobotArm:
             if resp.startswith("-"):
                 print(f"  [MovL 被拒绝] 错误码={resp.split(',')[0]}, 可能是位姿不可达")
                 return  # -1/-2 等是立即拒绝, 不是报警, 不调 clear_alarm
-            # 命令已被接受(0,...), 等待运动完成后检查是否途中报警
+            # 等待运动完成 (队列ID递增=还在排队, 限制最多15s)
+            for _ in range(30):
+                time.sleep(0.5)
+                err = self.get_error_id()
+                if "[]" not in err:
+                    print(f"  [报警!] 运动中触发报警: {err}")
+                    print(f"  → 自动 clear_alarm() 恢复...")
+                    self.clear_alarm()
+                    break
+                # 运动完成判断: RobotMode 回到非运动状态
+                rm = self.send("RobotMode()")
+                if ",{7}," in rm or ",{4}," in rm or ",{5}," in rm:
+                    break  # 运动完成或非运动状态
+        except Exception as e:
+            print(f"  [MovL 异常] {e}")
+
+    def go_home(self, speed=100):
+        """MovJ 回到预设观察位姿"""
+        self.movj(HOME_JOINTS_DEG)
+
+    def movj(self, joints_deg):
+        """MovJ 关节运动到目标关节角 (角度制)"""
+        j = joints_deg
+        cmd = f"MovJ(joint={{{j[0]:.1f},{j[1]:.1f},{j[2]:.1f},{j[3]:.1f},{j[4]:.1f},{j[5]:.1f}}})"
+        print(f"  >>> {cmd}")
+        resp = self.send(cmd)
+        print(f"  <<< {resp}")
+        if resp.startswith("-"):
+            print(f"  [MovJ 被拒绝] 错误码={resp.split(',')[0]}")
+            return False
+        for _ in range(30):
             time.sleep(0.5)
             err = self.get_error_id()
             if "[]" not in err:
-                print(f"  [报警!] 运动中触发报警: {err}")
-                print(f"  → 自动 clear_alarm() 恢复...")
+                print(f"  [报警!] MovJ 触发报警: {err}")
                 self.clear_alarm()
-        except Exception as e:
-            print(f"  [MovL 异常] {e}")
+                return False
+            rm = self.send("RobotMode()")
+            if ",{7}," in rm or ",{4}," in rm or ",{5}," in rm:
+                return True
+        return True
 
     def close(self):
         self.send("DisableRobot()")
@@ -191,10 +246,11 @@ CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib_eye_in_hand.json")
 
 class HandEyeTransformer:
     # 手动覆盖相机在法兰系的位姿 (mm)。设为 None 则使用标定文件。
-    MANUAL_OFFSET_MM = None   # 使用 calib_eye_in_hand.json
+    MANUAL_OFFSET_MM = [0, 0, 0]   # 相机装法兰中心，用完整法兰姿态做变换
 
     def __init__(self, fx=FX, fy=FY, cx=CX, cy=CY):
         self.fx, self.fy = fx, fy
+        
         self.cx, self.cy = cx, cy
         self.flange_pose = None
         # 加载标定结果
@@ -222,45 +278,28 @@ class HandEyeTransformer:
 
     def camera_to_robot(self, p_cam, flange_pose=None, debug=False):
         """相机坐标系 → 机器人基座 (米)
-        有标定: base←flange * T_flange→cam * p_cam
-        无标定: 近似同轴
+        法兰 RPY 完整变换 (相机与法兰同轴)
         """
         pose = flange_pose or self.flange_pose
-        fx_m, fy_m, fz_m = pose[0]/1000, pose[1]/1000, pose[2]/1000
 
-        # 有标定文件时用精确变换
-        if not np.allclose(self.T_flange_to_cam, np.eye(4)):
-            # 法兰→基座 (用完整 RPY pose 构造)
-            T_base_flange = np.eye(4)
-            T_base_flange[:3, :3] = self._rpy_to_rot(pose[3], pose[4], pose[5])
-            T_base_flange[:3, 3] = [fx_m, fy_m, fz_m]
-            # base←flange * flange←cam * cam←point
-            p_cam_h = np.append(p_cam, 1.0)
+        # 法兰→基座 (用完整 RPY pose 构造)
+        T_base_flange = np.eye(4)
+        T_base_flange[:3, :3] = self._rpy_to_rot(pose[3], pose[4], pose[5])
+        T_base_flange[:3, 3] = [pose[0]/1000, pose[1]/1000, pose[2]/1000]
+        # base←flange * flange←cam * cam←point
+        p_cam_h = np.append(p_cam, 1.0)
+        p_w = T_base_flange @ self.T_flange_to_cam @ p_cam_h
 
-            # 中间结果：相机在世界坐标系下的位置
+        if debug:
             cam_w = T_base_flange @ self.T_flange_to_cam @ np.array([0, 0, 0, 1.0])
+            print(f"\n  [DEBUG 手眼变换]")
+            print(f"    法兰(基座): ({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f})mm  rpy=({pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
+            print(f"    T_cam→flange (mm): ({self.T_flange_to_cam[0,3]*1000:.0f}, {self.T_flange_to_cam[1,3]*1000:.0f}, {self.T_flange_to_cam[2,3]*1000:.0f})")
+            print(f"    相机在世界: ({cam_w[0]:.3f},{cam_w[1]:.3f},{cam_w[2]:.3f})m")
+            print(f"    盒子在相机: ({p_cam[0]:.3f},{p_cam[1]:.3f},{p_cam[2]:.3f})m")
+            print(f"    盒子在世界: ({p_w[0]:.3f},{p_w[1]:.3f},{p_w[2]:.3f})m")
 
-            p_w = T_base_flange @ self.T_flange_to_cam @ p_cam_h
-
-            if debug:
-                print(f"\n  [DEBUG 手眼变换]")
-                print(f"    法兰(基座): ({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f})mm  rpy=({pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
-                print(f"    T_flange→cam (mm): ({self.T_flange_to_cam[0,3]*1000:.0f}, {self.T_flange_to_cam[1,3]*1000:.0f}, {self.T_flange_to_cam[2,3]*1000:.0f})")
-                print(f"    相机在世界: ({cam_w[0]:.3f},{cam_w[1]:.3f},{cam_w[2]:.3f})m")
-                print(f"    盒子在相机: ({p_cam[0]:.3f},{p_cam[1]:.3f},{p_cam[2]:.3f})m")
-                print(f"    盒子在世界: ({p_w[0]:.3f},{p_w[1]:.3f},{p_w[2]:.3f})m")
-
-            return p_w[:3]
-        else:
-            # 无标定 fallback: 同轴近似
-            rz = np.deg2rad(pose[5])
-            cos_rz, sin_rz = np.cos(rz), np.sin(rz)
-            x_w = fx_m + cos_rz * p_cam[2] - sin_rz * p_cam[0]
-            y_w = fy_m + sin_rz * p_cam[2] + cos_rz * p_cam[0]
-            z_w = fz_m - p_cam[1]
-            if debug:
-                print(f"\n  [DEBUG 无标定] 法兰:({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f}) 盒({x_w:.3f},{y_w:.3f},{z_w:.3f})m")
-            return np.array([x_w, y_w, z_w])
+        return p_w[:3]
 
     @staticmethod
     def _rpy_to_rot(rx_deg, ry_deg, rz_deg):
@@ -312,21 +351,40 @@ class AeroGripper:
 # ============================================================
 def pick_target_box(detections):
     """
-    选中货架排列中最靠边的盒子（在图像空间里 X 离中心最远的）
-    货架紧凑，得从最外侧下手
+    货架分层抓取:
+      1. 按深度分组 (同层盒子深度差 < 0.1m)
+      2. 选最前层 (深度最小) 
+      3. 在该层里选最靠边的盒子
     """
     valid = [d for d in detections if d.depth_m and d.depth_m > 0]
     if not valid:
-        # fallback: 没有深度时选最大框
         valid = sorted(detections, key=lambda d: (d.bbox[2]-d.bbox[0])*(d.bbox[3]-d.bbox[1]), reverse=True)
         if valid:
-            return valid[0], "side"  # 默认抓右边
+            return valid[0], "side"
         return None, None
 
-    # 找 X 方向离画面中心最远的 → 最靠边的盒子
-    img_center_x = 320  # 640/2
-    target = max(valid, key=lambda d: abs((d.bbox[0] + d.bbox[2]) / 2 - img_center_x))
-    # 判断在左侧还是右侧
+    # 按深度分组 (容差 0.15m)
+    valid.sort(key=lambda d: d.depth_m)
+    layers = []
+    current_layer = [valid[0]]
+    for d in valid[1:]:
+        if abs(d.depth_m - current_layer[0].depth_m) < 0.15:
+            current_layer.append(d)
+        else:
+            layers.append(current_layer)
+            current_layer = [d]
+    layers.append(current_layer)
+
+    # 选最前层 (深度最小的那层)
+    front_layer = layers[0]
+    print(f"  检测到 {len(layers)} 层货架, 选最前层 ({len(front_layer)} 个盒子, 深度~{front_layer[0].depth_m:.2f}m)")
+    for i, layer in enumerate(layers):
+        depths = [f"{d.depth_m:.2f}" for d in layer]
+        print(f"    第{i+1}层: {len(layer)}个盒子 depth=[{', '.join(depths)}]m")
+
+    # 在最前层选 X 方向离中心最远的
+    img_center_x = 320
+    target = max(front_layer, key=lambda d: abs((d.bbox[0] + d.bbox[2]) / 2 - img_center_x))
     cx = (target.bbox[0] + target.bbox[2]) / 2
     edge = "left" if cx < img_center_x else "right"
     return target, edge
@@ -394,6 +452,11 @@ def main():
     print("\n[2/4] 连接 DOBOT ...")
     arm = DobotArm()
     arm.connect()
+
+    # 回初始观察位姿
+    print("\n[Home] 回到预设初始位姿 ...")
+    arm.go_home()
+    time.sleep(2)  # 等待运动完成
 
     # ── 3. 连接灵巧手 ──
     if SKIP_HAND:
@@ -562,15 +625,15 @@ def main():
             fz_dir = R_f[:, 2]   # 法兰+Z → 手指方向 (世界系)
 
             # ── 指尖世界偏移 (基座系, 米): -X=前 +Y=左 +Z=上 ──
-            GRASP_OFFSET_M = (0.0, 0.0, 0.0)  # 标定到位后清零，偏差用 wasd 微调
+            GRASP_OFFSET_M = (0.0, 0.0, 0.0)  # 运行时用 wasd/ef 交互微调
             fingertip_w = np.array([wx, wy, wz]) + np.array(GRASP_OFFSET_M)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
 
-            # 悬停: 法兰比目标高 4cm (世界 Z↑, 不受法兰倾斜影响)
-            approach_pt = flange_pt + np.array([0.0, 0.0, 0.04])
+            # 悬停: 世界Z抬高 8cm (不后退，避免不可达)
+            approach_pt = flange_pt + np.array([0.0, 0.0, 0.08])
 
-            # 抓取: 沿手指方向前进 2cm 探入盒面 (法兰+Z)
-            grasp_pt = flange_pt + 0.02 * fz_dir
+            # 抓取: 沿手指方向前进 12cm 探入盒面
+            grasp_pt = flange_pt + 0.29 * fz_dir
 
             # ── 转为 mm (python float) 供后续微调 ──
             fx, fy, fz  = float(flange_pt[0]*1000),  float(flange_pt[1]*1000),  float(flange_pt[2]*1000)
@@ -688,25 +751,31 @@ def main():
             if not SKIP_HAND:
                 hand.open()
 
-            # 2. 悬停位 (法兰退回 4cm)
+            # 2. 悬停位 (退后10cm + 抬高8cm)
             arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=150)
             time.sleep(1.5)
 
-            # 3. 下降抓取 (法兰前进，指尖探入盒面)
+            # 3. 前进抓取 (法兰前进15cm，指尖探入盒面5cm)
             arm.movel(gx + offset_x, gy + offset_y, gz + offset_z, speed=50)
             time.sleep(1.5)
 
-            # 4. 抓取
+            # 4. 抓取 (动作二) 并等待 5s 握紧
             if not SKIP_HAND:
                 hand.close()
-                time.sleep(1.5)
+                print("  灵巧手 → 动作二 (闭合), 等待 5s ...")
+                time.sleep(5.0)
 
             # 5. 后退 (沿法兰-Z 退 10cm, 离开货架)
             retreat_pt = np.array([gx+offset_x, gy+offset_y, gz+offset_z]) - 100.0 * fz_dir
             arm.movel(float(retreat_pt[0]), float(retreat_pt[1]), float(retreat_pt[2]), speed=100)
             time.sleep(1.5)
 
-            print("抓取完成! 拖动到放置位按 Enter 继续 / q 退出")
+            # 6. 回到初始观察位姿
+            print("\n[Home] 回到初始位姿 ...")
+            arm.go_home()
+            time.sleep(2)
+
+            print("抓取完成! 按 Enter 继续 / q 退出")
 
     except KeyboardInterrupt:
         pass
