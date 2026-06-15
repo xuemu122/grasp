@@ -632,12 +632,12 @@ def main():
             fz_dir = R_f[:, 2]   # 法兰+Z → 手指方向 (世界系)
 
             # ── 指尖世界偏移 (基座系, 米): +X=前 +Y=左 +Z=上 ──
-            GRASP_OFFSET_M = (0.10, -0.05, 0.10)  # 前10cm X, 右5cm -Y, 上10cm Z (降Z防报警)
+            GRASP_OFFSET_M = (0.00, -0.05, 0.05)  # X=0 Y=-5cm右 Z=5cm上 (已校准: 正向+10cm,下5cm)
             fingertip_w = np.array([wx, wy, wz]) + np.array(GRASP_OFFSET_M)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
 
             # 悬停: 世界Z↑8cm
-            approach_pt = flange_pt + np.array([0.0, 0.0, 0.08])
+            approach_pt = flange_pt + np.array([0.0, 0.0, 0.01])
 
             # 抓取: 沿手指方向仅前进 2cm
             grasp_pt = flange_pt + 0.02 * fz_dir
