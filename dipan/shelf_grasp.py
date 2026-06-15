@@ -367,7 +367,7 @@ def pick_target_box(detections):
     if not valid:
         valid = sorted(detections, key=lambda d: (d.bbox[2]-d.bbox[0])*(d.bbox[3]-d.bbox[1]), reverse=True)
         if valid:
-            return valid[0], "side"
+            return valid[0], "right"
         return None, None
 
     # 按深度分组 (容差 0.15m)
@@ -389,12 +389,10 @@ def pick_target_box(detections):
         depths = [f"{d.depth_m:.2f}" for d in layer]
         print(f"    第{i+1}层: {len(layer)}个盒子 depth=[{', '.join(depths)}]m")
 
-    # 在最前层选 X 方向离中心最远的
+    # 在最前层选 X 方向离中心最远的 (始终从右侧抓取)
     img_center_x = 320
     target = max(front_layer, key=lambda d: abs((d.bbox[0] + d.bbox[2]) / 2 - img_center_x))
-    cx = (target.bbox[0] + target.bbox[2]) / 2
-    edge = "left" if cx < img_center_x else "right"
-    return target, edge
+    return target, "right"
 
 
 def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4):
