@@ -246,7 +246,7 @@ CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib_eye_in_hand.json")
 
 class HandEyeTransformer:
     # 手动覆盖相机在法兰系的位姿 (mm)。设为 None 则使用标定文件。
-    MANUAL_OFFSET_MM = [0, 0, 0]   # 相机装法兰中心，用完整法兰姿态做变换
+    MANUAL_OFFSET_MM = None   # 使用 calib_eye_in_hand.json
 
     def __init__(self, fx=FX, fy=FY, cx=CX, cy=CY):
         self.fx, self.fy = fx, fy
