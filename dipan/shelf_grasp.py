@@ -44,7 +44,7 @@ FX, FY = 390.4, 390.0
 CX, CY = 324.5, 241.2
 
 # 调试开关: 屏蔽手, 只测试手眼标定 + 机械臂走位
-SKIP_HAND = True
+SKIP_HAND = False
 
 # 机械臂初始观察位姿 (角度制)
 HOME_JOINTS_DEG = [-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]
@@ -630,7 +630,7 @@ def main():
             fz_dir = R_f[:, 2]   # 法兰+Z → 手指方向 (世界系)
 
             # ── 指尖世界偏移 (基座系, 米): -X=前 +Y=右 +Z=上 ──
-            GRASP_OFFSET_M = (-0.05, 0.02, 0.05)  # 前10cm, 右13cm, 上5cm
+            GRASP_OFFSET_M = (-0.07, 0.02, 0.04)  # 前10cm, 右13cm, 上5cm
             fingertip_w = np.array([wx, wy, wz]) + np.array(GRASP_OFFSET_M)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
 
