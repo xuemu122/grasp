@@ -49,32 +49,28 @@ SKIP_HAND = False
 # 机械臂初始观察位姿 (角度制)
 HOME_JOINTS_DEG = [-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]
 
-# 货架层位姿文件
+# 货架层位姿文件 (笛卡尔: x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)
 SHELF_LAYERS_FILE = os.path.join(os.path.dirname(__file__), "shelf_layers.json")
-_current_layer_idx = 1  # 当前选中的层编号
-_shelf_layer_joints = {}  # {1: (joints_list, name), 2: ...}
+_current_layer_idx = None  # 当前选中的层编号 (None=HOME)
+_shelf_layer_poses = {}  # {1: ([x,y,z,rx,ry,rz], name), 2: ...}
 
 
 def load_shelf_layers():
     """从 JSON 加载货架层位姿，返回 (layers_dict, current_idx)"""
-    global _shelf_layer_joints, _current_layer_idx
+    global _shelf_layer_poses, _current_layer_idx
     if os.path.exists(SHELF_LAYERS_FILE):
         with open(SHELF_LAYERS_FILE) as f:
             data = json.load(f)
         for k, v in data.get("layers", {}).items():
-            _shelf_layer_joints[int(k)] = (v["joints"], v.get("name", f"第{k}层"))
-        _current_layer_idx = data.get("current", 1)
-    else:
-        # 默认: 第1层 = HOME
-        _shelf_layer_joints[1] = (list(HOME_JOINTS_DEG), "顶层")
-        _current_layer_idx = 1
-    return _shelf_layer_joints, _current_layer_idx
+            _shelf_layer_poses[int(k)] = (v["pose"], v.get("name", f"第{k}层"))
+        _current_layer_idx = data.get("current")
+    return _shelf_layer_poses, _current_layer_idx
 
 
 def save_shelf_layers():
     """保存货架层位姿到 JSON"""
     data = {
-        "layers": {str(k): {"joints": j, "name": n} for k, (j, n) in _shelf_layer_joints.items()},
+        "layers": {str(k): {"pose": p, "name": n} for k, (p, n) in _shelf_layer_poses.items()},
         "current": _current_layer_idx,
     }
     with open(SHELF_LAYERS_FILE, "w") as f:
@@ -82,13 +78,13 @@ def save_shelf_layers():
 
 
 def go_to_layer(arm: "DobotArm", layer_idx: int):
-    """移动机械臂到指定货架层的观察位姿 (MovJ)"""
-    if layer_idx not in _shelf_layer_joints:
+    """移动机械臂到指定货架层的观察位姿 (MovL 笛卡尔)"""
+    if layer_idx not in _shelf_layer_poses:
         print(f"  [错误] 第{layer_idx}层未记录! 先用 l s 记录当前位姿")
         return False
-    joints, name = _shelf_layer_joints[layer_idx]
+    pose, name = _shelf_layer_poses[layer_idx]
     print(f"\n[货架层] 移动到第{layer_idx}层 ({name})...")
-    arm.movj(joints)
+    arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100)
     time.sleep(2)
     return True
 
@@ -484,14 +480,17 @@ def _layer_management(arm: "DobotArm"):
 
     while True:
         print(f"\n── 货架层管理 ──")
-        print(f"  当前层: 第{_current_layer_idx}层 ({_shelf_layer_joints.get(_current_layer_idx, (None, '?'))[1]})")
-        if _shelf_layer_joints:
-            for idx in sorted(_shelf_layer_joints):
-                j, name = _shelf_layer_joints[idx]
-                marker = " ← 当前" if idx == _current_layer_idx else ""
-                print(f"    第{idx}层: {name} joints={[f'{v:.1f}' for v in j]}{marker}")
+        if _current_layer_idx:
+            print(f"  当前层: 第{_current_layer_idx}层 ({_shelf_layer_poses.get(_current_layer_idx, (None, '?'))[1]})")
         else:
-            print(f"  (无已记录层)")
+            print(f"  当前: HOME (未选层)")
+        if _shelf_layer_poses:
+            for idx in sorted(_shelf_layer_poses):
+                p, name = _shelf_layer_poses[idx]
+                marker = " ← 当前" if idx == _current_layer_idx else ""
+                print(f"    第{idx}层: {name}  pose=({p[0]:.0f},{p[1]:.0f},{p[2]:.0f},{p[3]:.0f},{p[4]:.0f},{p[5]:.0f}){marker}")
+        else:
+            print(f"  (无已记录层。拖动机械臂到目标层后, 输入 s 保存)")
         print(f"\n  操作:")
         print(f"    <数字>   ← 切换并移动到该层")
         print(f"    s       ← 记录当前法兰位姿为新层")
@@ -520,16 +519,16 @@ def _layer_management(arm: "DobotArm"):
                     continue
             else:
                 # 自动编号: 最大已有编号 + 1
-                idx = max(_shelf_layer_joints.keys()) + 1 if _shelf_layer_joints else 1
+                idx = max(_shelf_layer_poses.keys()) + 1 if _shelf_layer_poses else 1
 
             name = input('  层名称 (回车默认"第{}层"): '.format(idx)).strip()
             if not name:
                 name = f"第{idx}层"
 
-            _shelf_layer_joints[idx] = (list(pose[:6]), name)
+            _shelf_layer_poses[idx] = (list(pose[:6]), name)
             _current_layer_idx = idx
             save_shelf_layers()
-            print(f"  ✓ 第{idx}层 ({name}) 已记录: joints=[{', '.join(f'{v:.1f}' for v in pose[:6])}]")
+            print(f"  ✓ 第{idx}层 ({name}) 已记录: pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
             continue
 
         if choice.lower().startswith("d"):
@@ -542,14 +541,14 @@ def _layer_management(arm: "DobotArm"):
             except ValueError:
                 print("  格式: d <数字>")
                 continue
-            if idx not in _shelf_layer_joints:
+            if idx not in _shelf_layer_poses:
                 print(f"  第{idx}层不存在")
                 continue
-            del _shelf_layer_joints[idx]
+            del _shelf_layer_poses[idx]
             if _current_layer_idx == idx:
-                _current_layer_idx = max(_shelf_layer_joints.keys()) if _shelf_layer_joints else 1
+                _current_layer_idx = max(_shelf_layer_poses.keys()) if _shelf_layer_poses else None
             save_shelf_layers()
-            print(f"  ✓ 第{idx}层已删除, 当前层→第{_current_layer_idx}层")
+            print(f"  ✓ 第{idx}层已删除, 当前→{'HOME' if _current_layer_idx is None else f'第{_current_layer_idx}层'}")
             continue
 
         # 切换层
@@ -559,7 +558,7 @@ def _layer_management(arm: "DobotArm"):
             print("  无效输入, 请输入数字 / s / d / q")
             continue
 
-        if idx not in _shelf_layer_joints:
+        if idx not in _shelf_layer_poses:
             print(f"  第{idx}层未记录! 先拖机械臂到对应位置, 然后 s {idx} 保存")
             continue
 
@@ -599,7 +598,7 @@ def main():
 
     # ── 货架层管理 ──
     load_shelf_layers()
-    if _current_layer_idx != 1:
+    if _current_layer_idx is not None:
         go_to_layer(arm, _current_layer_idx)
 
     # ── 3. 连接灵巧手 ──
@@ -630,8 +629,12 @@ def main():
 
     try:
         while True:
-            _, layer_name = _shelf_layer_joints.get(_current_layer_idx, (None, "未知"))
-            cmd = input(f"\n[第{_current_layer_idx}层 {layer_name}] 按 Enter 抓取 | l 层管理 | v 预览 | j 点动 | q 退出 > ").strip()
+            if _current_layer_idx:
+                _, layer_name = _shelf_layer_poses.get(_current_layer_idx, (None, "?"))
+                prompt = f"\n[第{_current_layer_idx}层 {layer_name}] 按 Enter 抓取 | l 层管理 | v 预览 | j 点动 | q 退出 > "
+            else:
+                prompt = "\n[HOME] 按 Enter 抓取 | l 层管理 | v 预览 | j 点动 | q 退出 > "
+            cmd = input(prompt).strip()
             if cmd.lower() == "q":
                 break
 
@@ -923,8 +926,12 @@ def main():
             time.sleep(1.5)
 
             # 6. 回到当前层观察位姿
-            print(f"\n[Home] 回到第{_current_layer_idx}层 ({_shelf_layer_joints[_current_layer_idx][1]}) ...")
-            go_to_layer(arm, _current_layer_idx)
+            if _current_layer_idx:
+                print(f"\n[Home] 回到第{_current_layer_idx}层 ({_shelf_layer_poses[_current_layer_idx][1]}) ...")
+                go_to_layer(arm, _current_layer_idx)
+            else:
+                print("\n[Home] 回到 HOME ...")
+                arm.go_home()
             time.sleep(2)
 
             print("抓取完成! 按 Enter 继续 / q 退出")
