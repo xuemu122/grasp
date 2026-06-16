@@ -51,8 +51,12 @@ HOME_JOINTS_DEG = [-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]
 
 # 货架层位姿文件 (笛卡尔: x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)
 SHELF_LAYERS_FILE = os.path.join(os.path.dirname(__file__), "shelf_layers.json")
-_current_layer_idx = None  # 当前选中的层编号 (None=HOME)
+_current_layer_idx = 1  # 当前选中的层编号 (1=顶层)
 _shelf_layer_poses = {}  # {1: ([x,y,z,rx,ry,rz], name), 2: ...}
+
+# 放置点位姿文件 (笛卡尔: x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)
+PLACE_POINT_FILE = os.path.join(os.path.dirname(__file__), "place_point.json")
+_place_point_pose = None  # ([x,y,z,rx,ry,rz], name)
 
 
 def load_shelf_layers():
@@ -67,13 +71,37 @@ def load_shelf_layers():
     return _shelf_layer_poses, _current_layer_idx
 
 
+def load_place_point():
+    """从 JSON 加载放置点位姿，返回 (pose, name) 或 None"""
+    global _place_point_pose
+    if os.path.exists(PLACE_POINT_FILE):
+        with open(PLACE_POINT_FILE) as f:
+            data = json.load(f)
+        if "pose" in data:
+            _place_point_pose = (data["pose"], data.get("name", "放置点"))
+    return _place_point_pose
+
+
 def save_shelf_layers():
     """保存货架层位姿到 JSON"""
     data = {
+        
         "layers": {str(k): {"pose": p, "name": n} for k, (p, n) in _shelf_layer_poses.items()},
         "current": _current_layer_idx,
     }
     with open(SHELF_LAYERS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def save_place_point():
+    """保存放置点位姿到 JSON"""
+    if _place_point_pose is None:
+        if os.path.exists(PLACE_POINT_FILE):
+            os.remove(PLACE_POINT_FILE)
+        return
+    pose, name = _place_point_pose
+    data = {"pose": pose, "name": name}
+    with open(PLACE_POINT_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
 
@@ -86,6 +114,27 @@ def go_to_layer(arm: "DobotArm", layer_idx: int):
     print(f"\n[货架层] 移动到第{layer_idx}层 ({name})...")
     arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100)
     time.sleep(2)
+    return True
+
+
+def go_to_place_point(arm: "DobotArm"):
+    """移动机械臂到记录的放置点 (MovL 笛卡尔)"""
+    if _place_point_pose is None:
+        print("  [错误] 放置点未记录! 先用 p 进入放置点管理, 拖到目标位置后输入 s")
+        return False
+    pose, name = _place_point_pose
+    print(f"\n[放置点] 移动到 {name} ...")
+    arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100)
+    time.sleep(2)
+    try:
+        cur = arm.get_pose()
+    except Exception:
+        print("  [警告] 无法确认是否到达放置点, 本次不自动张手")
+        return False
+    err_mm = np.linalg.norm(np.array(cur[:3]) - np.array(pose[:3]))
+    if err_mm > 30:
+        print(f"  [警告] 当前距放置点 {err_mm:.0f}mm, 本次不自动张手")
+        return False
     return True
 
 
@@ -371,7 +420,7 @@ class AeroGripper:
     # 完全张开
     OPEN = [0, 0, 0, 0, 0, 0, 0]
     # 抓取 (四指弯曲包络)
-    GRASP = [0, 30, 52, 70, 58, 59, 53]
+    GRASP = [0, 70, 52, 70, 58, 59, 53]
 
     def __init__(self, port=None):
         self.hand = AeroHand(port=port)
@@ -568,6 +617,54 @@ def _layer_management(arm: "DobotArm"):
         return  # 切换后返回主菜单
 
 
+def _place_point_management(arm: "DobotArm"):
+    """放置点管理子菜单: 记录、移动到、删除放置点"""
+    global _place_point_pose
+
+    while True:
+        print(f"\n── 放置点管理 ──")
+        if _place_point_pose:
+            pose, name = _place_point_pose
+            print(f"  当前放置点: {name}  pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
+        else:
+            print("  当前: 未记录放置点")
+        print("\n  操作:")
+        print("    s       ← 记录当前法兰位姿为放置点")
+        print("    g       ← 移动到放置点")
+        print("    d       ← 删除放置点")
+        print("    q       ← 返回主菜单")
+
+        choice = input("  放置点 > ").strip().lower()
+        if choice == "q":
+            return
+
+        if choice == "s":
+            try:
+                pose = arm.get_pose()
+            except Exception:
+                print("  无法获取当前位姿")
+                continue
+            name = input('  放置点名称 (回车默认"放置点"): ').strip()
+            if not name:
+                name = "放置点"
+            _place_point_pose = (list(pose[:6]), name)
+            save_place_point()
+            print(f"  ✓ 放置点 ({name}) 已记录: pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
+            continue
+
+        if choice == "d":
+            _place_point_pose = None
+            save_place_point()
+            print("  ✓ 放置点已删除")
+            continue
+
+        if choice == "g":
+            go_to_place_point(arm)
+            return
+
+        print("  无效输入, 请输入 s / g / d / q")
+
+
 def main():
     print("=" * 60)
     print("  货架边缘抓取系统")
@@ -598,7 +695,8 @@ def main():
 
     # ── 货架层管理 ──
     load_shelf_layers()
-    if _current_layer_idx is not None:
+    load_place_point()
+    if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
         go_to_layer(arm, _current_layer_idx)
 
     # ── 3. 连接灵巧手 ──
@@ -622,6 +720,7 @@ def main():
     print("  - 拖动机械臂到观察位姿 (能看到货架盒子)")
     print("  - 按 Enter ← 拍照识别并抓取最外侧盒子")
     print("  - 输入 l   ← 货架层管理 (切换/记录/删除)")
+    print("  - 输入 p   ← 放置点管理 (记录/移动/删除)")
     print("  - 输入 v   ← 实时画面预览 (YOLO 检测)")
     print("  - 输入 j   ← 手动点动 (wasd/e/r 微调法兰)")
     print("  - 输入 q   ← 退出")
@@ -629,8 +728,8 @@ def main():
 
     try:
         while True:
-            if _current_layer_idx:
-                _, layer_name = _shelf_layer_poses.get(_current_layer_idx, (None, "?"))
+            if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
+                _, layer_name = _shelf_layer_poses[_current_layer_idx]
                 prompt = f"\n[第{_current_layer_idx}层 {layer_name}] 按 Enter 抓取 | l 层管理 | v 预览 | j 点动 | q 退出 > "
             else:
                 prompt = "\n[HOME] 按 Enter 抓取 | l 层管理 | v 预览 | j 点动 | q 退出 > "
@@ -668,6 +767,10 @@ def main():
             if cmd.lower() == "l":
                 # 货架层管理
                 _layer_management(arm)
+                continue
+
+            if cmd.lower() == "p":
+                _place_point_management(arm)
                 continue
 
             if cmd.lower() == "v":
@@ -779,7 +882,7 @@ def main():
             fz_dir = R_f[:, 2]   # 法兰+Z → 手指方向 (世界系)
 
             # ── 指尖世界偏移 (基座系, 米): -X=前 +Y=右 +Z=上 ──
-            GRASP_OFFSET_M = (-0.12, 0.015, 0.028)  # 前10cm, 右13cm, 上5cm
+            GRASP_OFFSET_M = (-0.12, 0.015, -0.015)  # 前10cm, 右13cm, 上5cm
             fingertip_w = np.array([wx, wy, wz]) + np.array(GRASP_OFFSET_M)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
 
@@ -919,14 +1022,22 @@ def main():
                 print("  灵巧手 → 动作二 (闭合), 等待 3s ...")
                 time.sleep(3.0)
 
-            # 5. 后退 (沿法兰-Z 退 10cm, 离开货架)
-            retreat_pt = np.array([gx+offset_x, gy+offset_y, gz+offset_z]) - 100.0 * fz_dir
+            # 5. 后退 (沿法兰-Z 退 15cm, 离开货架)
+            retreat_pt = np.array([gx+offset_x, gy+offset_y, gz+offset_z]) - 150.0 * fz_dir
             arm.movel(float(retreat_pt[0]), float(retreat_pt[1]), float(retreat_pt[2]), speed=100)
-            hand.open()
+            if _place_point_pose is None and not SKIP_HAND:
+                hand.open()
             time.sleep(1.5)
 
-            # 6. 回到当前层观察位姿
-            if _current_layer_idx:
+            # 6. 如已记录放置点, 先移动过去再张手释放
+            if _place_point_pose is not None:
+                print(f"\n[Place] 前往放置点 ({_place_point_pose[1]}) ...")
+                if go_to_place_point(arm) and not SKIP_HAND:
+                    hand.open()
+                time.sleep(1)
+
+            # 7. 回到当前层观察位姿
+            if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
                 print(f"\n[Home] 回到第{_current_layer_idx}层 ({_shelf_layer_poses[_current_layer_idx][1]}) ...")
                 go_to_layer(arm, _current_layer_idx)
             else:
