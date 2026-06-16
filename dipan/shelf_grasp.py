@@ -330,9 +330,9 @@ class HandEyeTransformer:
 # 7 关节: thumb_abd, thumb_flex, thumb_mcp, index, middle, ring, pinky (度)
 class AeroGripper:
     # 完全张开
-    OPEN = [0, 0, 0, 0, 0, 42, 0]
+    OPEN = [0, 0, 0, 0, 0, 0, 0]
     # 抓取 (四指弯曲包络)
-    GRASP = [0, 18, 52, 70, 58, 59, 53]
+    GRASP = [0, 30, 52, 70, 58, 59, 53]
 
     def __init__(self, port=None):
         self.hand = AeroHand(port=port)
@@ -630,7 +630,7 @@ def main():
             fz_dir = R_f[:, 2]   # 法兰+Z → 手指方向 (世界系)
 
             # ── 指尖世界偏移 (基座系, 米): -X=前 +Y=右 +Z=上 ──
-            GRASP_OFFSET_M = (-0.07, 0.02, 0.04)  # 前10cm, 右13cm, 上5cm
+            GRASP_OFFSET_M = (-0.12, 0.015, 0.028)  # 前10cm, 右13cm, 上5cm
             fingertip_w = np.array([wx, wy, wz]) + np.array(GRASP_OFFSET_M)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
 
@@ -773,6 +773,7 @@ def main():
             # 5. 后退 (沿法兰-Z 退 10cm, 离开货架)
             retreat_pt = np.array([gx+offset_x, gy+offset_y, gz+offset_z]) - 100.0 * fz_dir
             arm.movel(float(retreat_pt[0]), float(retreat_pt[1]), float(retreat_pt[2]), speed=100)
+            hand.open()
             time.sleep(1.5)
 
             # 6. 回到初始观察位姿
