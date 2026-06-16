@@ -49,6 +49,49 @@ SKIP_HAND = False
 # 机械臂初始观察位姿 (角度制)
 HOME_JOINTS_DEG = [-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]
 
+# 货架层位姿文件
+SHELF_LAYERS_FILE = os.path.join(os.path.dirname(__file__), "shelf_layers.json")
+_current_layer_idx = 1  # 当前选中的层编号
+_shelf_layer_joints = {}  # {1: (joints_list, name), 2: ...}
+
+
+def load_shelf_layers():
+    """从 JSON 加载货架层位姿，返回 (layers_dict, current_idx)"""
+    global _shelf_layer_joints, _current_layer_idx
+    if os.path.exists(SHELF_LAYERS_FILE):
+        with open(SHELF_LAYERS_FILE) as f:
+            data = json.load(f)
+        for k, v in data.get("layers", {}).items():
+            _shelf_layer_joints[int(k)] = (v["joints"], v.get("name", f"第{k}层"))
+        _current_layer_idx = data.get("current", 1)
+    else:
+        # 默认: 第1层 = HOME
+        _shelf_layer_joints[1] = (list(HOME_JOINTS_DEG), "顶层")
+        _current_layer_idx = 1
+    return _shelf_layer_joints, _current_layer_idx
+
+
+def save_shelf_layers():
+    """保存货架层位姿到 JSON"""
+    data = {
+        "layers": {str(k): {"joints": j, "name": n} for k, (j, n) in _shelf_layer_joints.items()},
+        "current": _current_layer_idx,
+    }
+    with open(SHELF_LAYERS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def go_to_layer(arm: "DobotArm", layer_idx: int):
+    """移动机械臂到指定货架层的观察位姿 (MovJ)"""
+    if layer_idx not in _shelf_layer_joints:
+        print(f"  [错误] 第{layer_idx}层未记录! 先用 l s 记录当前位姿")
+        return False
+    joints, name = _shelf_layer_joints[layer_idx]
+    print(f"\n[货架层] 移动到第{layer_idx}层 ({name})...")
+    arm.movj(joints)
+    time.sleep(2)
+    return True
+
 
 # ============================================================
 # DOBOT TCP 控制
@@ -435,6 +478,97 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4):
 # ============================================================
 # 主流程
 # ============================================================
+def _layer_management(arm: "DobotArm"):
+    """货架层管理子菜单: 切换、记录、删除层"""
+    global _current_layer_idx
+
+    while True:
+        print(f"\n── 货架层管理 ──")
+        print(f"  当前层: 第{_current_layer_idx}层 ({_shelf_layer_joints.get(_current_layer_idx, (None, '?'))[1]})")
+        if _shelf_layer_joints:
+            for idx in sorted(_shelf_layer_joints):
+                j, name = _shelf_layer_joints[idx]
+                marker = " ← 当前" if idx == _current_layer_idx else ""
+                print(f"    第{idx}层: {name} joints={[f'{v:.1f}' for v in j]}{marker}")
+        else:
+            print(f"  (无已记录层)")
+        print(f"\n  操作:")
+        print(f"    <数字>   ← 切换并移动到该层")
+        print(f"    s       ← 记录当前法兰位姿为新层")
+        print(f"    s <数字> ← 用当前位姿覆盖指定层")
+        print(f"    d <数字> ← 删除指定层记录")
+        print(f"    q       ← 返回主菜单")
+
+        choice = input("  层管理 > ").strip()
+        if choice.lower() == "q":
+            return
+
+        if choice.lower().startswith("s"):
+            # 保存当前位姿
+            try:
+                pose = arm.get_pose()
+            except Exception:
+                print("  无法获取当前位姿")
+                continue
+
+            parts = choice.split()
+            if len(parts) >= 2:
+                try:
+                    idx = int(parts[1])
+                except ValueError:
+                    print("  格式: s <数字>")
+                    continue
+            else:
+                # 自动编号: 最大已有编号 + 1
+                idx = max(_shelf_layer_joints.keys()) + 1 if _shelf_layer_joints else 1
+
+            name = input('  层名称 (回车默认"第{}层"): '.format(idx)).strip()
+            if not name:
+                name = f"第{idx}层"
+
+            _shelf_layer_joints[idx] = (list(pose[:6]), name)
+            _current_layer_idx = idx
+            save_shelf_layers()
+            print(f"  ✓ 第{idx}层 ({name}) 已记录: joints=[{', '.join(f'{v:.1f}' for v in pose[:6])}]")
+            continue
+
+        if choice.lower().startswith("d"):
+            parts = choice.split()
+            if len(parts) < 2:
+                print("  格式: d <数字>")
+                continue
+            try:
+                idx = int(parts[1])
+            except ValueError:
+                print("  格式: d <数字>")
+                continue
+            if idx not in _shelf_layer_joints:
+                print(f"  第{idx}层不存在")
+                continue
+            del _shelf_layer_joints[idx]
+            if _current_layer_idx == idx:
+                _current_layer_idx = max(_shelf_layer_joints.keys()) if _shelf_layer_joints else 1
+            save_shelf_layers()
+            print(f"  ✓ 第{idx}层已删除, 当前层→第{_current_layer_idx}层")
+            continue
+
+        # 切换层
+        try:
+            idx = int(choice)
+        except ValueError:
+            print("  无效输入, 请输入数字 / s / d / q")
+            continue
+
+        if idx not in _shelf_layer_joints:
+            print(f"  第{idx}层未记录! 先拖机械臂到对应位置, 然后 s {idx} 保存")
+            continue
+
+        _current_layer_idx = idx
+        save_shelf_layers()
+        go_to_layer(arm, idx)
+        return  # 切换后返回主菜单
+
+
 def main():
     print("=" * 60)
     print("  货架边缘抓取系统")
@@ -463,6 +597,11 @@ def main():
     arm.go_home()
     time.sleep(2)  # 等待运动完成
 
+    # ── 货架层管理 ──
+    load_shelf_layers()
+    if _current_layer_idx != 1:
+        go_to_layer(arm, _current_layer_idx)
+
     # ── 3. 连接灵巧手 ──
     if SKIP_HAND:
         print("\n[3/4] 灵巧手 已屏蔽 (SKIP_HAND=True)")
@@ -483,6 +622,7 @@ def main():
     print("  操作说明:")
     print("  - 拖动机械臂到观察位姿 (能看到货架盒子)")
     print("  - 按 Enter ← 拍照识别并抓取最外侧盒子")
+    print("  - 输入 l   ← 货架层管理 (切换/记录/删除)")
     print("  - 输入 v   ← 实时画面预览 (YOLO 检测)")
     print("  - 输入 j   ← 手动点动 (wasd/e/r 微调法兰)")
     print("  - 输入 q   ← 退出")
@@ -490,7 +630,8 @@ def main():
 
     try:
         while True:
-            cmd = input("\n按 Enter 抓取 | v 预览 | j 点动 | q 退出 > ").strip()
+            _, layer_name = _shelf_layer_joints.get(_current_layer_idx, (None, "未知"))
+            cmd = input(f"\n[第{_current_layer_idx}层 {layer_name}] 按 Enter 抓取 | l 层管理 | v 预览 | j 点动 | q 退出 > ").strip()
             if cmd.lower() == "q":
                 break
 
@@ -519,6 +660,11 @@ def main():
                     print(f"  MovL({tx:.0f},{ty:.0f},{tz:.0f}) ← ({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f}) + ({dx},{dy},{dz})")
                     resp = arm.movel(tx, ty, tz, speed=50)
                     time.sleep(0.5)
+                continue
+
+            if cmd.lower() == "l":
+                # 货架层管理
+                _layer_management(arm)
                 continue
 
             if cmd.lower() == "v":
@@ -776,9 +922,9 @@ def main():
             hand.open()
             time.sleep(1.5)
 
-            # 6. 回到初始观察位姿
-            print("\n[Home] 回到初始位姿 ...")
-            arm.go_home()
+            # 6. 回到当前层观察位姿
+            print(f"\n[Home] 回到第{_current_layer_idx}层 ({_shelf_layer_joints[_current_layer_idx][1]}) ...")
+            go_to_layer(arm, _current_layer_idx)
             time.sleep(2)
 
             print("抓取完成! 按 Enter 继续 / q 退出")
