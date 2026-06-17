@@ -49,8 +49,8 @@ TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.022)
 TOP_J6_DEG = 8.3
 
 # 抓取前悬停/探入距离
-APPROACH_LIFT_M = 0.01    # 悬停位比目标法兰点高 1cm
-GRASP_ADVANCE_M = 0.05    # 抓取时沿手指方向前进 5cm
+GRASP_APPROACH_BACKOFF_M = 0.15  # 抓取前/抓取后沿手指反方向退 15cm
+GRASP_ADVANCE_M = 0.05           # 抓取时沿手指方向前进 5cm
 
 # D405 内参（自动读取，这里是 fallback）
 FX, FY = 390.4, 390.0
@@ -994,11 +994,11 @@ def main():
             fingertip_w = np.array([wx, wy, wz]) + np.array(grasp_offset_m)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
 
-            # 悬停: 世界Z向上抬高一段安全距离
-            approach_pt = flange_pt + np.array([0.0, 0.0, APPROACH_LIFT_M])
-
             # 抓取: 沿手指方向前进一小段探入
             grasp_pt = flange_pt + GRASP_ADVANCE_M * fz_dir
+
+            # 悬停/预备位: 用抓取后退同一条路径上的安全点
+            approach_pt = grasp_pt - GRASP_APPROACH_BACKOFF_M * fz_dir
 
             # ── 转为 mm (python float) 供后续微调 ──
             fx, fy, fz  = float(flange_pt[0]*1000),  float(flange_pt[1]*1000),  float(flange_pt[2]*1000)
@@ -1125,7 +1125,7 @@ def main():
                 arm.move_j6(TOP_J6_DEG)
                 time.sleep(0.5)
 
-            # 2. 悬停位 (世界Z向上抬高 APPROACH_LIFT_M)
+            # 2. 悬停/预备位 (抓取后退同一条路径上的安全点)
             arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=150)
             time.sleep(1.5)
 
@@ -1141,8 +1141,8 @@ def main():
                 else:
                     print("  灵巧手不可用, 继续执行机械臂安全退回")
 
-            # 5. 后退 (沿法兰-Z 退 15cm, 离开货架)
-            retreat_pt = np.array([gx+offset_x, gy+offset_y, gz+offset_z]) - 150.0 * fz_dir
+            # 5. 后退到抓取前同一个安全点, 离开货架
+            retreat_pt = np.array([gx+offset_x, gy+offset_y, gz+offset_z]) - (GRASP_APPROACH_BACKOFF_M * 1000.0) * fz_dir
             arm.movel(float(retreat_pt[0]), float(retreat_pt[1]), float(retreat_pt[2]), speed=100)
             if _place_point_pose is None and not SKIP_HAND:
                 hand.open()
