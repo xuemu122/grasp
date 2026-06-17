@@ -43,10 +43,14 @@ HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
 SIDE_GRASP_OFFSET_M = (-0.12, 0.015, -0.015)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
-TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.018)
+TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.022)
 
 # 上面抓取前把第六轴转到手心向下的实测角度
 TOP_J6_DEG = 8.3
+
+# 抓取前悬停/探入距离
+APPROACH_LIFT_M = 0.01    # 悬停位比目标法兰点高 1cm
+GRASP_ADVANCE_M = 0.05    # 抓取时沿手指方向前进 5cm
 
 # D405 内参（自动读取，这里是 fallback）
 FX, FY = 390.4, 390.0
@@ -990,11 +994,11 @@ def main():
             fingertip_w = np.array([wx, wy, wz]) + np.array(grasp_offset_m)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
 
-            # 悬停: 世界Z↑8cm
-            approach_pt = flange_pt + np.array([0.0, 0.0, 0.01])
+            # 悬停: 世界Z向上抬高一段安全距离
+            approach_pt = flange_pt + np.array([0.0, 0.0, APPROACH_LIFT_M])
 
-            # 抓取: 沿手指方向仅前进 2cm
-            grasp_pt = flange_pt + 0.02 * fz_dir
+            # 抓取: 沿手指方向前进一小段探入
+            grasp_pt = flange_pt + GRASP_ADVANCE_M * fz_dir
 
             # ── 转为 mm (python float) 供后续微调 ──
             fx, fy, fz  = float(flange_pt[0]*1000),  float(flange_pt[1]*1000),  float(flange_pt[2]*1000)
@@ -1121,11 +1125,11 @@ def main():
                 arm.move_j6(TOP_J6_DEG)
                 time.sleep(0.5)
 
-            # 2. 悬停位 (退后10cm + 抬高8cm)
+            # 2. 悬停位 (世界Z向上抬高 APPROACH_LIFT_M)
             arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=150)
             time.sleep(1.5)
 
-            # 3. 前进抓取 (法兰前进15cm，指尖探入盒面5cm)
+            # 3. 前进抓取 (沿手指方向探入 GRASP_ADVANCE_M)
             arm.movel(gx + offset_x, gy + offset_y, gz + offset_z, speed=50)
             time.sleep(1.5)
 
