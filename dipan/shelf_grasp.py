@@ -43,7 +43,7 @@ HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
 SIDE_GRASP_OFFSET_M = (-0.12, 0.015, -0.015)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
-TOP_GRASP_OFFSET_M = (-0.12, 0.015, -0.015)
+TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.018)
 
 # 上面抓取前把第六轴转到手心向下的实测角度
 TOP_J6_DEG = 8.3
@@ -476,21 +476,47 @@ class AeroGripper:
 
     def __init__(self, port=None):
         self.hand = AeroHand(port=port)
+        self.ok = True
 
     def connect(self):
         print(f"[Aero] 已连接")
 
     def disconnect(self):
-        self.hand.close()
-        print("[Aero] 已断开")
+        if not self.ok:
+            print("[Aero] 已禁用, 跳过断开")
+            return
+        try:
+            self.hand.close()
+            print("[Aero] 已断开")
+        except Exception as e:
+            self.ok = False
+            print(f"[Aero] 断开失败, 已禁用灵巧手: {e}")
 
     def open(self):
-        self.hand.set_joint_positions(self.OPEN)
-        print("[Aero] 张开")
+        if not self.ok:
+            print("[Aero] 已禁用, 跳过张开")
+            return False
+        try:
+            self.hand.set_joint_positions(self.OPEN)
+            print("[Aero] 张开")
+            return True
+        except Exception as e:
+            self.ok = False
+            print(f"[Aero] 张开失败, 已禁用灵巧手: {e}")
+            return False
 
     def close(self):
-        self.hand.set_joint_positions(self.GRASP)
-        print("[Aero] 抓取")
+        if not self.ok:
+            print("[Aero] 已禁用, 跳过抓取")
+            return False
+        try:
+            self.hand.set_joint_positions(self.GRASP)
+            print("[Aero] 抓取")
+            return True
+        except Exception as e:
+            self.ok = False
+            print(f"[Aero] 抓取失败, 已禁用灵巧手: {e}")
+            return False
 
 
 # ============================================================
@@ -1105,9 +1131,11 @@ def main():
 
             # 4. 抓取 (动作二) 并等待 5s 握紧
             if not SKIP_HAND:
-                hand.close()
-                print("  灵巧手 → 动作二 (闭合), 等待 3s ...")
-                time.sleep(3.0)
+                if hand.close():
+                    print("  灵巧手 → 动作二 (闭合), 等待 3s ...")
+                    time.sleep(3.0)
+                else:
+                    print("  灵巧手不可用, 继续执行机械臂安全退回")
 
             # 5. 后退 (沿法兰-Z 退 15cm, 离开货架)
             retreat_pt = np.array([gx+offset_x, gy+offset_y, gz+offset_z]) - 150.0 * fz_dir
