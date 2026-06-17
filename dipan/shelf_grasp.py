@@ -41,9 +41,9 @@ HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.12, 0.015, -0.015)
+SIDE_GRASP_OFFSET_M = (-0.12, 0.02, 0.015)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
-TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.022)
+TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.025)
 
 # 上面抓取前把第六轴转到手心向下的实测角度
 TOP_J6_DEG = 8.3
@@ -126,7 +126,11 @@ def go_to_layer(arm: "DobotArm", layer_idx: int):
         return False
     pose, name = _shelf_layer_poses[layer_idx]
     print(f"\n[货架层] 移动到第{layer_idx}层 ({name})...")
-    arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100)
+    target_z = pose[2]
+    if target_z < 80.0:
+        print(f"  [警告] 第{layer_idx}层记录 Z={target_z:.1f}mm 过低, 自动抬到 80mm")
+        target_z = 80.0
+    arm.movel(pose[0], pose[1], target_z, pose[3], pose[4], pose[5], speed=100)
     time.sleep(2)
     return True
 
@@ -144,12 +148,18 @@ def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: flo
         print(f"  [警告] 无法读取当前位姿, 回退为直接 MovL: {e}")
         return go_to_layer(arm, layer_idx)
 
-    safe_z = max(cur[2], pose[2]) + clearance_mm
+    target_z = pose[2]
+    if target_z < 80.0:
+        print(f"  [警告] 第{layer_idx}层记录 Z={target_z:.1f}mm 过低, 自动抬到 80mm 作为可达观察位")
+        target_z = 80.0
+    safe_z = max(cur[2], target_z, 650.0) + clearance_mm
+    if safe_z < 780.0:
+        safe_z = 780.0
     if not arm.movel(cur[0], cur[1], safe_z, speed=120):
         return False
     if not arm.movel(pose[0], pose[1], safe_z, pose[3], pose[4], pose[5], speed=120):
         return False
-    if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100):
+    if not arm.movel(pose[0], pose[1], target_z, pose[3], pose[4], pose[5], speed=100):
         return False
     time.sleep(2)
     return True
@@ -174,6 +184,43 @@ def go_to_place_point(arm: "DobotArm"):
         print(f"  [警告] 当前距放置点 {err_mm:.0f}mm, 本次不自动张手")
         return False
     return True
+
+
+def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_layer_idx: Optional[int]):
+    """抓取后放置并回到观察层。3/4层经第2层中转, 避免低层直达放置点。"""
+    hand_ok = hand is not None and not SKIP_HAND
+
+    if _place_point_pose is None:
+        if hand_ok:
+            hand.open()
+        return
+
+    use_layer2_transfer = current_layer_idx in (3, 4) and 2 in _shelf_layer_poses
+
+    if use_layer2_transfer:
+        print(f"\n[Transfer] 第{current_layer_idx}层抓取后先回当前层观察位 ...")
+        go_to_layer_via_clearance(arm, current_layer_idx)
+        print("\n[Transfer] 经第2层中转前往放置点 ...")
+        go_to_layer_via_clearance(arm, 2)
+    elif current_layer_idx in _shelf_layer_poses:
+        print(f"\n[Transfer] 第{current_layer_idx}层抓取后先回当前层观察位 ...")
+        go_to_layer_via_clearance(arm, current_layer_idx)
+
+    print(f"\n[Place] 前往放置点 ({_place_point_pose[1]}) ...")
+    if go_to_place_point(arm) and hand_ok:
+        hand.open()
+    time.sleep(1)
+
+    if use_layer2_transfer:
+        print("\n[Transfer] 放置后回第2层中转 ...")
+        go_to_layer_via_clearance(arm, 2)
+
+    if current_layer_idx in _shelf_layer_poses:
+        print(f"\n[Home] 回到第{current_layer_idx}层 ({_shelf_layer_poses[current_layer_idx][1]}) ...")
+        go_to_layer_via_clearance(arm, current_layer_idx)
+    else:
+        print("\n[Home] 回到 HOME ...")
+        arm.go_home()
 
 
 # ============================================================
@@ -725,7 +772,7 @@ def _layer_management(arm: "DobotArm"):
 
         _current_layer_idx = idx
         save_shelf_layers()
-        go_to_layer(arm, idx)
+        go_to_layer_via_clearance(arm, idx)
         return  # 切换后返回主菜单
 
 
@@ -809,7 +856,7 @@ def main():
     load_shelf_layers()
     load_place_point()
     if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
-        go_to_layer(arm, _current_layer_idx)
+        go_to_layer_via_clearance(arm, _current_layer_idx)
 
     # ── 3. 连接灵巧手 ──
     if SKIP_HAND:
@@ -1194,24 +1241,10 @@ def main():
             # 5. 后退 (沿法兰-Z 退 15cm, 离开货架)
             retreat_pt = np.array([gx+offset_x, gy+offset_y, gz+offset_z]) - 150.0 * fz_dir
             arm.movel(float(retreat_pt[0]), float(retreat_pt[1]), float(retreat_pt[2]), speed=100)
-            if _place_point_pose is None and not SKIP_HAND:
-                hand.open()
             time.sleep(1.5)
 
-            # 6. 如已记录放置点, 先移动过去再张手释放
-            if _place_point_pose is not None:
-                print(f"\n[Place] 前往放置点 ({_place_point_pose[1]}) ...")
-                if go_to_place_point(arm) and not SKIP_HAND:
-                    hand.open()
-                time.sleep(1)
-
-            # 7. 回到当前层观察位姿
-            if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
-                print(f"\n[Home] 安全回到第{_current_layer_idx}层 ({_shelf_layer_poses[_current_layer_idx][1]}) ...")
-                go_to_layer_via_clearance(arm, _current_layer_idx)
-            else:
-                print("\n[Home] 回到 HOME ...")
-                arm.go_home()
+            # 6. 放置并回到当前层观察位
+            finish_pick_cycle(arm, hand, _current_layer_idx)
             time.sleep(2)
 
             print("抓取完成! 按 Enter 继续 / q 退出")
