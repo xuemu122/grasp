@@ -45,6 +45,9 @@ SIDE_GRASP_OFFSET_M = (-0.12, 0.015, -0.015)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, -0.015)
 
+# 上面抓取前把第六轴转到手心向下的实测角度
+TOP_J6_DEG = 8.3
+
 # D405 内参（自动读取，这里是 fallback）
 FX, FY = 390.4, 390.0
 CX, CY = 324.5, 241.2
@@ -360,6 +363,14 @@ class DobotArm:
             if ",{7}," in rm or ",{4}," in rm or ",{5}," in rm:
                 return True
         return True
+
+    def move_j6(self, target_j6_deg: float):
+        """只调整第六轴到目标角度，其他关节保持当前角度"""
+        joints = list(self.get_joints())
+        old_j6 = joints[5]
+        joints[5] = target_j6_deg
+        print(f"  MovJ J6 {old_j6:.1f}° → {target_j6_deg:.1f}°")
+        return self.movj(joints)
 
     def close(self):
         self.send("DisableRobot()")
@@ -801,15 +812,12 @@ def main():
 
                     if jc in ("z", "x"):
                         try:
-                            joints = list(arm.get_joints())
+                            joints = arm.get_joints()
                         except Exception as e:
                             print(f"  无法获取关节角: {e}")
                             continue
                         dj6 = -j6_step if jc == "z" else j6_step
-                        old_j6 = joints[5]
-                        joints[5] = old_j6 + dj6
-                        print(f"  MovJ J6 {old_j6:.1f}° → {joints[5]:.1f}° ({dj6:+.1f}°)")
-                        arm.movj(joints)
+                        arm.move_j6(joints[5] + dj6)
                         time.sleep(0.5)
                         continue
 
@@ -1080,6 +1088,12 @@ def main():
             # 1. 张开手
             if not SKIP_HAND:
                 hand.open()
+
+            # 上面抓取: 先把第六轴转到手心向下的实测角度
+            if not is_side_grasp:
+                print(f"  上面抓取 → J6 转到手心向下角度 {TOP_J6_DEG:.1f}°")
+                arm.move_j6(TOP_J6_DEG)
+                time.sleep(0.5)
 
             # 2. 悬停位 (退后10cm + 抬高8cm)
             arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=150)
