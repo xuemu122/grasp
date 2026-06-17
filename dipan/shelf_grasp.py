@@ -182,9 +182,25 @@ class DobotArm:
 
         resp = self.send("RobotMode()")
         print(f"[DOBOT] RobotMode: {resp}")
-        if ",{5}," in resp:
-            print("[DOBOT] 警告! RobotMode=5 (POWER_OFF), 使能未生效")
+        if self._is_enabled_mode(resp):
+            print("[DOBOT] 使能确认")
+        else:
+            mode = self._parse_robot_mode(resp)
+            print(f"[DOBOT] 警告! RobotMode={mode if mode is not None else '?'} 未进入使能状态")
             self.do_enable()
+
+    @staticmethod
+    def _parse_robot_mode(resp: str) -> Optional[int]:
+        """解析 RobotMode() 返回的模式值: ErrorID,{Value},RobotMode();"""
+        match = re.search(r"\{(-?\d+)\}", resp)
+        if not match:
+            return None
+        return int(match.group(1))
+
+    @classmethod
+    def _is_enabled_mode(cls, resp: str) -> bool:
+        mode = cls._parse_robot_mode(resp)
+        return mode in (5, 6, 7, 8)
 
     def do_enable(self):
         """重新使能"""
@@ -193,16 +209,27 @@ class DobotArm:
             time.sleep(0.3)
             self.send("RequestControl()")
             time.sleep(0.3)
+            resp = self.send("RobotMode()")
+            print(f"[DOBOT] RobotMode: {resp}")
+            if self._is_enabled_mode(resp):
+                print("[DOBOT] 已处于使能状态, 跳过重复上电等待")
+                return True
             self.send("PowerOn()")
-            print(f"[DOBOT] 等待上电 10s (重试 {attempt+1}/3)...")
-            time.sleep(10)
+            time.sleep(1)
+            resp = self.send("RobotMode()")
+            mode = self._parse_robot_mode(resp)
+            if mode in (3, 4, None):
+                print(f"[DOBOT] 等待上电 10s (重试 {attempt+1}/3)...")
+                time.sleep(10)
+            else:
+                print(f"[DOBOT] RobotMode={mode}, 跳过完整上电等待")
             self.send(f"SetPayload({HAND_WEIGHT}, 0, 0, {HAND_COG_Z*1000:.0f})")
             resp = self.send("EnableRobot()")
             print(f"[DOBOT] EnableRobot: {resp}")
             time.sleep(0.5)
             resp = self.send("RobotMode()")
             print(f"[DOBOT] RobotMode: {resp}")
-            if ",{5}," not in resp:
+            if self._is_enabled_mode(resp):
                 print("[DOBOT] 使能成功!")
                 return True
         print("[DOBOT] 使能失败! 请手动检查机械臂状态")
@@ -740,9 +767,9 @@ def main():
         while True:
             if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
                 _, layer_name = _shelf_layer_poses[_current_layer_idx]
-                prompt = f"\n[第{_current_layer_idx}层 {layer_name}] 按 Enter 抓取 | l 层管理 | v 预览 | j 点动 | q 退出 > "
+                prompt = f"\n[第{_current_layer_idx}层 {layer_name}] 按 Enter 抓取 | l 层管理 | p 放置点 | v 预览 | j 点动 | q 退出 > "
             else:
-                prompt = "\n[HOME] 按 Enter 抓取 | l 层管理 | v 预览 | j 点动 | q 退出 > "
+                prompt = "\n[HOME] 按 Enter 抓取 | l 层管理 | p 放置点 | v 预览 | j 点动 | q 退出 > "
             cmd = input(prompt).strip()
             if cmd.lower() == "q":
                 break
