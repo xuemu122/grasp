@@ -39,6 +39,16 @@ HAND_COG_Z = 0.12       # 重心 Z 偏移 (米), 12cm 法兰+Z 方向
 HAND_W_Y = 0.095        # 手 Y 方向宽度 (米)
 HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 
+# 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
+# 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
+SIDE_GRASP_OFFSET_M = (-0.12, 0.015, -0.015)
+# 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
+TOP_GRASP_OFFSET_M = (-0.12, 0.015, -0.015)
+
+# 第六关节/末端旋转偏移 (度)。根据自动判定的抓取模式选择。
+SIDE_J6_OFFSET_DEG = 0.0
+TOP_J6_OFFSET_DEG = 0.0
+
 # D405 内参（自动读取，这里是 fallback）
 FX, FY = 390.4, 390.0
 CX, CY = 324.5, 241.2
@@ -881,9 +891,12 @@ def main():
             R_f = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
             fz_dir = R_f[:, 2]   # 法兰+Z → 手指方向 (世界系)
 
-            # ── 指尖世界偏移 (基座系, 米): -X=前 +Y=右 +Z=上 ──
-            GRASP_OFFSET_M = (-0.12, 0.015, -0.015)  # 前10cm, 右13cm, 上5cm
-            fingertip_w = np.array([wx, wy, wz]) + np.array(GRASP_OFFSET_M)
+            # ── 根据自动判定的抓取模式选择偏移参数 ──
+            is_side_grasp = "side" in grip_mode
+            grasp_offset_m = SIDE_GRASP_OFFSET_M if is_side_grasp else TOP_GRASP_OFFSET_M
+            base_j6_offset_deg = SIDE_J6_OFFSET_DEG if is_side_grasp else TOP_J6_OFFSET_DEG
+            grip_label = "侧面抓" if is_side_grasp else "上面抓"
+            fingertip_w = np.array([wx, wy, wz]) + np.array(grasp_offset_m)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
 
             # 悬停: 世界Z↑8cm
@@ -901,15 +914,23 @@ def main():
             # 调试交互: 微调 / 预览 / 执行  (offset 均为 mm)
             # ========================================================
             offset_x, offset_y, offset_z = 0.0, 0.0, 0.0
+            j6_offset_deg = base_j6_offset_deg
             jog_step_mm = 5.0
+            jog_step_deg = 5.0
 
             while True:
+                 tuned_offset_m = np.array(grasp_offset_m) + np.array([offset_x, offset_y, offset_z]) / 1000.0
                  print(f"\n── 目标位姿 (可微调) ──")
+                 print(f"  模式: {grip_label} ({grip_mode})")
+                 print(f"  当前参数: offset=({grasp_offset_m[0]*1000:.0f},{grasp_offset_m[1]*1000:.0f},{grasp_offset_m[2]*1000:.0f})mm  J6偏移={j6_offset_deg:+.1f}°")
+                 print(f"  固化建议: {'SIDE' if is_side_grasp else 'TOP'}_GRASP_OFFSET_M=({tuned_offset_m[0]:+.3f}, {tuned_offset_m[1]:+.3f}, {tuned_offset_m[2]:+.3f})  "
+                       f"{'SIDE' if is_side_grasp else 'TOP'}_J6_OFFSET_DEG={j6_offset_deg:+.1f}")
                  print(f"  指尖世界: ({wx*1000:.0f}, {wy*1000:.0f}, {wz*1000:.0f})mm")
                  print(f"  法兰(悬停): X={ax+offset_x:+.0f}({offset_x:+5.0f})  "
                        f"Y={ay+offset_y:+.0f}({offset_y:+5.0f})  "
-                       f"Z={az+offset_z:+.0f}({offset_z:+5.0f}) mm")
-                 print(f"  法兰(抓取): X={gx+offset_x:+.0f}  Y={gy+offset_y:+.0f}  Z={gz+offset_z:+.0f} mm")
+                       f"Z={az+offset_z:+.0f}({offset_z:+5.0f}) mm  "
+                       f"J6/RZ={flange_pose[5]+j6_offset_deg:+.1f}°")
+                 print(f"  法兰(抓取): X={gx+offset_x:+.0f}  Y={gy+offset_y:+.0f}  Z={gz+offset_z:+.0f} mm  J6/RZ={flange_pose[5]+j6_offset_deg:+.1f}°")
                  print(f"\n  操作:")
                  print(f"    Enter ← 执行抓取")
                  print(f"    p     ← 预览悬停位 (不抓取)")
@@ -917,8 +938,10 @@ def main():
                  print(f"    m     ← 简化移动 (零标定: 沿法兰Z前移)")
                  print(f"    wasd  ← 微调 X/Y (±{jog_step_mm:.0f}mm)")
                  print(f"    e/r   ← 微调 Z (±{jog_step_mm:.0f}mm)")
+                 print(f"    z/x   ← 微调末端J6/RZ (±{jog_step_deg:.0f}°)")
                  print(f"    = / - ← 改变步长 (当前 {jog_step_mm:.0f}mm)")
                  print(f"    f     ← 手动输入偏移 (格式: x,y,z mm)")
+                 print(f"    o     ← 手动输入 J6/RZ 偏移 (deg)")
                  print(f"    F5    ← 重新拍照 (复位偏移)")
                  print(f"    Q     ← 跳过/退出")
                  choice = input("  > ").strip()
@@ -962,11 +985,14 @@ def main():
                      continue
                  elif choice == "p":
                      print(f"\n  预览: 移动到 ({ax+offset_x:.0f}, {ay+offset_y:.0f}, {az+offset_z:.0f})mm")
-                     arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=100)
+                     arm.movel(ax + offset_x, ay + offset_y, az + offset_z,
+                               flange_pose[3], flange_pose[4], flange_pose[5] + j6_offset_deg,
+                               speed=100)
                      time.sleep(1)
                      continue
                  elif choice.lower() == "f5":
                      offset_x = offset_y = offset_z = 0.0
+                     j6_offset_deg = base_j6_offset_deg
                      break
                  elif choice in ("w", "s", "a", "d"):
                      dx = {"a": -jog_step_mm, "d": +jog_step_mm}.get(choice, 0)
@@ -977,12 +1003,18 @@ def main():
                      offset_z += jog_step_mm
                  elif choice == "r":
                      offset_z -= jog_step_mm
+                 elif choice == "z":
+                     j6_offset_deg -= jog_step_deg
+                 elif choice == "x":
+                     j6_offset_deg += jog_step_deg
                  elif choice in ("-", "=", "+"):
                      if choice == "-":
                          jog_step_mm = max(1, jog_step_mm / 1.5)
+                         jog_step_deg = max(1, jog_step_deg / 1.5)
                      else:
                          jog_step_mm = min(50, jog_step_mm * 1.5)
-                     print(f"  步长 → {jog_step_mm:.0f}mm")
+                         jog_step_deg = min(45, jog_step_deg * 1.5)
+                     print(f"  步长 → {jog_step_mm:.0f}mm / {jog_step_deg:.0f}°")
                      continue
                  elif choice == "f":
                      val = input("  输入偏移 (x,y,z mm, 如 10,-5,0): ").strip()
@@ -992,6 +1024,12 @@ def main():
                              offset_x, offset_y, offset_z = parts
                          else:
                              print("  格式错误, 需要 x,y,z")
+                     except ValueError:
+                         print("  格式错误")
+                 elif choice == "o":
+                     val = input("  输入 J6/RZ 偏移角度 (deg, 如 90 或 -90): ").strip()
+                     try:
+                         j6_offset_deg = float(val)
                      except ValueError:
                          print("  格式错误")
 
@@ -1009,11 +1047,14 @@ def main():
                 hand.open()
 
             # 2. 悬停位 (退后10cm + 抬高8cm)
-            arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=150)
+            target_rx, target_ry, target_rz = flange_pose[3], flange_pose[4], flange_pose[5] + j6_offset_deg
+            arm.movel(ax + offset_x, ay + offset_y, az + offset_z,
+                      target_rx, target_ry, target_rz, speed=150)
             time.sleep(1.5)
 
             # 3. 前进抓取 (法兰前进15cm，指尖探入盒面5cm)
-            arm.movel(gx + offset_x, gy + offset_y, gz + offset_z, speed=50)
+            arm.movel(gx + offset_x, gy + offset_y, gz + offset_z,
+                      target_rx, target_ry, target_rz, speed=50)
             time.sleep(1.5)
 
             # 4. 抓取 (动作二) 并等待 5s 握紧
