@@ -49,8 +49,8 @@ TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.022)
 TOP_J6_DEG = 8.3
 
 # 抓取前悬停/探入距离
-APPROACH_LIFT_M = 0.01    # 悬停位比目标法兰点高 1cm
-GRASP_ADVANCE_M = 0.05    # 抓取时沿手指方向前进 5cm
+APPROACH_LIFT_M = 0.00    # 悬停位比目标法兰点高 1cm
+GRASP_ADVANCE_M = 0.04    # 抓取时沿手指方向前进 5cm
 
 # D405 内参（自动读取，这里是 fallback）
 FX, FY = 390.4, 390.0
@@ -316,7 +316,7 @@ class DobotArm:
             # 安全: Z<50mm 拒绝执行, 防止撞击底座
             if z_mm < 50:
                 print(f"  [拒绝!] Z={z_mm:.0f}mm 太低, 可能碰撞, 跳过低抓取")
-                return
+                return False
             if z_mm > 1100 or z_mm < -300:
                 print(f"  [警告] Z={z_mm:.0f}mm 可能超出工作范围, 请注意!")
             cmd = f"MovL(pose = {{{x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f}, {rx:.1f}, {ry:.1f}, {rz:.1f}}})"
@@ -325,7 +325,7 @@ class DobotArm:
             print(f"  <<< {resp}")
             if resp.startswith("-"):
                 print(f"  [MovL 被拒绝] 错误码={resp.split(',')[0]}, 可能是位姿不可达")
-                return  # -1/-2 等是立即拒绝, 不是报警, 不调 clear_alarm
+                return False  # -1/-2 等是立即拒绝, 不是报警, 不调 clear_alarm
             # 等待运动完成 (队列ID递增=还在排队, 限制最多15s)
             for _ in range(30):
                 time.sleep(0.5)
@@ -334,13 +334,15 @@ class DobotArm:
                     print(f"  [报警!] 运动中触发报警: {err}")
                     print(f"  → 自动 clear_alarm() 恢复...")
                     self.clear_alarm()
-                    break
+                    return False
                 # 运动完成判断: RobotMode 回到非运动状态
                 rm = self.send("RobotMode()")
                 if ",{7}," in rm or ",{4}," in rm or ",{5}," in rm:
-                    break  # 运动完成或非运动状态
+                    return True  # 运动完成或非运动状态
+            return True
         except Exception as e:
             print(f"  [MovL 异常] {e}")
+            return False
 
     def go_home(self, speed=100):
         """MovJ 回到预设观察位姿"""
@@ -477,6 +479,8 @@ class AeroGripper:
     OPEN = [0, 0, 0, 0, 0, 0, 0]
     # 抓取 (四指弯曲包络)
     GRASP = [0, 70, 52, 70, 58, 59, 53]
+    #上端抓取
+    GRASP_TOP = [0, 86, 49, 71, 50, 70, 70]
 
     def __init__(self, port=None):
         self.hand = AeroHand(port=port)
@@ -509,13 +513,14 @@ class AeroGripper:
             print(f"[Aero] 张开失败, 已禁用灵巧手: {e}")
             return False
 
-    def close(self):
+    def close(self, top=False):
         if not self.ok:
             print("[Aero] 已禁用, 跳过抓取")
             return False
         try:
-            self.hand.set_joint_positions(self.GRASP)
-            print("[Aero] 抓取")
+            pose = self.GRASP_TOP if top else self.GRASP
+            self.hand.set_joint_positions(pose)
+            print("[Aero] 上端抓取" if top else "[Aero] 抓取")
             return True
         except Exception as e:
             self.ok = False
@@ -1124,18 +1129,38 @@ def main():
                 print(f"  上面抓取 → J6 转到手心向下角度 {TOP_J6_DEG:.1f}°")
                 arm.move_j6(TOP_J6_DEG)
                 time.sleep(0.5)
+                flange_pose = arm.get_pose()
+                R_f = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
+                fz_dir = R_f[:, 2]
+                flange_pt = fingertip_w - HAND_LENGTH * fz_dir
+                approach_pt = flange_pt + np.array([0.0, 0.0, APPROACH_LIFT_M])
+                grasp_pt = flange_pt + GRASP_ADVANCE_M * fz_dir
+                ax, ay, az = float(approach_pt[0]*1000), float(approach_pt[1]*1000), float(approach_pt[2]*1000)
+                gx, gy, gz = float(grasp_pt[0]*1000), float(grasp_pt[1]*1000), float(grasp_pt[2]*1000)
 
             # 2. 悬停位 (世界Z向上抬高 APPROACH_LIFT_M)
-            arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=150)
+            if not arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=150):
+                print("  [中止] 悬停位运动失败/报警, 本次不闭手")
+                if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
+                    go_to_layer(arm, _current_layer_idx)
+                else:
+                    arm.go_home()
+                continue
             time.sleep(1.5)
 
             # 3. 前进抓取 (沿手指方向探入 GRASP_ADVANCE_M)
-            arm.movel(gx + offset_x, gy + offset_y, gz + offset_z, speed=50)
+            if not arm.movel(gx + offset_x, gy + offset_y, gz + offset_z, speed=50):
+                print("  [中止] 抓取位运动失败/报警, 本次不闭手")
+                if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
+                    go_to_layer(arm, _current_layer_idx)
+                else:
+                    arm.go_home()
+                continue
             time.sleep(1.5)
 
             # 4. 抓取 (动作二) 并等待 5s 握紧
             if not SKIP_HAND:
-                if hand.close():
+                if hand.close(top=not is_side_grasp):
                     print("  灵巧手 → 动作二 (闭合), 等待 3s ...")
                     time.sleep(3.0)
                 else:
