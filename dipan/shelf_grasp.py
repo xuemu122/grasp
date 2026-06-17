@@ -51,6 +51,7 @@ TOP_J6_DEG = 8.3
 # 抓取前悬停/探入距离
 APPROACH_LIFT_M = 0.00    # 悬停位比目标法兰点高 1cm
 GRASP_ADVANCE_M = 0.04    # 抓取时沿手指方向前进 5cm
+TOP_APPROACH_BACKOFF_M = 0.15  # 上面抓时先在抓取轴线上退 15cm 再直线前进
 
 # D405 内参（自动读取，这里是 fallback）
 FX, FY = 390.4, 390.0
@@ -126,6 +127,30 @@ def go_to_layer(arm: "DobotArm", layer_idx: int):
     pose, name = _shelf_layer_poses[layer_idx]
     print(f"\n[货架层] 移动到第{layer_idx}层 ({name})...")
     arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100)
+    time.sleep(2)
+    return True
+
+
+def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: float = 120.0):
+    """先抬高再回到指定层, 用于避开放置点到货架层的直线路径"""
+    if layer_idx not in _shelf_layer_poses:
+        print(f"  [错误] 第{layer_idx}层未记录! 先用 l s 记录当前位姿")
+        return False
+    pose, name = _shelf_layer_poses[layer_idx]
+    print(f"\n[货架层] 安全返回第{layer_idx}层 ({name})...")
+    try:
+        cur = arm.get_pose()
+    except Exception as e:
+        print(f"  [警告] 无法读取当前位姿, 回退为直接 MovL: {e}")
+        return go_to_layer(arm, layer_idx)
+
+    safe_z = max(cur[2], pose[2]) + clearance_mm
+    if not arm.movel(cur[0], cur[1], safe_z, speed=120):
+        return False
+    if not arm.movel(pose[0], pose[1], safe_z, pose[3], pose[4], pose[5], speed=120):
+        return False
+    if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100):
+        return False
     time.sleep(2)
     return True
 
@@ -1133,12 +1158,12 @@ def main():
                 R_f = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
                 fz_dir = R_f[:, 2]
                 flange_pt = fingertip_w - HAND_LENGTH * fz_dir
-                approach_pt = flange_pt + np.array([0.0, 0.0, APPROACH_LIFT_M])
                 grasp_pt = flange_pt + GRASP_ADVANCE_M * fz_dir
+                approach_pt = grasp_pt - TOP_APPROACH_BACKOFF_M * fz_dir
                 ax, ay, az = float(approach_pt[0]*1000), float(approach_pt[1]*1000), float(approach_pt[2]*1000)
                 gx, gy, gz = float(grasp_pt[0]*1000), float(grasp_pt[1]*1000), float(grasp_pt[2]*1000)
 
-            # 2. 悬停位 (世界Z向上抬高 APPROACH_LIFT_M)
+            # 2. 悬停/预备位 (侧抓: 世界Z抬高; 上抓: 抓取轴线上后退)
             if not arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=150):
                 print("  [中止] 悬停位运动失败/报警, 本次不闭手")
                 if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
@@ -1182,8 +1207,8 @@ def main():
 
             # 7. 回到当前层观察位姿
             if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
-                print(f"\n[Home] 回到第{_current_layer_idx}层 ({_shelf_layer_poses[_current_layer_idx][1]}) ...")
-                go_to_layer(arm, _current_layer_idx)
+                print(f"\n[Home] 安全回到第{_current_layer_idx}层 ({_shelf_layer_poses[_current_layer_idx][1]}) ...")
+                go_to_layer_via_clearance(arm, _current_layer_idx)
             else:
                 print("\n[Home] 回到 HOME ...")
                 arm.go_home()
