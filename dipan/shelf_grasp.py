@@ -152,9 +152,7 @@ def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: flo
     if target_z < 80.0:
         print(f"  [警告] 第{layer_idx}层记录 Z={target_z:.1f}mm 过低, 自动抬到 80mm 作为可达观察位")
         target_z = 80.0
-    safe_z = max(cur[2], target_z, 650.0) + clearance_mm
-    if safe_z < 780.0:
-        safe_z = 780.0
+    safe_z = max(cur[2], target_z) + clearance_mm
     if not arm.movel(cur[0], cur[1], safe_z, speed=120):
         return False
     if not arm.movel(pose[0], pose[1], safe_z, pose[3], pose[4], pose[5], speed=120):
@@ -199,25 +197,33 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
 
     if use_layer2_transfer:
         print(f"\n[Transfer] 第{current_layer_idx}层抓取后先回当前层观察位 ...")
-        go_to_layer_via_clearance(arm, current_layer_idx)
+        if not go_to_layer_via_clearance(arm, current_layer_idx):
+            print("  [停止] 回当前层失败, 停在当前位置, 不继续放置流程")
+            return
         print("\n[Transfer] 经第2层中转前往放置点 ...")
-        go_to_layer_via_clearance(arm, 2)
-    elif current_layer_idx in _shelf_layer_poses:
-        print(f"\n[Transfer] 第{current_layer_idx}层抓取后先回当前层观察位 ...")
-        go_to_layer_via_clearance(arm, current_layer_idx)
+        if not go_to_layer_via_clearance(arm, 2):
+            print("  [停止] 回第2层中转失败, 停在当前位置, 不继续放置流程")
+            return
 
     print(f"\n[Place] 前往放置点 ({_place_point_pose[1]}) ...")
-    if go_to_place_point(arm) and hand_ok:
+    if not go_to_place_point(arm):
+        print("  [停止] 前往放置点失败, 停在当前位置, 不继续回层")
+        return
+    if hand_ok:
         hand.open()
     time.sleep(1)
 
     if use_layer2_transfer:
         print("\n[Transfer] 放置后回第2层中转 ...")
-        go_to_layer_via_clearance(arm, 2)
+        if not go_to_layer_via_clearance(arm, 2):
+            print("  [停止] 放置后回第2层失败, 停在当前位置")
+            return
 
     if current_layer_idx in _shelf_layer_poses:
         print(f"\n[Home] 回到第{current_layer_idx}层 ({_shelf_layer_poses[current_layer_idx][1]}) ...")
-        go_to_layer_via_clearance(arm, current_layer_idx)
+        if not go_to_layer_via_clearance(arm, current_layer_idx):
+            print("  [停止] 回当前层失败, 停在当前位置")
+            return
     else:
         print("\n[Home] 回到 HOME ...")
         arm.go_home()
