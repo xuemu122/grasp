@@ -34,6 +34,43 @@ def send_command(sock, cmd):
     return json.loads(resp.decode())
 
 
+def get_power_status(sock):
+    """查询底盘电源状态"""
+    cmd = "/api/get_power_status"
+    print(f">>> 发送: {cmd}")
+    result = send_command(sock, cmd)
+    print(f"<<< 电源: {json.dumps(result, ensure_ascii=False, indent=2)}")
+    return result
+
+
+def print_power_summary(power_result):
+    """打印简短电量信息"""
+    if not power_result or power_result.get("status") != "OK":
+        msg = (power_result or {}).get("error_message", "未知错误")
+        print(f"电量查询失败: {msg}")
+        return
+    info = power_result.get("results") or {}
+    capacity = info.get("battery_capacity")
+    voltage = info.get("battery_voltage")
+    current = info.get("battery_current")
+    charging = info.get("charger_connected_notice")
+    charging_text = "充电中" if charging else "未充电"
+    print(f"电量: {capacity}%  电压: {voltage}V  电流: {current}A  {charging_text}")
+
+
+def attach_power_status(sock, result):
+    """把电源状态合并到原命令返回值中"""
+    try:
+        power_result = get_power_status(sock)
+    except Exception as e:
+        power_result = {"status": "ERROR", "error_message": str(e)}
+        print(f"电量查询失败: {e}")
+    else:
+        print_power_summary(power_result)
+    result["power_status"] = power_result
+    return result
+
+
 def move_to(sock, marker):
     """发送移动到目标点位的指令"""
     cmd = f"/api/move?marker={marker}"
@@ -44,7 +81,7 @@ def move_to(sock, marker):
         print(f"任务已下发，task_id: {result.get('task_id', 'N/A')}")
     else:
         print(f"失败: {result.get('error_message', '未知错误')}")
-    return result
+    return attach_power_status(sock, result)
 
 
 def cancel_move(sock):
@@ -53,6 +90,7 @@ def cancel_move(sock):
     print(f">>> 发送: {cmd}")
     result = send_command(sock, cmd)
     print(f"<<< 返回: {json.dumps(result, ensure_ascii=False, indent=2)}")
+    return attach_power_status(sock, result)
 
 
 def main():
