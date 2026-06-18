@@ -67,10 +67,19 @@ HOME_JOINTS_DEG = [-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]
 SHELF_LAYERS_FILE = os.path.join(os.path.dirname(__file__), "shelf_layers.json")
 _current_layer_idx = 1  # 当前选中的层编号 (1=顶层)
 _shelf_layer_poses = {}  # {1: ([x,y,z,rx,ry,rz], name), 2: ...}
+LOW_Z_LAYER_IDXS = {4}  # 第4层在抬高基座下方, 允许低/负 Z
 
 # 放置点位姿文件 (笛卡尔: x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)
 PLACE_POINT_FILE = os.path.join(os.path.dirname(__file__), "place_point.json")
 _place_point_pose = None  # ([x,y,z,rx,ry,rz], name)
+
+
+def _layer_allows_low_z(layer_idx: Optional[int]) -> bool:
+    return layer_idx in LOW_Z_LAYER_IDXS
+
+
+def _current_layer_allows_low_z() -> bool:
+    return _layer_allows_low_z(_current_layer_idx)
 
 
 def load_shelf_layers():
@@ -127,10 +136,15 @@ def go_to_layer(arm: "DobotArm", layer_idx: int):
     pose, name = _shelf_layer_poses[layer_idx]
     print(f"\n[货架层] 移动到第{layer_idx}层 ({name})...")
     target_z = pose[2]
-    if target_z < 80.0:
+    allow_low_z = _layer_allows_low_z(layer_idx)
+    if target_z < 80.0 and not allow_low_z:
         print(f"  [警告] 第{layer_idx}层记录 Z={target_z:.1f}mm 过低, 自动抬到 80mm")
         target_z = 80.0
-    arm.movel(pose[0], pose[1], target_z, pose[3], pose[4], pose[5], speed=100)
+    if allow_low_z and target_z < 50.0:
+        print(f"  [第{layer_idx}层] 允许低位观察 Z={target_z:.1f}mm")
+    if not arm.movel(pose[0], pose[1], target_z, pose[3], pose[4], pose[5], speed=100,
+                     allow_low_z=allow_low_z):
+        return False
     time.sleep(2)
     return True
 
@@ -149,15 +163,21 @@ def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: flo
         return go_to_layer(arm, layer_idx)
 
     target_z = pose[2]
-    if target_z < 80.0:
+    allow_low_z = _layer_allows_low_z(layer_idx)
+    if target_z < 80.0 and not allow_low_z:
         print(f"  [警告] 第{layer_idx}层记录 Z={target_z:.1f}mm 过低, 自动抬到 80mm 作为可达观察位")
         target_z = 80.0
+    if allow_low_z and target_z < 50.0:
+        print(f"  [第{layer_idx}层] 允许低位观察 Z={target_z:.1f}mm")
     safe_z = max(cur[2], target_z) + clearance_mm
-    if not arm.movel(cur[0], cur[1], safe_z, speed=120):
+    if not arm.movel(cur[0], cur[1], safe_z, speed=120,
+                     allow_low_z=allow_low_z and safe_z < 50.0):
         return False
-    if not arm.movel(pose[0], pose[1], safe_z, pose[3], pose[4], pose[5], speed=120):
+    if not arm.movel(pose[0], pose[1], safe_z, pose[3], pose[4], pose[5], speed=120,
+                     allow_low_z=allow_low_z and safe_z < 50.0):
         return False
-    if not arm.movel(pose[0], pose[1], target_z, pose[3], pose[4], pose[5], speed=100):
+    if not arm.movel(pose[0], pose[1], target_z, pose[3], pose[4], pose[5], speed=100,
+                     allow_low_z=allow_low_z):
         return False
     time.sleep(2)
     return True
@@ -386,16 +406,18 @@ class DobotArm:
         print(f"[DOBOT] GetErrorID: {err}")
         self.do_enable()
 
-    def movel(self, x_mm, y_mm, z_mm, rx=None, ry=None, rz=None, speed=100):
+    def movel(self, x_mm, y_mm, z_mm, rx=None, ry=None, rz=None, speed=100, allow_low_z=False):
         """MovL V4: pose = {x, y, z, rx, ry, rz}，rx/ry/rz=None 则保持当前姿态"""
         try:
             if rx is None:
                 pose = self.get_pose()
                 rx, ry, rz = pose[3], pose[4], pose[5]
             # 安全: Z<50mm 拒绝执行, 防止撞击底座
-            if z_mm < 50:
+            if z_mm < 50 and not allow_low_z:
                 print(f"  [拒绝!] Z={z_mm:.0f}mm 太低, 可能碰撞, 跳过低抓取")
                 return False
+            if z_mm < 50 and allow_low_z:
+                print(f"  [低位放行] Z={z_mm:.0f}mm (第4层/下方工作区)")
             if z_mm > 1100 or z_mm < -300:
                 print(f"  [警告] Z={z_mm:.0f}mm 可能超出工作范围, 请注意!")
             cmd = f"MovL(pose = {{{x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f}, {rx:.1f}, {ry:.1f}, {rz:.1f}}})"
@@ -959,7 +981,7 @@ def main():
                     ty = pose[1] + dy
                     tz = pose[2] + dz
                     print(f"  MovL({tx:.0f},{ty:.0f},{tz:.0f}) ← ({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f}) + ({dx},{dy},{dz})")
-                    resp = arm.movel(tx, ty, tz, speed=50)
+                    resp = arm.movel(tx, ty, tz, speed=50, allow_low_z=_current_layer_allows_low_z())
                     time.sleep(0.5)
                 continue
 
@@ -1148,7 +1170,7 @@ def main():
                      new_y = flange_pose[1] + delta_w[1] * 1000
                      new_z = flange_pose[2] + delta_w[2] * 1000
                      print(f"  目标法兰: ({new_x:.0f}, {new_y:.0f}, {new_z:.0f})mm")
-                     arm.movel(new_x, new_y, new_z, speed=100)
+                     arm.movel(new_x, new_y, new_z, speed=100, allow_low_z=_current_layer_allows_low_z())
                      time.sleep(1)
                      continue
                  elif choice == "m":
@@ -1162,12 +1184,13 @@ def main():
                      new_y = flange_pose[1] + delta_w[1] * 1000
                      new_z = flange_pose[2] + delta_w[2] * 1000
                      print(f"  目标法兰: ({new_x:.0f}, {new_y:.0f}, {new_z:.0f})mm")
-                     arm.movel(new_x, new_y, new_z, speed=60)
+                     arm.movel(new_x, new_y, new_z, speed=60, allow_low_z=_current_layer_allows_low_z())
                      time.sleep(1)
                      continue
                  elif choice == "p":
                      print(f"\n  预览: 移动到 ({ax+offset_x:.0f}, {ay+offset_y:.0f}, {az+offset_z:.0f})mm")
-                     arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=100)
+                     arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=100,
+                               allow_low_z=_current_layer_allows_low_z())
                      time.sleep(1)
                      continue
                  elif choice.lower() == "f5":
@@ -1227,7 +1250,9 @@ def main():
                 gx, gy, gz = float(grasp_pt[0]*1000), float(grasp_pt[1]*1000), float(grasp_pt[2]*1000)
 
             # 2. 悬停/预备位 (侧抓: 世界Z抬高; 上抓: 抓取轴线上后退)
-            if not arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=150):
+            allow_low_z = _current_layer_allows_low_z()
+            if not arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=150,
+                             allow_low_z=allow_low_z):
                 print("  [中止] 悬停位运动失败/报警, 本次不闭手")
                 if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
                     go_to_layer(arm, _current_layer_idx)
@@ -1237,7 +1262,8 @@ def main():
             time.sleep(1.5)
 
             # 3. 前进抓取 (沿手指方向探入 GRASP_ADVANCE_M)
-            if not arm.movel(gx + offset_x, gy + offset_y, gz + offset_z, speed=50):
+            if not arm.movel(gx + offset_x, gy + offset_y, gz + offset_z, speed=50,
+                             allow_low_z=allow_low_z):
                 print("  [中止] 抓取位运动失败/报警, 本次不闭手")
                 if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
                     go_to_layer(arm, _current_layer_idx)
@@ -1256,7 +1282,10 @@ def main():
 
             # 5. 后退 (沿法兰-Z 退 15cm, 离开货架)
             retreat_pt = np.array([gx+offset_x, gy+offset_y, gz+offset_z]) - 150.0 * fz_dir
-            arm.movel(float(retreat_pt[0]), float(retreat_pt[1]), float(retreat_pt[2]), speed=100)
+            if not arm.movel(float(retreat_pt[0]), float(retreat_pt[1]), float(retreat_pt[2]), speed=100,
+                             allow_low_z=allow_low_z):
+                print("  [停止] 后退失败/报警, 停在当前位置, 不继续放置流程")
+                continue
             time.sleep(1.5)
 
             # 6. 放置并回到当前层观察位
