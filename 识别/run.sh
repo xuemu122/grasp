@@ -11,4 +11,4 @@ cd "$(dirname "$0")"
 export PYTHONPATH="/home/nvidia/pyorbbecsdk/install/lib:$PYTHONPATH"
 export LD_LIBRARY_PATH="/home/nvidia/pyorbbecsdk/install/lib:$LD_LIBRARY_PATH"
 
-exec python3 orbbec_detect.py
+exec python3 orbbec_detect.py "$@"

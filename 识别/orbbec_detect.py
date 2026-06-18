@@ -7,6 +7,7 @@ import numpy as np
 import yaml
 import time
 import json
+import argparse
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple
@@ -638,18 +639,34 @@ class RetailProductLocatorSystem:
                  model_path: str = "runs/detect/retail_product/weights/best.pt",
                  mapping_path: str = "shelf_mapping.yaml",
                  dataset_config_path: Optional[str] = None,
-                 conf_threshold: float = 0.4,
+                 conf_threshold: float = 0.15,
+                 raw_conf_threshold: float = 0.01,
                  use_ocr: bool = True,
                  ocr_interval: int = 90):
         
         print(f"[模型] 加载 YOLO 模型: {model_path}")
+        if not Path(model_path).exists():
+            print(f"[模型][警告] 权重文件不存在: {model_path}")
         self.model = YOLO(model_path)
         self.conf_threshold = conf_threshold
+        self.raw_conf_threshold = min(raw_conf_threshold, conf_threshold)
         self.use_ocr = use_ocr and EASYOCR_AVAILABLE
+        names = getattr(self.model, "names", {}) or {}
+        print(f"[模型] 显示阈值 conf={self.conf_threshold:.2f}, 原始候选阈值 raw_conf={self.raw_conf_threshold:.2f}")
+        print(f"[模型] 类别数: {len(names)}")
+        if names:
+            preview = ", ".join(f"{k}:{v}" for k, v in list(names.items())[:10])
+            print(f"[模型] 类别预览: {preview}")
+        if dataset_config_path:
+            print(f"[模型] dataset_config: {dataset_config_path} ({'存在' if Path(dataset_config_path).exists() else '不存在'})")
 
         # 目标选择
         self.selected_index = None     # 鼠标点击选中的框索引
         self.detections = []           # 当前帧检测结果（供鼠标回调使用）
+        self.raw_box_count = 0
+        self.filtered_box_count = 0
+        self.low_conf_box_count = 0
+        self.last_candidates = []
 
         self.mapping_mgr = ProductMappingManager(mapping_path, dataset_config_path=dataset_config_path)
         self.camera = None
@@ -750,20 +767,36 @@ class RetailProductLocatorSystem:
         # YOLO 预测
         results = self.model.predict(
             source=color_img,
-            conf=self.conf_threshold,
+            conf=self.raw_conf_threshold,
             verbose=False,
         )
         result = results[0]
+        raw_boxes = list(result.boxes)
+        self.raw_box_count = len(raw_boxes)
+        self.filtered_box_count = 0
+        self.low_conf_box_count = 0
+        self.last_candidates = []
 
         self.frame_counter += 1
         do_ocr_this_frame = (self.frame_counter % self.ocr_interval == 0)
 
-        for box in result.boxes:
+        for box in raw_boxes:
             cls_id = int(box.cls[0])
             conf_score = float(box.conf[0])
             class_name = result.names[cls_id]
 
             x1, y1, x2, y2 = map(int, box.xyxy[0])
+            self.last_candidates.append({
+                "class_id": cls_id,
+                "class_name": class_name,
+                "confidence": conf_score,
+                "bbox": (x1, y1, x2, y2),
+            })
+            if conf_score < self.conf_threshold:
+                self.low_conf_box_count += 1
+                continue
+
+            self.filtered_box_count += 1
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
 
             # 深度
@@ -888,6 +921,18 @@ class RetailProductLocatorSystem:
                 if any(g in lgrade for g in bad):
                     light_tag += " ⚠ 可能影响识别精度！"
                 print(f"\n--- 检测到 {len(detections)} 个商品 ---")
+                print(f"  [YOLO] raw={self.raw_box_count} 显示={self.filtered_box_count} "
+                      f"低于阈值={self.low_conf_box_count} "
+                      f"raw_conf={self.raw_conf_threshold:.2f} conf={self.conf_threshold:.2f}")
+                if self.last_candidates:
+                    top_candidates = sorted(self.last_candidates, key=lambda item: item["confidence"], reverse=True)[:8]
+                    cand_text = " | ".join(
+                        f"{c['class_name']}:{c['confidence']:.2f}@{c['bbox']}"
+                        for c in top_candidates
+                    )
+                    print(f"  [YOLO候选Top] {cand_text}")
+                else:
+                    print("  [YOLO候选Top] 无候选框；请检查模型/画面/类别训练是否匹配")
                 print(light_tag)
                 for i, det in enumerate(detections):
                     sel = ">>> 选中 <<< " if i == self.selected_index else ""
@@ -1001,13 +1046,20 @@ MedicineLocatorSystem = RetailProductLocatorSystem
 
 if __name__ == "__main__":
     import os
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--conf", type=float, default=0.15, help="显示/输出的置信度阈值")
+    parser.add_argument("--raw-conf", type=float, default=0.01, help="YOLO 原始候选阈值")
+    parser.add_argument("--ocr-interval", type=int, default=30, help="OCR 扫描间隔帧数")
+    parser.add_argument("--no-ocr", action="store_true", help="关闭 OCR")
+    args = parser.parse_args()
     base_dir = os.path.dirname(os.path.abspath(__file__))
     system = RetailProductLocatorSystem(
             model_path=os.path.join(base_dir, "best.pt"),
             mapping_path=os.path.join(base_dir, "shelf_mapping.yaml"),
             dataset_config_path=os.path.abspath(os.path.join(base_dir, "..", "dataset", "yolo_rpc_test", "dataset.yaml")),
-            conf_threshold=0.45,
-            use_ocr=True,
-            ocr_interval=30,
+            conf_threshold=args.conf,
+            raw_conf_threshold=args.raw_conf,
+            use_ocr=not args.no_ocr,
+            ocr_interval=args.ocr_interval,
         )
     system.run()
