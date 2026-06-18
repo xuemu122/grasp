@@ -405,8 +405,8 @@ class DobotArm:
             if resp.startswith("-"):
                 print(f"  [MovL 被拒绝] 错误码={resp.split(',')[0]}, 可能是位姿不可达")
                 return False  # -1/-2 等是立即拒绝, 不是报警, 不调 clear_alarm
-            # 等待运动完成 (队列ID递增=还在排队, 限制最多15s)
-            for _ in range(30):
+            # 等待运动完成: RobotMode=5 表示使能空闲; 7/8 仍在运行/点动中
+            for _ in range(60):
                 time.sleep(0.5)
                 err = self.get_error_id()
                 if "[]" not in err:
@@ -414,11 +414,15 @@ class DobotArm:
                     print(f"  → 自动 clear_alarm() 恢复...")
                     self.clear_alarm()
                     return False
-                # 运动完成判断: RobotMode 回到非运动状态
                 rm = self.send("RobotMode()")
-                if ",{7}," in rm or ",{4}," in rm or ",{5}," in rm:
-                    return True  # 运动完成或非运动状态
-            return True
+                mode = self._parse_robot_mode(rm)
+                if mode == 5:
+                    return True
+                if mode in (4, 9, 11):
+                    print(f"  [MovL 异常状态] RobotMode={mode}, 停止后续动作")
+                    return False
+            print("  [MovL 超时] 运动 30s 未完成")
+            return False
         except Exception as e:
             print(f"  [MovL 异常] {e}")
             return False
@@ -437,7 +441,7 @@ class DobotArm:
         if resp.startswith("-"):
             print(f"  [MovJ 被拒绝] 错误码={resp.split(',')[0]}")
             return False
-        for _ in range(30):
+        for _ in range(60):
             time.sleep(0.5)
             err = self.get_error_id()
             if "[]" not in err:
@@ -445,9 +449,14 @@ class DobotArm:
                 self.clear_alarm()
                 return False
             rm = self.send("RobotMode()")
-            if ",{7}," in rm or ",{4}," in rm or ",{5}," in rm:
+            mode = self._parse_robot_mode(rm)
+            if mode == 5:
                 return True
-        return True
+            if mode in (4, 9, 11):
+                print(f"  [MovJ 异常状态] RobotMode={mode}, 停止后续动作")
+                return False
+        print("  [MovJ 超时] 运动 30s 未完成")
+        return False
 
     def move_j6(self, target_j6_deg: float):
         """只调整第六轴到目标角度，其他关节保持当前角度"""
