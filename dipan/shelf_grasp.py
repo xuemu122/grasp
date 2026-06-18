@@ -51,7 +51,10 @@ TOP_J6_DEG = 8.3
 # 抓取前悬停/探入距离
 APPROACH_LIFT_M = 0.00    # 悬停位比目标法兰点高 1cm
 GRASP_ADVANCE_M = 0.04    # 抓取时沿手指方向前进 5cm
+LOW_Z_GRASP_ADVANCE_M = 0.015  # 第4层低位空间更紧, 先只探入 1.5cm
 TOP_APPROACH_BACKOFF_M = 0.15  # 上面抓时先在抓取轴线上退 15cm 再直线前进
+LOW_Z_APPROACH_SPEED = 60
+LOW_Z_GRASP_SPEED = 20
 
 # D405 内参（自动读取，这里是 fallback）
 FX, FY = 390.4, 390.0
@@ -1101,6 +1104,8 @@ def main():
             # ── 用法兰局部轴计算法兰/悬停/抓取位姿 (世界坐标, 米) ──
             R_f = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
             fz_dir = R_f[:, 2]   # 法兰+Z → 手指方向 (世界系)
+            low_z_grasp = _current_layer_allows_low_z()
+            grasp_advance_m = LOW_Z_GRASP_ADVANCE_M if low_z_grasp else GRASP_ADVANCE_M
 
             # ── 根据自动判定的抓取模式选择偏移参数 ──
             is_side_grasp = "side" in grip_mode
@@ -1113,7 +1118,7 @@ def main():
             approach_pt = flange_pt + np.array([0.0, 0.0, APPROACH_LIFT_M])
 
             # 抓取: 沿手指方向前进一小段探入
-            grasp_pt = flange_pt + GRASP_ADVANCE_M * fz_dir
+            grasp_pt = flange_pt + grasp_advance_m * fz_dir
 
             # ── 转为 mm (python float) 供后续微调 ──
             fx, fy, fz  = float(flange_pt[0]*1000),  float(flange_pt[1]*1000),  float(flange_pt[2]*1000)
@@ -1132,6 +1137,7 @@ def main():
                  print(f"  模式: {grip_label} ({grip_mode})")
                  print(f"  当前参数: offset=({grasp_offset_m[0]*1000:.0f},{grasp_offset_m[1]*1000:.0f},{grasp_offset_m[2]*1000:.0f})mm")
                  print(f"  固化建议: {'SIDE' if is_side_grasp else 'TOP'}_GRASP_OFFSET_M=({tuned_offset_m[0]:+.3f}, {tuned_offset_m[1]:+.3f}, {tuned_offset_m[2]:+.3f})")
+                 print(f"  探入距离: {grasp_advance_m*1000:.0f}mm" + (" (第4层低位)" if low_z_grasp else ""))
                  print(f"  指尖世界: ({wx*1000:.0f}, {wy*1000:.0f}, {wz*1000:.0f})mm")
                  print(f"  法兰(悬停): X={ax+offset_x:+.0f}({offset_x:+5.0f})  "
                        f"Y={ay+offset_y:+.0f}({offset_y:+5.0f})  "
@@ -1244,14 +1250,18 @@ def main():
                 R_f = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
                 fz_dir = R_f[:, 2]
                 flange_pt = fingertip_w - HAND_LENGTH * fz_dir
-                grasp_pt = flange_pt + GRASP_ADVANCE_M * fz_dir
+                grasp_pt = flange_pt + grasp_advance_m * fz_dir
                 approach_pt = grasp_pt - TOP_APPROACH_BACKOFF_M * fz_dir
                 ax, ay, az = float(approach_pt[0]*1000), float(approach_pt[1]*1000), float(approach_pt[2]*1000)
                 gx, gy, gz = float(grasp_pt[0]*1000), float(grasp_pt[1]*1000), float(grasp_pt[2]*1000)
 
             # 2. 悬停/预备位 (侧抓: 世界Z抬高; 上抓: 抓取轴线上后退)
             allow_low_z = _current_layer_allows_low_z()
-            if not arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=150,
+            approach_speed = LOW_Z_APPROACH_SPEED if allow_low_z else 150
+            grasp_speed = LOW_Z_GRASP_SPEED if allow_low_z else 50
+            if allow_low_z:
+                print(f"  第4层低位抓取: 探入 {grasp_advance_m*1000:.0f}mm, 速度 {grasp_speed}")
+            if not arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=approach_speed,
                              allow_low_z=allow_low_z):
                 print("  [中止] 悬停位运动失败/报警, 本次不闭手")
                 if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
@@ -1262,7 +1272,7 @@ def main():
             time.sleep(1.5)
 
             # 3. 前进抓取 (沿手指方向探入 GRASP_ADVANCE_M)
-            if not arm.movel(gx + offset_x, gy + offset_y, gz + offset_z, speed=50,
+            if not arm.movel(gx + offset_x, gy + offset_y, gz + offset_z, speed=grasp_speed,
                              allow_low_z=allow_low_z):
                 print("  [中止] 抓取位运动失败/报警, 本次不闭手")
                 if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
