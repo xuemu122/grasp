@@ -58,7 +58,7 @@ FX, FY = 390.4, 390.0
 CX, CY = 324.5, 241.2
 
 # 调试开关: 屏蔽手, 只测试手眼标定 + 机械臂走位
-SKIP_HAND = False
+SKIP_HAND = True
 
 # 机械臂初始观察位姿 (角度制)
 HOME_JOINTS_DEG = [-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]
@@ -185,7 +185,7 @@ def go_to_place_point(arm: "DobotArm"):
 
 
 def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_layer_idx: Optional[int]):
-    """抓取后放置并回到观察层。3/4层经第2层中转, 避免低层直达放置点。"""
+    """抓取后放置并回到观察层。3/4层经第1层中转, 避免低层直达放置点。"""
     hand_ok = hand is not None and not SKIP_HAND
 
     if _place_point_pose is None:
@@ -193,16 +193,17 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
             hand.open()
         return
 
-    use_layer2_transfer = current_layer_idx in (3, 4) and 2 in _shelf_layer_poses
+    transfer_layer_idx = 1
+    use_transfer_layer = current_layer_idx in (3, 4) and transfer_layer_idx in _shelf_layer_poses
 
-    if use_layer2_transfer:
+    if use_transfer_layer:
         print(f"\n[Transfer] 第{current_layer_idx}层抓取后先回当前层观察位 ...")
         if not go_to_layer_via_clearance(arm, current_layer_idx):
             print("  [停止] 回当前层失败, 停在当前位置, 不继续放置流程")
             return
-        print("\n[Transfer] 经第2层中转前往放置点 ...")
-        if not go_to_layer_via_clearance(arm, 2):
-            print("  [停止] 回第2层中转失败, 停在当前位置, 不继续放置流程")
+        print(f"\n[Transfer] 经第{transfer_layer_idx}层中转前往放置点 ...")
+        if not go_to_layer_via_clearance(arm, transfer_layer_idx):
+            print(f"  [停止] 回第{transfer_layer_idx}层中转失败, 停在当前位置, 不继续放置流程")
             return
 
     print(f"\n[Place] 前往放置点 ({_place_point_pose[1]}) ...")
@@ -213,10 +214,10 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
         hand.open()
     time.sleep(1)
 
-    if use_layer2_transfer:
-        print("\n[Transfer] 放置后回第2层中转 ...")
-        if not go_to_layer_via_clearance(arm, 2):
-            print("  [停止] 放置后回第2层失败, 停在当前位置")
+    if use_transfer_layer:
+        print(f"\n[Transfer] 放置后回第{transfer_layer_idx}层中转 ...")
+        if not go_to_layer_via_clearance(arm, transfer_layer_idx):
+            print(f"  [停止] 放置后回第{transfer_layer_idx}层失败, 停在当前位置")
             return
 
     if current_layer_idx in _shelf_layer_poses:
