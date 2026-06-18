@@ -51,7 +51,7 @@ TOP_J6_DEG = 8.3
 # 抓取前悬停/探入距离
 APPROACH_LIFT_M = 0.00    # 悬停位比目标法兰点高 1cm
 GRASP_ADVANCE_M = 0.04    # 抓取时沿手指方向前进 5cm
-LOW_Z_GRASP_ADVANCE_M = 0.015  # 第4层低位空间更紧, 先只探入 1.5cm
+LOW_Z_GRASP_ADVANCE_M = 0.035  # 第4层低位空间更紧, 先只探入 1.5cm
 TOP_APPROACH_BACKOFF_M = 0.15  # 上面抓时先在抓取轴线上退 15cm 再直线前进
 LOW_Z_APPROACH_SPEED = 60
 LOW_Z_GRASP_SPEED = 20
@@ -208,7 +208,7 @@ def go_to_place_point(arm: "DobotArm"):
 
 
 def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_layer_idx: Optional[int]):
-    """抓取后放置并回到观察层。3/4层经第1层中转, 避免低层直达放置点。"""
+    """抓取后放置并回到观察层。3/4层经第1层中转, 下降回低层时走安全路径。"""
     hand_ok = hand is not None and not SKIP_HAND
 
     if _place_point_pose is None:
@@ -221,11 +221,11 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
 
     if use_transfer_layer:
         print(f"\n[Transfer] 第{current_layer_idx}层抓取后先回当前层观察位 ...")
-        if not go_to_layer_via_clearance(arm, current_layer_idx):
+        if not go_to_layer(arm, current_layer_idx):
             print("  [停止] 回当前层失败, 停在当前位置, 不继续放置流程")
             return
-        print(f"\n[Transfer] 经第{transfer_layer_idx}层中转前往放置点 ...")
-        if not go_to_layer_via_clearance(arm, transfer_layer_idx):
+        print(f"\n[Transfer] 直接上到第{transfer_layer_idx}层中转, 再前往放置点 ...")
+        if not go_to_layer(arm, transfer_layer_idx):
             print(f"  [停止] 回第{transfer_layer_idx}层中转失败, 停在当前位置, 不继续放置流程")
             return
 
@@ -238,8 +238,8 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
     time.sleep(1)
 
     if use_transfer_layer:
-        print(f"\n[Transfer] 放置后回第{transfer_layer_idx}层中转 ...")
-        if not go_to_layer_via_clearance(arm, transfer_layer_idx):
+        print(f"\n[Transfer] 放置后直接回第{transfer_layer_idx}层中转 ...")
+        if not go_to_layer(arm, transfer_layer_idx):
             print(f"  [停止] 放置后回第{transfer_layer_idx}层失败, 停在当前位置")
             return
 
