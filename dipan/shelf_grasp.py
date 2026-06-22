@@ -62,7 +62,9 @@ FX, FY = 390.4, 390.0
 CX, CY = 324.5, 241.2
 
 # 调试开关: 屏蔽手, 只测试手眼标定 + 机械臂走位
-SKIP_HAND = True
+SKIP_HAND = False
+# 当前识别目标以瓶子为主, 默认使用瓶子抓取手势；原侧抓/上抓手势仍保留。
+HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "bottle").lower()
 
 # 机械臂初始观察位姿 (角度制)
 HOME_JOINTS_DEG = [-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]
@@ -686,6 +688,8 @@ class AeroGripper:
     GRASP = [0, 70, 52, 70, 58, 59, 53]
     #上端抓取
     GRASP_TOP = [0, 86, 49, 71, 50, 70, 70]
+    # 瓶子抓取
+    GRASP_BOTTLE = [0, 82, 65, 76, 55, 67, 63]
 
     def __init__(self, port=None):
         self.hand = AeroHand(port=port)
@@ -718,14 +722,22 @@ class AeroGripper:
             print(f"[Aero] 张开失败, 已禁用灵巧手: {e}")
             return False
 
-    def close(self, top=False):
+    def close(self, top=False, mode=None):
         if not self.ok:
             print("[Aero] 已禁用, 跳过抓取")
             return False
         try:
-            pose = self.GRASP_TOP if top else self.GRASP
+            if mode == "bottle":
+                pose = self.GRASP_BOTTLE
+                label = "瓶子抓取"
+            elif top:
+                pose = self.GRASP_TOP
+                label = "上端抓取"
+            else:
+                pose = self.GRASP
+                label = "抓取"
             self.hand.set_joint_positions(pose)
-            print("[Aero] 上端抓取" if top else "[Aero] 抓取")
+            print(f"[Aero] {label}")
             return True
         except Exception as e:
             self.ok = False
@@ -1019,6 +1031,7 @@ def main():
     print("=" * 60)
     print("  货架边缘抓取系统")
     print(f"  灵巧手: {HAND_LENGTH*100:.0f}cm  {HAND_W_Y*100:.1f}cm×{HAND_W_X*100:.1f}cm  {HAND_WEIGHT}kg")
+    print(f"  手势模式: {HAND_GRASP_MODE}")
     print("=" * 60)
 
     # ── 1. 初始化相机 + YOLO ──
@@ -1448,8 +1461,9 @@ def main():
 
             # 4. 抓取 (动作二) 并等待 5s 握紧
             if not SKIP_HAND:
-                if hand.close(top=not is_side_grasp):
-                    print("  灵巧手 → 动作二 (闭合), 等待 3s ...")
+                grasp_mode = "bottle" if HAND_GRASP_MODE == "bottle" else None
+                if hand.close(top=not is_side_grasp, mode=grasp_mode):
+                    print("  灵巧手 → 闭合, 等待 3s ...")
                     time.sleep(3.0)
                 else:
                     print("  灵巧手不可用, 继续执行机械臂安全退回")
