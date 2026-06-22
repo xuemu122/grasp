@@ -12,6 +12,7 @@ import time
 import socket
 import re
 import json
+import subprocess
 import cv2
 import numpy as np
 from typing import List, Tuple, Optional
@@ -77,6 +78,14 @@ LOW_Z_LAYER_IDXS = {4}  # 第4层在抬高基座下方, 允许低/负 Z
 PLACE_POINT_FILE = os.path.join(os.path.dirname(__file__), "place_point.json")
 _place_point_pose = None  # ([x,y,z,rx,ry,rz], name)
 
+# 收起姿态: 调用底盘前和退出程序前使用, 防止机械臂/灵巧手与环境碰撞
+STOW_POSE_FILE = os.path.join(os.path.dirname(__file__), "stow_pose.json")
+_stow_pose = None  # ([x,y,z,rx,ry,rz], name)
+
+# 放置前是否先让底盘去固定点。默认关闭, 现场确认 marker 后可用环境变量或主菜单 b 开启。
+USE_CHASSIS_PLACE = os.getenv("USE_CHASSIS_PLACE", "0").lower() in ("1", "true", "yes", "on")
+MOVE_ROBOT_SCRIPT = os.path.join(os.path.dirname(__file__), "move_robot.py")
+
 
 def _layer_allows_low_z(layer_idx: Optional[int]) -> bool:
     return layer_idx in LOW_Z_LAYER_IDXS
@@ -116,6 +125,17 @@ def load_place_point():
     return _place_point_pose
 
 
+def load_stow_pose():
+    """从 JSON 加载收起姿态，返回 (pose, name) 或 None"""
+    global _stow_pose
+    if os.path.exists(STOW_POSE_FILE):
+        with open(STOW_POSE_FILE) as f:
+            data = json.load(f)
+        if "pose" in data:
+            _stow_pose = (data["pose"], data.get("name", "收起姿态"))
+    return _stow_pose
+
+
 def save_shelf_layers():
     """保存货架层位姿到 JSON"""
     data = {
@@ -136,6 +156,18 @@ def save_place_point():
     pose, name = _place_point_pose
     data = {"pose": pose, "name": name}
     with open(PLACE_POINT_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def save_stow_pose():
+    """保存收起姿态到 JSON"""
+    if _stow_pose is None:
+        if os.path.exists(STOW_POSE_FILE):
+            os.remove(STOW_POSE_FILE)
+        return
+    pose, name = _stow_pose
+    data = {"pose": pose, "name": name}
+    with open(STOW_POSE_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
 
@@ -215,6 +247,40 @@ def go_to_place_point(arm: "DobotArm"):
     return True
 
 
+def go_to_stow_pose(arm: "DobotArm"):
+    """移动到记录的收起姿态。未记录时只提示并返回 False。"""
+    if _stow_pose is None:
+        print("  [收起姿态] 未记录, 跳过。可用 u 菜单拖动记录")
+        return False
+    pose, name = _stow_pose
+    print(f"\n[收起姿态] 移动到 {name} ...")
+    if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100):
+        print("  [收起姿态] 移动失败")
+        return False
+    time.sleep(1)
+    return True
+
+
+def move_chassis_to_place():
+    """复用 move_robot.py, 让底盘去放置固定点。"""
+    print("\n[底盘] 前往放置固定点 ...")
+    try:
+        result = subprocess.run(
+            [sys.executable, MOVE_ROBOT_SCRIPT, "place"],
+            cwd=os.path.dirname(__file__),
+            text=True,
+            capture_output=False,
+            check=False,
+        )
+    except Exception as e:
+        print(f"  [底盘] 调用 move_robot.py 失败: {e}")
+        return False
+    if result.returncode != 0:
+        print(f"  [底盘] move_robot.py place 返回 {result.returncode}, 停止放置流程")
+        return False
+    return True
+
+
 def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_layer_idx: Optional[int]):
     """抓取后放置并回到观察层。低层上撤走指定中转层, 下降回低层时走安全路径。"""
     hand_ok = hand is not None and not SKIP_HAND
@@ -245,6 +311,14 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
             if not go_to_layer(arm, layer_idx):
                 print(f"  [停止] 回第{layer_idx}层中转失败, 停在当前位置, 不继续放置流程")
                 return
+
+    if USE_CHASSIS_PLACE:
+        if not go_to_stow_pose(arm):
+            print("  [停止] 底盘移动前未能到达收起姿态, 不调用底盘")
+            return
+        if not move_chassis_to_place():
+            print("  [停止] 底盘未能前往放置固定点, 不继续机械臂放置")
+            return
 
     print(f"\n[Place] 前往放置点 ({_place_point_pose[1]}) ...")
     if not go_to_place_point(arm):
@@ -883,6 +957,64 @@ def _place_point_management(arm: "DobotArm"):
         print("  无效输入, 请输入 s / g / d / q")
 
 
+def _stow_pose_management(arm: "DobotArm"):
+    """收起姿态管理子菜单: 记录、移动到、删除收起姿态"""
+    global _stow_pose
+
+    while True:
+        print(f"\n── 收起姿态管理 ──")
+        if _stow_pose:
+            pose, name = _stow_pose
+            print(f"  当前收起姿态: {name}  pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
+        else:
+            print("  当前: 未记录收起姿态")
+        print("\n  操作:")
+        print("    s       ← 记录当前法兰位姿为收起姿态")
+        print("    g       ← 移动到收起姿态")
+        print("    d       ← 删除收起姿态")
+        print("    q       ← 返回主菜单")
+
+        choice = input("  收起姿态 > ").strip().lower()
+        if choice == "q":
+            return
+
+        if choice == "s":
+            try:
+                pose = arm.get_pose()
+            except Exception:
+                print("  无法获取当前位姿")
+                continue
+            name = input('  收起姿态名称 (回车默认"收起姿态"): ').strip()
+            if not name:
+                name = "收起姿态"
+            _stow_pose = (list(pose[:6]), name)
+            save_stow_pose()
+            print(f"  ✓ 收起姿态 ({name}) 已记录: pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
+            continue
+
+        if choice == "d":
+            _stow_pose = None
+            save_stow_pose()
+            print("  ✓ 收起姿态已删除")
+            continue
+
+        if choice == "g":
+            go_to_stow_pose(arm)
+            return
+
+        print("  无效输入, 请输入 s / g / d / q")
+
+
+def _toggle_chassis_place():
+    """切换放置前底盘固定点移动。"""
+    global USE_CHASSIS_PLACE
+    USE_CHASSIS_PLACE = not USE_CHASSIS_PLACE
+    state = "开启" if USE_CHASSIS_PLACE else "关闭"
+    print(f"\n[底盘放置] 已{state}")
+    if USE_CHASSIS_PLACE:
+        print("  流程: 先到收起姿态 → 调用 move_robot.py place → 等底盘到达 → 机械臂放置")
+
+
 def main():
     print("=" * 60)
     print("  货架边缘抓取系统")
@@ -914,6 +1046,7 @@ def main():
     # ── 货架层管理 ──
     load_shelf_layers()
     load_place_point()
+    load_stow_pose()
     if _current_layer_idx == STARTUP_LAYER_IDX:
         save_shelf_layers()
     if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
@@ -941,6 +1074,8 @@ def main():
     print("  - 按 Enter ← 拍照识别并抓取最外侧盒子")
     print("  - 输入 l   ← 货架层管理 (切换/记录/删除)")
     print("  - 输入 p   ← 放置点管理 (记录/移动/删除)")
+    print("  - 输入 u   ← 收起姿态管理 (记录/移动/删除)")
+    print("  - 输入 b   ← 切换底盘放置流程")
     print("  - 输入 v   ← 实时画面预览 (YOLO 检测)")
     print("  - 输入 j   ← 手动点动 (wasd/e/r 微调法兰)")
     print("  - 输入 q   ← 退出")
@@ -948,11 +1083,12 @@ def main():
 
     try:
         while True:
+            chassis_state = "开" if USE_CHASSIS_PLACE else "关"
             if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
                 _, layer_name = _shelf_layer_poses[_current_layer_idx]
-                prompt = f"\n[第{_current_layer_idx}层 {layer_name}] 按 Enter 抓取 | l 层管理 | p 放置点 | v 预览 | j 点动 | q 退出 > "
+                prompt = f"\n[第{_current_layer_idx}层 {layer_name}] 按 Enter 抓取 | l 层管理 | p 放置点 | u 收起 | b 底盘:{chassis_state} | v 预览 | j 点动 | q 退出 > "
             else:
-                prompt = "\n[HOME] 按 Enter 抓取 | l 层管理 | p 放置点 | v 预览 | j 点动 | q 退出 > "
+                prompt = f"\n[HOME] 按 Enter 抓取 | l 层管理 | p 放置点 | u 收起 | b 底盘:{chassis_state} | v 预览 | j 点动 | q 退出 > "
             cmd = input(prompt).strip()
             if cmd.lower() == "q":
                 break
@@ -1015,6 +1151,14 @@ def main():
 
             if cmd.lower() == "p":
                 _place_point_management(arm)
+                continue
+
+            if cmd.lower() == "u":
+                _stow_pose_management(arm)
+                continue
+
+            if cmd.lower() == "b":
+                _toggle_chassis_place()
                 continue
 
             if cmd.lower() == "v":
@@ -1327,6 +1471,10 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            go_to_stow_pose(arm)
+        except Exception as e:
+            print(f"[收起姿态] 退出前收起失败/跳过: {e}")
         if not SKIP_HAND:
             hand.disconnect()
         arm.close()

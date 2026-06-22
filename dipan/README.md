@@ -11,6 +11,7 @@
 | `move_robot.py` | 底盘 TCP 控制，移动到药架/充电点/取消任务，并返回底盘电量 |
 | `shelf_layers.json` | 货架层观察位姿，程序内 `l` 菜单维护 |
 | `place_point.json` | 放置点位姿，程序内 `p` 菜单维护 |
+| `stow_pose.json` | 收起姿态，程序内 `u` 菜单维护 |
 | `capture_one.py` | 单帧 RGB-D 采集工具 |
 | `test_dobot.py` | DOBOT 连接测试 |
 
@@ -27,7 +28,7 @@ DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 
 1. 连接相机和 DOBOT。
 2. 先回 HOME。
-3. 加载 `shelf_layers.json` 和 `place_point.json`。
+3. 加载 `shelf_layers.json`、`place_point.json` 和 `stow_pose.json`。
 4. 固定默认回到第 2 层观察位，忽略上次退出时的 `current`，避免从第 3/4 层启动造成碰撞。
 
 ## 主菜单
@@ -36,6 +37,8 @@ DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 Enter  抓取
 l      货架层管理
 p      放置点管理
+u      收起姿态管理
+b      切换底盘放置流程
 v      预览
 j      点动
 q      退出
@@ -60,6 +63,17 @@ q         返回
 进入 `p` 菜单后，把机械臂拖到放置位置，输入 `s` 保存。放置点保存在 `place_point.json`。
 
 抓取成功后，如果放置点存在，程序会自动前往放置点并张手；如果放置点不可达或确认距离过大，会停止在当前位置，不继续回层。
+
+## 收起姿态管理
+
+进入 `u` 菜单后，把机械臂拖到安全收起姿态，输入 `s` 保存。收起姿态保存在 `stow_pose.json`。
+
+收起姿态用于两类场景：
+
+- 退出程序前会尝试先回到收起姿态，再断开 DOBOT 和相机。
+- 底盘放置流程开启时，调用底盘移动前必须先回到收起姿态，防止底盘移动时机械臂伸出造成碰撞。
+
+如果未记录收起姿态，退出时会跳过；底盘放置流程开启时则会停止，不会调用底盘。
 
 ## 抓取模式
 
@@ -91,6 +105,31 @@ Q     跳过/退出
 第 4 层：抓完后先回第 4 层观察位，再直接上撤到第 3 层，然后到第 1 层，之后去放置点；放完后回第 1 层，再安全下降回第 4 层。
 
 下降回第 3/4 层时使用 `go_to_layer_via_clearance()`，上撤时使用直接 `go_to_layer()`。
+
+## 底盘放置流程
+
+主菜单输入 `b` 可以切换底盘放置流程，提示里会显示 `b 底盘:开/关`。
+
+默认关闭，方便只调机械臂抓取和放置点。也可以启动前用环境变量默认开启：
+
+```bash
+USE_CHASSIS_PLACE=1 MARKER_PLACE=place_point DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
+```
+
+开启后抓取完成流程会变为：
+
+```text
+抓取后退
+→ 按当前层逻辑上撤
+→ 回到收起姿态
+→ 调用 move_robot.py place
+→ 等底盘到达放置固定点
+→ 机械臂前往 place_point.json 的放置点
+→ 张手放置
+→ 回层
+```
+
+`MARKER_PLACE` 是底盘地图里的固定点名称，默认值是 `place_point`。
 
 ## 第 4 层低位设置
 
@@ -144,8 +183,10 @@ DOBOT_IP=192.168.5.1 python3 hand_eye_calib.py
 ```bash
 cd /home/nvidia/grasp/dipan
 python3 move_robot.py           # 交互模式
-python3 move_robot.py yaojia1   # 去药架
-python3 move_robot.py charge    # 去充电点
+python3 move_robot.py yaojia1   # 去药架，默认等待到达
+python3 move_robot.py charge    # 去充电点，默认等待到达
+python3 move_robot.py place     # 去放置固定点，默认等待到达
+python3 move_robot.py place --no-wait
 python3 move_robot.py cancel    # 取消移动
 ```
 
@@ -162,3 +203,11 @@ python3 move_robot.py cancel    # 取消移动
 ```
 
 返回值会附加到原结果的 `power_status` 字段，并打印电量、电压、电流和充电状态。
+
+移动命令默认还会轮询：
+
+```text
+/api/robot_status
+```
+
+直到 `move_status=succeeded` 才返回成功；如果 `failed`、`canceled` 或超时，会返回非 0，抓取主程序不会继续机械臂放置。

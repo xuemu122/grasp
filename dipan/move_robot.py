@@ -6,7 +6,9 @@
 
 import socket
 import json
+import os
 import sys
+import time
 
 HOST = "192.168.124.90"
 PORT = 31001
@@ -14,6 +16,8 @@ PORT = 31001
 # 目标点位名称
 MARKER_YAOJIA = "yaojia1"
 MARKER_CHARGE = "charge_point_1F_35744"
+MARKER_PLACE = os.getenv("MARKER_PLACE", "place_point")
+DEFAULT_WAIT_TIMEOUT_S = int(os.getenv("MOVE_WAIT_TIMEOUT_S", "180"))
 
 
 def send_command(sock, cmd):
@@ -71,7 +75,53 @@ def attach_power_status(sock, result):
     return result
 
 
-def move_to(sock, marker):
+def get_robot_status(sock):
+    """查询底盘全局状态"""
+    cmd = "/api/robot_status"
+    result = send_command(sock, cmd)
+    return result
+
+
+def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S):
+    """等待底盘移动任务完成。成功返回 True, 失败/取消/超时返回 False。"""
+    deadline = time.time() + timeout_s
+    last_status = None
+    while time.time() < deadline:
+        try:
+            result = get_robot_status(sock)
+        except Exception as e:
+            print(f"[底盘] 查询 robot_status 失败: {e}")
+            time.sleep(1)
+            continue
+
+        if result.get("status") != "OK":
+            print(f"[底盘] robot_status 异常: {result.get('error_message', '未知错误')}")
+            time.sleep(1)
+            continue
+
+        info = result.get("results") or {}
+        move_status = info.get("move_status")
+        running_status = info.get("running_status")
+        move_target = info.get("move_target")
+        if (move_status, running_status, move_target) != last_status:
+            print(f"[底盘] move_status={move_status} running_status={running_status} target={move_target}")
+            last_status = (move_status, running_status, move_target)
+
+        if move_status == "succeeded":
+            if marker and move_target and move_target != marker:
+                print(f"[底盘] 移动完成, 但目标为 {move_target}, 不是期望 {marker}")
+            print("[底盘] 已到达目标点")
+            return True
+        if move_status in ("failed", "canceled"):
+            print(f"[底盘] 移动任务结束但未成功: {move_status}")
+            return False
+        time.sleep(1)
+
+    print(f"[底盘] 等待移动完成超时 ({timeout_s}s)")
+    return False
+
+
+def move_to(sock, marker, wait=False):
     """发送移动到目标点位的指令"""
     cmd = f"/api/move?marker={marker}"
     print(f">>> 发送: {cmd}")
@@ -81,7 +131,10 @@ def move_to(sock, marker):
         print(f"任务已下发，task_id: {result.get('task_id', 'N/A')}")
     else:
         print(f"失败: {result.get('error_message', '未知错误')}")
-    return attach_power_status(sock, result)
+    result = attach_power_status(sock, result)
+    if wait and result.get("status") == "OK":
+        result["move_done"] = wait_move_done(sock, marker=marker)
+    return result
 
 
 def cancel_move(sock):
@@ -94,12 +147,17 @@ def cancel_move(sock):
 
 
 def main():
-    target = sys.argv[1] if len(sys.argv) > 1 else None
+    args = sys.argv[1:]
+    wait = "--no-wait" not in args
+    args = [arg for arg in args if arg != "--no-wait"]
+    target = args[0] if args else None
 
-    if target and target not in ("yaojia1", "charge", "cancel"):
+    if target and target not in ("yaojia1", "charge", "place", "cancel"):
         print("用法:")
-        print("  python3 move_robot.py yaojia1   # 药架1")
-        print("  python3 move_robot.py charge    # 去充电桩")
+        print("  python3 move_robot.py yaojia1   # 药架1, 默认等待到达")
+        print("  python3 move_robot.py charge    # 去充电桩, 默认等待到达")
+        print("  python3 move_robot.py place     # 去放置固定点, 默认等待到达")
+        print("  python3 move_robot.py place --no-wait")
         print("  python3 move_robot.py cancel    # 取消当前任务")
         print("  python3 move_robot.py           # 交互模式")
         sys.exit(1)
@@ -114,17 +172,29 @@ def main():
         if target == "cancel":
             cancel_move(sock)
         elif target == "yaojia1":
-            move_to(sock, MARKER_YAOJIA)
+            result = move_to(sock, MARKER_YAOJIA, wait=wait)
+            if wait and result.get("move_done") is False:
+                sys.exit(2)
         elif target == "charge":
             if not MARKER_CHARGE:
                 print("错误: 充电桩点位名称未设置，请先编辑脚本填写 MARKER_CHARGE")
                 sys.exit(1)
-            move_to(sock, MARKER_CHARGE)
+            result = move_to(sock, MARKER_CHARGE, wait=wait)
+            if wait and result.get("move_done") is False:
+                sys.exit(2)
+        elif target == "place":
+            if not MARKER_PLACE:
+                print("错误: 放置固定点名称未设置，请设置 MARKER_PLACE 或编辑脚本")
+                sys.exit(1)
+            result = move_to(sock, MARKER_PLACE, wait=wait)
+            if wait and result.get("move_done") is False:
+                sys.exit(2)
         else:
             # 交互模式
             print("交互模式 (输入 q 退出):")
             print(f"  1 - 去 {MARKER_YAOJIA}")
             print(f"  2 - 去充电桩 ({MARKER_CHARGE or '未设置'})")
+            print(f"  3 - 去放置固定点 ({MARKER_PLACE or '未设置'})")
             print(f"  c - 取消任务")
             while True:
                 choice = input("\n请选择: ").strip()
@@ -137,6 +207,11 @@ def main():
                         print("错误: 充电桩点位名称未设置")
                         continue
                     move_to(sock, MARKER_CHARGE)
+                elif choice == "3":
+                    if not MARKER_PLACE:
+                        print("错误: 放置固定点名称未设置")
+                        continue
+                    move_to(sock, MARKER_PLACE)
                 elif choice == "c":
                     cancel_move(sock)
 
