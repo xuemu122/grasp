@@ -68,7 +68,8 @@ HOME_JOINTS_DEG = [-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]
 
 # 货架层位姿文件 (笛卡尔: x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)
 SHELF_LAYERS_FILE = os.path.join(os.path.dirname(__file__), "shelf_layers.json")
-_current_layer_idx = 1  # 当前选中的层编号 (1=顶层)
+STARTUP_LAYER_IDX = 2   # 程序启动固定回第2层, 避免从上次低层状态恢复导致碰撞
+_current_layer_idx = STARTUP_LAYER_IDX  # 当前选中的层编号
 _shelf_layer_poses = {}  # {1: ([x,y,z,rx,ry,rz], name), 2: ...}
 LOW_Z_LAYER_IDXS = {4}  # 第4层在抬高基座下方, 允许低/负 Z
 
@@ -86,14 +87,21 @@ def _current_layer_allows_low_z() -> bool:
 
 
 def load_shelf_layers():
-    """从 JSON 加载货架层位姿，返回 (layers_dict, current_idx)"""
+    """从 JSON 加载货架层位姿，启动时固定默认第2层。"""
     global _shelf_layer_poses, _current_layer_idx
     if os.path.exists(SHELF_LAYERS_FILE):
         with open(SHELF_LAYERS_FILE) as f:
             data = json.load(f)
         for k, v in data.get("layers", {}).items():
             _shelf_layer_poses[int(k)] = (v["pose"], v.get("name", f"第{k}层"))
-        _current_layer_idx = data.get("current")
+        saved_current = data.get("current")
+        if STARTUP_LAYER_IDX in _shelf_layer_poses:
+            if saved_current != STARTUP_LAYER_IDX:
+                print(f"[货架层] 启动默认固定为第{STARTUP_LAYER_IDX}层 (忽略上次 current={saved_current})")
+            _current_layer_idx = STARTUP_LAYER_IDX
+        else:
+            _current_layer_idx = saved_current
+            print(f"[货架层][警告] 启动默认第{STARTUP_LAYER_IDX}层未记录, 暂用 current={_current_layer_idx}")
     return _shelf_layer_poses, _current_layer_idx
 
 
@@ -906,6 +914,8 @@ def main():
     # ── 货架层管理 ──
     load_shelf_layers()
     load_place_point()
+    if _current_layer_idx == STARTUP_LAYER_IDX:
+        save_shelf_layers()
     if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
         go_to_layer_via_clearance(arm, _current_layer_idx)
 
