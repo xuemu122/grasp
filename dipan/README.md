@@ -82,6 +82,24 @@ q         返回
 - 盒宽 `<= 8cm`：侧面抓，使用 `SIDE_GRASP_OFFSET_M`
 - 盒宽 `> 8cm`：上面抓，使用 `TOP_GRASP_OFFSET_M`，抓取前 J6 转到 `TOP_J6_DEG`
 
+机械臂路径仍按侧抓/上抓自动判定，但灵巧手当前默认使用瓶子抓取手势：
+
+```python
+GRASP_BOTTLE = [0, 82, 65, 76, 55, 67, 63]
+```
+
+启动时默认：
+
+```bash
+HAND_GRASP_MODE=bottle
+```
+
+如果后续不是瓶子，想恢复原来的侧抓/上抓手势选择，可以这样启动：
+
+```bash
+HAND_GRASP_MODE=auto DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
+```
+
 每次抓取前会进入微调界面，显示当前模式、偏移参数和固化建议。
 
 常用微调键：
