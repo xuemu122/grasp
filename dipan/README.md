@@ -1,147 +1,164 @@
-# dipan — 机械臂抓取与底盘控制
+# dipan — 机械臂抓取、手眼标定与底盘控制
 
-与 DOBOT Nova5 机械臂、Orca 灵巧手、自主导航底盘的集成控制脚本。
+本目录包含 DOBOT Nova5 货架抓取主程序、Aero Hand 控制、手眼标定、底盘 TCP 移动控制和调试工具。
 
 ## 文件
 
 | 文件 | 说明 |
 |------|------|
-| `shelf_grasp.py` | **货架边缘抓取主程序**: YOLO 检测 → 选最靠边盒子 → 侧边缘+上边缘抓取 |
-| `box_grasp.py` | 盒子抓取位姿计算库 (手眼标定 + 坐标转换 + Orca 控制) |
-| `hand_eye_calib.py` | **手眼标定**: 求解法兰→相机精确变换矩阵 |
-| `move_robot.py` | **底盘控制**: TCP 指令移动底盘到预置点位 |
-| `capture_one.py` | 单帧采集工具: 拍一帧 D405 彩色+深度图 |
-| `calib_eye_in_hand.json` | 手眼标定结果 (hand_eye_calib.py 生成, shelf_grasp.py 自动加载) |
+| `shelf_grasp.py` | 货架抓取主程序：识别盒子、自动判定侧抓/上抓、执行抓取和放置 |
+| `hand_eye_calib.py` | ArUco 手眼标定，生成 `calib_eye_in_hand.json` |
+| `move_robot.py` | 底盘 TCP 控制，移动到药架/充电点/取消任务，并返回底盘电量 |
+| `shelf_layers.json` | 货架层观察位姿，程序内 `l` 菜单维护 |
+| `place_point.json` | 放置点位姿，程序内 `p` 菜单维护 |
+| `capture_one.py` | 单帧 RGB-D 采集工具 |
+| `test_dobot.py` | DOBOT 连接测试 |
 
-## 主程序 1: shelf_grasp.py
+## 抓取主程序
 
-### 功能
-
-- YOLO 检测货架上所有盒子
-- 自动选中**最靠边**的盒子 (X 方向离画面中心最远)
-- 抓取**侧边缘 + 上边缘** (从外侧上方进入，避免撞到相邻盒子)
-- 自动连接 DOBOT (使能 + 拖动示教) + Orca 灵巧手
-- 一键抓取流程: 张手 → 悬停 → 下降 → 握拳 → 抬升
-
-### 启动
+启动：
 
 ```bash
 cd /home/nvidia/grasp/dipan
-python3 shelf_grasp.py
+DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 ```
 
-### 操作流程
+启动后程序会：
 
-1. 拖动机械臂到能看见货架的观察位姿
-2. 按 `Enter` → 拍照 → 识别 → 自动抓取最靠边的盒子
-3. 抓完后拖动到放货位, 再按 `Enter` 抓下一个
-4. 按 `q` 退出
+1. 连接相机和 DOBOT。
+2. 先回 HOME。
+3. 加载 `shelf_layers.json` 和 `place_point.json`。
+4. 固定默认回到第 2 层观察位，忽略上次退出时的 `current`，避免从第 3/4 层启动造成碰撞。
 
-### 参数
+## 主菜单
 
-可在脚本顶部修改:
-- `DOBOT_IP`: 机械臂 IP (默认 192.168.1.6)
-- `HAND_LENGTH`: 灵巧手长度 0.35m
-- `HAND_WEIGHT`: 灵巧手重量 1.2kg
-- `HAND_COG_Z`: 重心距法兰 0.10m
-
-### 抓取策略
-
-```
-货架排列 (俯视):
-  ┌──┐ ┌──┐ ┌──┐ ┌──┐
-  │A │ │B │ │C │ │D │    A 和 D 是最靠边的
-  └──┘ └──┘ └──┘ └──┘
-  ↑抓                          抓↑
+```text
+Enter  抓取
+l      货架层管理
+p      放置点管理
+v      预览
+j      点动
+q      退出
 ```
 
-- 选中最靠边的盒子 → 从**外侧**上方进入
-- 抓取 **侧边缘 (x1/x2) + 上边缘 (y1)**
-- 加 3cm 外偏偏移量，避免撞到相邻盒子
+## 货架层管理
 
-### 手眼标定 (使用前建议执行一次)
+进入 `l` 菜单后：
 
-`hand_eye_calib.py` 求解法兰→相机精确变换。标定后 `shelf_grasp.py` 自动加载，抓取无需反复微调。
-
-```bash
-python3 hand_eye_calib.py
+```text
+<数字>    切换并移动到该层
+s         保存当前法兰位姿为新层
+s <数字>  覆盖指定层
+d <数字>  删除层
+q         返回
 ```
 
-流程:
-1. 生成 ArUco marker → 打印贴墙上
-2. 量 marker 实际边长 (mm)，改脚本里 `MARKER_SIZE_MM`
-3. 拖动机械臂在 marker 前方不同姿态按 Enter 采集 (10-15 组)
-4. 按 `q` 求解，结果保存为 `calib_eye_in_hand.json`
-5. 之后 `shelf_grasp.py` 启动时自动加载
+层位姿保存在 `shelf_layers.json`。当前配置中第 1-4 层分别是货架不同高度，第 4 层在基座下方，因此代码里只对第 4 层允许低/负 Z。
 
-### 调试微调
+## 放置点管理
 
-shelf_grasp.py 每次抓取前进入交互界面:
+进入 `p` 菜单后，把机械臂拖到放置位置，输入 `s` 保存。放置点保存在 `place_point.json`。
 
-| 按键 | 功能 |
-|------|------|
-| `Enter` | 执行抓取 |
-| `p` | 预览悬停位 |
-| `wasd` | 微调 XY (±5mm) |
-| `e/r` | 微调 Z (±5mm) |
-| `=/ -` | 改变步长 |
-| `f` | 手动输入偏移 |
-| `F5` | 重新拍照 |
-| `Q` | 跳过 |
+抓取成功后，如果放置点存在，程序会自动前往放置点并张手；如果放置点不可达或确认距离过大，会停止在当前位置，不继续回层。
 
-### 硬件连接
+## 抓取模式
 
-- DOBOT: TCP 192.168.1.6:29999
-- Orca 灵巧手: U2D2 串口
-- RealSense D405: USB 3.0
+`plan_edge_grasp()` 会根据检测框宽度自动判断：
 
----
+- 盒宽 `<= 8cm`：侧面抓，使用 `SIDE_GRASP_OFFSET_M`
+- 盒宽 `> 8cm`：上面抓，使用 `TOP_GRASP_OFFSET_M`，抓取前 J6 转到 `TOP_J6_DEG`
 
-## 主程序 2: move_robot.py
+每次抓取前会进入微调界面，显示当前模式、偏移参数和固化建议。
 
-底盘 TCP 控制，移动到预置导航点位。
+常用微调键：
 
-### 启动
-
-```bash
-# 交互模式
-python3 /home/nvidia/grasp/dipan/move_robot.py
-
-# 直接下发
-python3 /home/nvidia/grasp/dipan/move_robot.py yaojia1   # 去药架1
-python3 /home/nvidia/grasp/dipan/move_robot.py charge    # 去充电桩
-python3 /home/nvidia/grasp/dipan/move_robot.py cancel    # 取消任务
+```text
+wasd  微调 X/Y
+e/r   微调 Z
+p     预览悬停位
+f     手动输入 x,y,z 偏移
+F5    重新拍照
+Enter 执行抓取
+Q     跳过/退出
 ```
 
-### 连接
+## 3/4 层放置路径
 
-底盘 TCP: `192.168.124.90:31001`
+第 1/2 层：抓完后直接去放置点，放完再回当前层。
 
----
+第 3 层：抓完后先回第 3 层观察位，再直接上到第 1 层，之后去放置点；放完后回第 1 层，再安全下降回第 3 层。
 
-## box_grasp.py
+第 4 层：抓完后先回第 4 层观察位，再直接上撤到第 3 层，然后到第 1 层，之后去放置点；放完后回第 1 层，再安全下降回第 4 层。
 
-抓取位姿计算类库，提供:
-- `LightweightBoxGrasper`: 手眼标定 + 像素深度→世界坐标转换
-- `OrcaHandGripper`: 灵巧手预设姿态 (张开 / power_grasp)
-- `BoxDetection`: 统一数据结构, 兼容 orbbec_detect 输出
+下降回第 3/4 层时使用 `go_to_layer_via_clearance()`，上撤时使用直接 `go_to_layer()`。
 
-### 使用
+## 第 4 层低位设置
+
+第 4 层允许低/负 Z：
 
 ```python
-from box_grasp import LightweightBoxGrasper, BoxDetection
-
-grasper = LightweightBoxGrasper()
-grasper.set_flange_pose(x, y, z, rx, ry, rz)  # 设置当前法兰位姿
-pose = grasper.compute_grasp(detection)         # 计算抓取点
+LOW_Z_LAYER_IDXS = {4}
 ```
 
-## capture_one.py
+第 4 层抓取时使用更保守的低位参数：
 
-单帧采集工具。
+```python
+LOW_Z_GRASP_ADVANCE_M
+LOW_Z_APPROACH_SPEED
+LOW_Z_GRASP_SPEED
+```
+
+其他层仍保留 `Z < 50mm` 本地拒绝保护。
+
+## 点动
+
+主菜单输入 `j`：
+
+```text
+wasd  XY
+e/r   Z
+z/x   J6 -/+
+=/+   放大步长
+-     缩小步长
+q     退出点动
+```
+
+点动模式会按当前层判断是否允许低 Z；第 4 层可低位点动，其他层仍保护。
+
+## 手眼标定
 
 ```bash
-python3 capture_one.py
+cd /home/nvidia/grasp/dipan
+DOBOT_IP=192.168.5.1 python3 hand_eye_calib.py
 ```
 
-保存到 `~/dipan/`: `color.png`, `depth_raw.png`, `depth_colormap.png`
+流程：
+
+1. 打印或显示 ArUco marker。
+2. 确认 `MARKER_SIZE_MM` 与实际 marker 边长一致。
+3. 拖动机械臂到多角度、多位置观察 marker，采集 10-15 组。
+4. 求解后保存 `calib_eye_in_hand.json`。
+
+## 底盘控制
+
+```bash
+cd /home/nvidia/grasp/dipan
+python3 move_robot.py           # 交互模式
+python3 move_robot.py yaojia1   # 去药架
+python3 move_robot.py charge    # 去充电点
+python3 move_robot.py cancel    # 取消移动
+```
+
+底盘地址：
+
+```text
+192.168.124.90:31001
+```
+
+每次移动/取消后，脚本会额外调用：
+
+```text
+/api/get_power_status
+```
+
+返回值会附加到原结果的 `power_status` 字段，并打印电量、电压、电流和充电状态。

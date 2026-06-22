@@ -9,12 +9,14 @@
 ```text
 识别/
 ├── orbbec_detect.py                  # 识别检测主程序
+├── capture_frames.py                 # 数据集抽帧脚本，按毫秒时间命名图片
 ├── best.pt                           # YOLO 权重文件
 ├── madata.yaml                       # 训练/数据集配置，指向 ../dataset/yolo_rpc_test
 ├── shelf_mapping.yaml                # 商品词典、类别兜底货架映射、OCR匹配策略
 ├── requirements.txt                  # 基础运行依赖
 ├── requirements_retail_optional.txt  # 可选增强依赖
-├── run.sh                            # 启动脚本
+├── run.sh                            # 启动脚本，支持透传 orbbec_detect.py 参数
+├── dataset_captures/                 # 默认抽帧输出目录
 └── results/                          # 截图和JSON结果输出目录
 
 dataset/yolo_rpc_test/
@@ -290,7 +292,7 @@ pip install -r requirements.txt
 
 ```bash
 cd /home/nvidia/grasp/识别
-python3 orbbec_detect.py
+./run.sh
 ```
 
 程序默认加载：
@@ -301,6 +303,41 @@ python3 orbbec_detect.py
 dataset/yolo_rpc_test/dataset.yaml
 ```
 
+当前默认显示阈值较低，便于排查新模型召回：
+
+```text
+conf=0.15
+raw_conf=0.01
+```
+
+`raw_conf` 用来让 YOLO 先返回低置信度候选；`conf` 决定最终显示和输出。程序每 30 帧会打印：
+
+```text
+[YOLO] raw=<原始候选数> 显示=<通过阈值数量> 低于阈值=<过滤数量>
+[YOLO候选Top] 类别:置信度@bbox | ...
+```
+
+判断方式：
+
+- `raw=0`：模型没有输出候选框，检查权重、画面、训练类别或输入。
+- `raw>0 显示=0`：候选置信度太低，可以继续降低 `--conf`。
+- `显示>0` 但画面没框：优先查 OpenCV 窗口或显示环境。
+
+常用调试启动：
+
+```bash
+./run.sh --conf 0.05 --no-ocr
+```
+
+可用参数：
+
+```text
+--conf <float>          显示/输出阈值，默认 0.15
+--raw-conf <float>      原始候选阈值，默认 0.01
+--ocr-interval <int>    OCR 间隔帧数，默认 30
+--no-ocr                关闭 OCR，用于只调 YOLO
+```
+
 ### 操作
 
 | 操作 | 功能 |
@@ -308,6 +345,30 @@ dataset/yolo_rpc_test/dataset.yaml
 | 鼠标点击检测框 | 选中/取消选中目标 |
 | `s` | 保存截图和 JSON |
 | `q` | 退出 |
+
+## 数据集抽帧
+
+`capture_frames.py` 用于从相机保存训练图片，不加载 YOLO/OCR。默认抽 10 张，文件名精确到毫秒：
+
+```bash
+cd /home/nvidia/grasp/识别
+./capture_frames.py
+```
+
+输出示例：
+
+```text
+dataset_captures/20260618_064812_153.jpg
+```
+
+常用参数：
+
+```bash
+./capture_frames.py -n 10 --interval 0.5 -o dataset_captures
+./capture_frames.py -n 50 -o /home/nvidia/grasp/识别/my_dataset_images
+```
+
+脚本优先使用 RealSense；如果 RealSense SDK 不可用，会回退到 OpenCV 摄像头。
 
 ## 输出结果
 
