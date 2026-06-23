@@ -58,9 +58,9 @@ LOW_Z_APPROACH_SPEED = 60
 LOW_Z_GRASP_SPEED = 20
 
 # 只在画面中间带里选抓取目标，避免误抓上下层物品。
-# 640x480 时默认保留 y=145~335 附近，可按现场画面调。
-TARGET_ROI_Y_MIN = int(os.getenv("TARGET_ROI_Y_MIN", "145"))
-TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "335"))
+# 640x480 时默认保留 y=145~430 附近，可按现场画面调。
+TARGET_ROI_Y_MIN = int(os.getenv("TARGET_ROI_Y_MIN", "85"))
+TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "430"))
 
 # D405 内参（自动读取，这里是 fallback）
 FX, FY = 390.4, 390.0
@@ -296,9 +296,17 @@ def go_to_place_transition(arm: "DobotArm"):
 
 
 def go_to_stow_pose(arm: "DobotArm"):
-    """移动到记录的收起姿态。未记录时只提示并返回 False。"""
+    """先回第2层观察位，再移动到记录的收起姿态。未记录时只提示并返回 False。"""
     if _stow_pose is None:
         print("  [收起姿态] 未记录, 跳过。可用 u 菜单拖动记录")
+        return False
+    if 2 in _shelf_layer_poses:
+        print("\n[收起姿态] 先回第2层避碰 ...")
+        if not go_to_layer_via_clearance(arm, 2):
+            print("  [收起姿态] 回第2层失败, 不继续收起")
+            return False
+    else:
+        print("  [收起姿态] 第2层未记录, 不继续收起")
         return False
     pose, name = _stow_pose
     print(f"\n[收起姿态] 移动到 {name} ...")
@@ -1126,7 +1134,7 @@ def _toggle_chassis_place():
     state = "开启" if USE_CHASSIS_PLACE else "关闭"
     print(f"\n[底盘放置] 已{state}")
     if USE_CHASSIS_PLACE:
-        print("  流程: 先到收起姿态 → 调用 move_robot.py place → 等底盘到达 → 机械臂放置")
+        print("  流程: 先回第2层 → 到收起姿态 → 调用 move_robot.py place → 等底盘到达 → 机械臂放置")
 
 
 def main():
@@ -1566,7 +1574,7 @@ def main():
 
             # 4. 抓取 (动作二) 并等待 5s 握紧
             if not SKIP_HAND:
-                grasp_mode = "bottle" if HAND_GRASP_MODE == "bottle" else None
+                grasp_mode = "bottle" if HAND_GRASP_MODE == "bottle" and is_side_grasp else None
                 if hand.close(top=not is_side_grasp, mode=grasp_mode):
                     print("  灵巧手 → 闭合, 等待 3s ...")
                     time.sleep(3.0)
