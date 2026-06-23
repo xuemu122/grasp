@@ -13,3 +13,6 @@ __pycache__/
 # Jetson
 *.so
 *.o
+
+# Dataset captures
+识别/dataset_captures/
