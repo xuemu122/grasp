@@ -41,6 +41,7 @@ MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAIT_S=2.5 ROBOT_POLL_S=0.15 
 - `PLACE_TRANSITION_CP`：放置路径经过过渡点时的平滑过渡比例，默认 `60`；调大更顺滑，但会更明显地绕过中间点。
 - `PLACE_RETURN_CLEARANCE_MM`：放置后回层时先向上抬高的安全量，默认 `140` mm；如果回第 2 层仍擦碰，可以继续调大。
 - `PLACE_RETURN_MAX_Z_MM`：放置后回层抬高的默认上限，默认 `820` mm；用于避免在靠外放置点抬得过高触发机械臂报警。
+- `GRASP_APPROACH_BACKOFF_M`：抓取前保持的最小前后退距，默认 `0.15` m；抓取时会先对齐上下左右，再沿手指方向过去。
 
 代码里的 `speed` 参数会随 `MovL`/`MovJ` 下发为 DOBOT `v=1..100` 百分比速度；超过 100 的值会自动夹到 100。记录放置过渡点后，前往最终放置点和放置后回层都会连续下发路径；回层会先原地抬高，再高位平滑经过过渡点，避免低空横扫。
 

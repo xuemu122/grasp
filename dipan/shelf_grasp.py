@@ -53,6 +53,7 @@ TOP_J6_DEG = 8.3
 APPROACH_LIFT_M = 0.00    # 悬停位比目标法兰点高 1cm
 GRASP_ADVANCE_M = 0.04    # 抓取时沿手指方向前进 5cm
 LOW_Z_GRASP_ADVANCE_M = 0.035  # 第4层低位空间更紧, 先只探入 1.5cm
+GRASP_APPROACH_BACKOFF_M = float(os.getenv("GRASP_APPROACH_BACKOFF_M", "0.15"))  # 抓取前沿手指方向后退对齐
 TOP_APPROACH_BACKOFF_M = 0.15  # 上面抓时先在抓取轴线上退 15cm 再直线前进
 LOW_Z_APPROACH_SPEED = 60
 LOW_Z_GRASP_SPEED = 20
@@ -130,6 +131,18 @@ def _clamp_cp(cp) -> int:
         return max(0, min(100, int(round(float(cp)))))
     except (TypeError, ValueError):
         return 0
+
+
+def _axis_aligned_approach_m(current_xyz_m, grasp_xyz_m, forward_dir, min_backoff_m):
+    """保持当前前后距离, 先移动到抓取点对应的上下左右对齐位。"""
+    current = np.array(current_xyz_m, dtype=float)
+    grasp = np.array(grasp_xyz_m, dtype=float)
+    axis = np.array(forward_dir, dtype=float)
+    axis = axis / max(np.linalg.norm(axis), 1e-9)
+    forward_offset = float(np.dot(current - grasp, axis))
+    if forward_offset > -min_backoff_m:
+        forward_offset = -min_backoff_m
+    return grasp + forward_offset * axis
 
 
 def load_shelf_layers():
@@ -1533,11 +1546,16 @@ def main():
             fingertip_w = np.array([wx, wy, wz]) + np.array(grasp_offset_m)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
 
-            # 悬停: 世界Z向上抬高一段安全距离
-            approach_pt = flange_pt + np.array([0.0, 0.0, APPROACH_LIFT_M])
-
             # 抓取: 沿手指方向前进一小段探入
             grasp_pt = flange_pt + grasp_advance_m * fz_dir
+
+            # 对齐: 保持当前前后距离, 先移动到抓取点对应的上下左右位置。
+            approach_pt = _axis_aligned_approach_m(
+                np.array(flange_pose[:3]) / 1000.0,
+                grasp_pt,
+                fz_dir,
+                GRASP_APPROACH_BACKOFF_M,
+            ) + np.array([0.0, 0.0, APPROACH_LIFT_M])
 
             # ── 转为 mm (python float) 供后续微调 ──
             fx, fy, fz  = float(flange_pt[0]*1000),  float(flange_pt[1]*1000),  float(flange_pt[2]*1000)
@@ -1558,13 +1576,13 @@ def main():
                  print(f"  固化建议: {'SIDE' if is_side_grasp else 'TOP'}_GRASP_OFFSET_M=({tuned_offset_m[0]:+.3f}, {tuned_offset_m[1]:+.3f}, {tuned_offset_m[2]:+.3f})")
                  print(f"  探入距离: {grasp_advance_m*1000:.0f}mm" + (" (第4层低位)" if low_z_grasp else ""))
                  print(f"  指尖世界: ({wx*1000:.0f}, {wy*1000:.0f}, {wz*1000:.0f})mm")
-                 print(f"  法兰(悬停): X={ax+offset_x:+.0f}({offset_x:+5.0f})  "
+                 print(f"  法兰(对齐): X={ax+offset_x:+.0f}({offset_x:+5.0f})  "
                        f"Y={ay+offset_y:+.0f}({offset_y:+5.0f})  "
                        f"Z={az+offset_z:+.0f}({offset_z:+5.0f}) mm")
                  print(f"  法兰(抓取): X={gx+offset_x:+.0f}  Y={gy+offset_y:+.0f}  Z={gz+offset_z:+.0f} mm")
                  print(f"\n  操作:")
                  print(f"    Enter ← 执行抓取")
-                 print(f"    p     ← 预览悬停位 (不抓取)")
+                 print(f"    p     ← 预览对齐位 (不抓取)")
                  print(f"    t     ← 相对移动 (含标定位移)")
                  print(f"    m     ← 简化移动 (零标定: 沿法兰Z前移)")
                  print(f"    wasd  ← 微调 X/Y (±{jog_step_mm:.0f}mm)")
@@ -1613,7 +1631,7 @@ def main():
                      time.sleep(MOTION_SETTLE_S)
                      continue
                  elif choice == "p":
-                     print(f"\n  预览: 移动到 ({ax+offset_x:.0f}, {ay+offset_y:.0f}, {az+offset_z:.0f})mm")
+                     print(f"\n  预览对齐位: 移动到 ({ax+offset_x:.0f}, {ay+offset_y:.0f}, {az+offset_z:.0f})mm")
                      arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=100,
                                allow_low_z=_current_layer_allows_low_z())
                      time.sleep(MOTION_SETTLE_S)
@@ -1670,11 +1688,16 @@ def main():
                 fz_dir = R_f[:, 2]
                 flange_pt = fingertip_w - HAND_LENGTH * fz_dir
                 grasp_pt = flange_pt + grasp_advance_m * fz_dir
-                approach_pt = grasp_pt - TOP_APPROACH_BACKOFF_M * fz_dir
+                approach_pt = _axis_aligned_approach_m(
+                    np.array(flange_pose[:3]) / 1000.0,
+                    grasp_pt,
+                    fz_dir,
+                    TOP_APPROACH_BACKOFF_M,
+                ) + np.array([0.0, 0.0, APPROACH_LIFT_M])
                 ax, ay, az = float(approach_pt[0]*1000), float(approach_pt[1]*1000), float(approach_pt[2]*1000)
                 gx, gy, gz = float(grasp_pt[0]*1000), float(grasp_pt[1]*1000), float(grasp_pt[2]*1000)
 
-            # 2. 悬停/预备位 (侧抓: 世界Z抬高; 上抓: 抓取轴线上后退)
+            # 2. 对齐位: 先对齐上下左右, 不沿前后方向探入
             allow_low_z = _current_layer_allows_low_z()
             approach_speed = LOW_Z_APPROACH_SPEED if allow_low_z else 150
             grasp_speed = LOW_Z_GRASP_SPEED if allow_low_z else 50
@@ -1682,7 +1705,7 @@ def main():
                 print(f"  第4层低位抓取: 探入 {grasp_advance_m*1000:.0f}mm, 速度 {grasp_speed}")
             if not arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=approach_speed,
                              allow_low_z=allow_low_z):
-                print("  [中止] 悬停位运动失败/报警, 本次不闭手")
+                print("  [中止] 对齐位运动失败/报警, 本次不闭手")
                 if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
                     go_to_layer(arm, _current_layer_idx)
                 else:
@@ -1710,13 +1733,20 @@ def main():
                 else:
                     print("  灵巧手不可用, 继续执行机械臂安全退回")
 
-            # 5. 后退 (沿法兰-Z 退 15cm, 离开货架)
-            retreat_pt = np.array([gx+offset_x, gy+offset_y, gz+offset_z]) - 150.0 * fz_dir
+            # 5. 后退: 先沿手指方向退回对齐位, 再离开货架
+            retreat_pt = np.array([ax+offset_x, ay+offset_y, az+offset_z])
             if not arm.movel(float(retreat_pt[0]), float(retreat_pt[1]), float(retreat_pt[2]), speed=100,
                              allow_low_z=allow_low_z):
                 print("  [停止] 后退失败/报警, 停在当前位置, 不继续放置流程")
                 continue
             time.sleep(GRASP_SETTLE_S)
+
+            if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
+                if not go_to_layer(arm, _current_layer_idx):
+                    print("  [停止] 回观察位失败/报警, 停在当前位置, 不继续放置流程")
+                    continue
+            else:
+                arm.go_home()
 
             # 6. 放置并回到当前层观察位
             finish_pick_cycle(arm, hand, _current_layer_idx)
