@@ -50,7 +50,7 @@ cd /home/nvidia/grasp/识别
 - 货架层位姿保存在 `dipan/shelf_layers.json`，放置点保存在 `dipan/place_point.json`，放置过渡点保存在 `dipan/place_transition.json`，收起姿态保存在 `dipan/stow_pose.json`。
 - 第 4 层允许低/负 Z，因为当前基座下方是可用空间；其他层仍保留低 Z 拒绝保护。
 - 第 3/4 层抓取后先上撤到第 1 层再放置；第 4 层会上撤经过第 3 层再到第 1 层。
-- 如果记录了放置过渡点，放置往返都会平滑经过过渡点；放置后回层会先原地抬高再高位回层，最终放置点和最终回层点仍精确停住。
+- 如果记录了放置过渡点，放置往返会优先用记录关节角 `MovJ` 到过渡点，避免大姿态变化时腕部翻转自碰撞；放置后回层会先原地抬高再回层。
 - 抓取目标会先按画面纵向 ROI 过滤上下层，再在当前层从右往左选择目标。
 - 当前灵巧手侧面抓默认使用瓶子抓取手势；上端抓取仍使用上端手势。如需侧面抓也回到原手势，可用 `HAND_GRASP_MODE=auto` 启动。
 - 机械臂 `MovL`/`MovJ` 会把代码里的 `speed` 参数下发为 DOBOT `v=1..100`；动作节奏可用 `MOTION_SETTLE_S`、`GRASP_SETTLE_S`、`HAND_CLOSE_WAIT_S`、`ROBOT_POLL_S` 微调，放置回程安全高度可用 `PLACE_RETURN_CLEARANCE_MM` 调整。

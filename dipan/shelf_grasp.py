@@ -42,7 +42,7 @@ HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.14, 0.02, 0.015)
+SIDE_GRASP_OFFSET_M = (-0.13, 0.02, 0.015)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.025)
 
@@ -92,8 +92,10 @@ LOW_Z_LAYER_IDXS = {4}  # 第4层在抬高基座下方, 允许低/负 Z
 # 放置点位姿文件 (笛卡尔: x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)
 PLACE_POINT_FILE = os.path.join(os.path.dirname(__file__), "place_point.json")
 _place_point_pose = None  # ([x,y,z,rx,ry,rz], name)
+_place_point_joints = None  # [j1,j2,j3,j4,j5,j6]，可选
 PLACE_TRANSITION_FILE = os.path.join(os.path.dirname(__file__), "place_transition.json")
 _place_transition_pose = None  # ([x,y,z,rx,ry,rz], name)
+_place_transition_joints = None  # [j1,j2,j3,j4,j5,j6]，可选
 
 # 收起姿态: 调用底盘前和退出程序前使用, 防止机械臂/灵巧手与环境碰撞
 STOW_POSE_FILE = os.path.join(os.path.dirname(__file__), "stow_pose.json")
@@ -166,23 +168,25 @@ def load_shelf_layers():
 
 def load_place_point():
     """从 JSON 加载放置点位姿，返回 (pose, name) 或 None"""
-    global _place_point_pose
+    global _place_point_pose, _place_point_joints
     if os.path.exists(PLACE_POINT_FILE):
         with open(PLACE_POINT_FILE) as f:
             data = json.load(f)
         if "pose" in data:
             _place_point_pose = (data["pose"], data.get("name", "放置点"))
+            _place_point_joints = data.get("joints")
     return _place_point_pose
 
 
 def load_place_transition():
     """从 JSON 加载放置过渡点位姿，返回 (pose, name) 或 None"""
-    global _place_transition_pose
+    global _place_transition_pose, _place_transition_joints
     if os.path.exists(PLACE_TRANSITION_FILE):
         with open(PLACE_TRANSITION_FILE) as f:
             data = json.load(f)
         if "pose" in data:
             _place_transition_pose = (data["pose"], data.get("name", "放置过渡点"))
+            _place_transition_joints = data.get("joints")
     return _place_transition_pose
 
 
@@ -216,6 +220,8 @@ def save_place_point():
         return
     pose, name = _place_point_pose
     data = {"pose": pose, "name": name}
+    if _place_point_joints is not None:
+        data["joints"] = _place_point_joints
     with open(PLACE_POINT_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
@@ -228,6 +234,8 @@ def save_place_transition():
         return
     pose, name = _place_transition_pose
     data = {"pose": pose, "name": name}
+    if _place_transition_joints is not None:
+        data["joints"] = _place_transition_joints
     with open(PLACE_TRANSITION_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
@@ -324,9 +332,8 @@ def go_to_layer_smooth_from_place(arm: "DobotArm", layer_idx: int):
 
     if _place_transition_pose is not None:
         t_pose, t_name = _place_transition_pose
-        print(f"\n[放置过渡点] 回程高位平滑经过 {t_name} (cp={cp_pct}) ...")
-        if not arm.movel(t_pose[0], t_pose[1], safe_z, t_pose[3], t_pose[4], t_pose[5],
-                         speed=100, cp=cp_pct, wait=False):
+        print(f"\n[放置过渡点] 回程关节运动到 {t_name} ...")
+        if not arm.move_pose_safe(t_pose, joints=_place_transition_joints, speed=80):
             print("  [放置过渡点] 回程移动失败")
             return False
 
@@ -386,14 +393,10 @@ def go_to_place_point(arm: "DobotArm"):
     pose, name = _place_point_pose
     if _place_transition_pose is not None:
         t_pose, t_name = _place_transition_pose
-        cp_pct = _clamp_cp(PLACE_TRANSITION_CP)
-        print(f"\n[放置过渡点] 平滑经过 {t_name} (cp={cp_pct}) ...")
-        if not arm.movel(t_pose[0], t_pose[1], t_pose[2], t_pose[3], t_pose[4], t_pose[5],
-                         speed=100, cp=cp_pct, wait=False):
+        print(f"\n[放置过渡点] 关节运动到 {t_name} ...")
+        if not arm.move_pose_safe(t_pose, joints=_place_transition_joints, speed=80):
             print("  [放置过渡点] 移动失败")
             return False
-    else:
-        cp_pct = 0
     print(f"\n[放置点] 移动到 {name} ...")
     if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100, cp=0):
         return False
@@ -416,7 +419,7 @@ def go_to_place_transition(arm: "DobotArm"):
         return True
     pose, name = _place_transition_pose
     print(f"\n[放置过渡点] 移动到 {name} ...")
-    if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100):
+    if not arm.move_pose_safe(pose, joints=_place_transition_joints, speed=80):
         print("  [放置过渡点] 移动失败")
         return False
     time.sleep(MOTION_SETTLE_S)
@@ -746,6 +749,55 @@ class DobotArm:
         """MovJ 回到预设观察位姿"""
         self.movj(HOME_JOINTS_DEG, speed=speed)
 
+    def move_pose_safe(self, pose, joints=None, speed=80):
+        """用关节运动到目标点，避免 MovL 大姿态变化时腕部自碰撞。"""
+        if joints is not None:
+            print("  [安全过渡] 使用记录关节角 MovJ")
+            return self.movj(joints, speed=speed)
+        near_joints = self.inverse_kin_near(pose)
+        if near_joints is not None:
+            print("  [安全过渡] 使用当前关节附近逆解 MovJ")
+            return self.movj(near_joints, speed=speed)
+        print("  [安全过渡] 未能求近邻逆解, 回退 pose MovJ")
+        return self.movj_pose(pose, speed=speed)
+
+    def inverse_kin_near(self, pose):
+        """按当前关节附近求 IK, 降低腕部翻腕/自碰撞概率。"""
+        try:
+            near = self.get_joints()
+            p = pose
+            cmd = (
+                f"InverseKin({p[0]:.1f},{p[1]:.1f},{p[2]:.1f},{p[3]:.1f},{p[4]:.1f},{p[5]:.1f},"
+                f"useJointNear=1,jointNear={{{near[0]:.1f},{near[1]:.1f},{near[2]:.1f},{near[3]:.1f},{near[4]:.1f},{near[5]:.1f}}})"
+            )
+            print(f"  >>> {cmd}")
+            resp = self.send(cmd)
+            print(f"  <<< {resp}")
+            if resp.startswith("-"):
+                return None
+            match = re.match(r"^-?\d+,\{([^{}]+)\},InverseKin", resp)
+            if not match:
+                return None
+            nums = re.findall(r"[-+]?\d*\.?\d+", match.group(1))
+            if len(nums) >= 6:
+                return list(map(float, nums[:6]))
+        except Exception as e:
+            print(f"  [InverseKin 异常] {e}")
+        return None
+
+    def movj_pose(self, pose, speed=80):
+        """MovJ 以关节运动方式到笛卡尔目标位姿。"""
+        p = pose
+        speed_pct = _clamp_speed_pct(speed)
+        cmd = f"MovJ(pose={{{p[0]:.1f},{p[1]:.1f},{p[2]:.1f},{p[3]:.1f},{p[4]:.1f},{p[5]:.1f}}},v={speed_pct})"
+        print(f"  >>> {cmd}")
+        resp = self.send(cmd)
+        print(f"  <<< {resp}")
+        if resp.startswith("-"):
+            print(f"  [MovJ(pose) 被拒绝] 错误码={resp.split(',')[0]}")
+            return False
+        return self._wait_motion_done("MovJ(pose)")
+
     def movj(self, joints_deg, speed=100):
         """MovJ 关节运动到目标关节角 (角度制)"""
         j = joints_deg
@@ -757,13 +809,16 @@ class DobotArm:
         if resp.startswith("-"):
             print(f"  [MovJ 被拒绝] 错误码={resp.split(',')[0]}")
             return False
+        return self._wait_motion_done("MovJ")
+
+    def _wait_motion_done(self, label: str) -> bool:
         poll_s = max(0.05, ROBOT_POLL_S)
         seen_moving = False
         for _ in range(_motion_poll_count()):
             time.sleep(poll_s)
             err = self.get_error_id()
             if "[]" not in err:
-                print(f"  [报警!] MovJ 触发报警: {err}")
+                print(f"  [报警!] {label} 触发报警: {err}")
                 self.clear_alarm()
                 return False
             rm = self.send("RobotMode()")
@@ -774,9 +829,9 @@ class DobotArm:
             if mode == 5 and (seen_moving or waited_s >= 0.5):
                 return True
             if mode in (4, 9, 11):
-                print(f"  [MovJ 异常状态] RobotMode={mode}, 停止后续动作")
+                print(f"  [{label} 异常状态] RobotMode={mode}, 停止后续动作")
                 return False
-        print("  [MovJ 超时] 运动 30s 未完成")
+        print(f"  [{label} 超时] 运动 30s 未完成")
         return False
 
     def move_j6(self, target_j6_deg: float):
@@ -1143,18 +1198,20 @@ def _layer_management(arm: "DobotArm"):
 
 def _place_point_management(arm: "DobotArm"):
     """放置点管理子菜单: 记录、移动到、删除放置点"""
-    global _place_point_pose, _place_transition_pose
+    global _place_point_pose, _place_transition_pose, _place_point_joints, _place_transition_joints
 
     while True:
         print(f"\n── 放置点管理 ──")
         if _place_point_pose:
             pose, name = _place_point_pose
-            print(f"  当前放置点: {name}  pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
+            joint_state = "有joints" if _place_point_joints is not None else "无joints"
+            print(f"  当前放置点: {name}  pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f}) [{joint_state}]")
         else:
             print("  当前: 未记录放置点")
         if _place_transition_pose:
             pose, name = _place_transition_pose
-            print(f"  当前过渡点: {name}  pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
+            joint_state = "有joints" if _place_transition_joints is not None else "无joints"
+            print(f"  当前过渡点: {name}  pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f}) [{joint_state}]")
         else:
             print("  当前: 未记录放置过渡点")
         print("\n  操作:")
@@ -1173,19 +1230,22 @@ def _place_point_management(arm: "DobotArm"):
         if choice == "s":
             try:
                 pose = arm.get_pose()
+                joints = arm.get_joints()
             except Exception:
-                print("  无法获取当前位姿")
+                print("  无法获取当前位姿/关节角")
                 continue
             name = input('  放置点名称 (回车默认"放置点"): ').strip()
             if not name:
                 name = "放置点"
             _place_point_pose = (list(pose[:6]), name)
+            _place_point_joints = list(joints[:6])
             save_place_point()
             print(f"  ✓ 放置点 ({name}) 已记录: pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
             continue
 
         if choice == "d":
             _place_point_pose = None
+            _place_point_joints = None
             save_place_point()
             print("  ✓ 放置点已删除")
             continue
@@ -1193,19 +1253,22 @@ def _place_point_management(arm: "DobotArm"):
         if choice == "ts":
             try:
                 pose = arm.get_pose()
+                joints = arm.get_joints()
             except Exception:
-                print("  无法获取当前位姿")
+                print("  无法获取当前位姿/关节角")
                 continue
             name = input('  过渡点名称 (回车默认"放置过渡点"): ').strip()
             if not name:
                 name = "放置过渡点"
             _place_transition_pose = (list(pose[:6]), name)
+            _place_transition_joints = list(joints[:6])
             save_place_transition()
             print(f"  ✓ 放置过渡点 ({name}) 已记录: pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
             continue
 
         if choice == "td":
             _place_transition_pose = None
+            _place_transition_joints = None
             save_place_transition()
             print("  ✓ 放置过渡点已删除")
             continue
