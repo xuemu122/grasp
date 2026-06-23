@@ -11,6 +11,7 @@
 | `move_robot.py` | 底盘 TCP 控制，移动到药架/充电点/取消任务，并返回底盘电量 |
 | `shelf_layers.json` | 货架层观察位姿，程序内 `l` 菜单维护 |
 | `place_point.json` | 放置点位姿，程序内 `p` 菜单维护 |
+| `place_transition.json` | 放置过渡点位姿，程序内 `p` 菜单维护 |
 | `stow_pose.json` | 收起姿态，程序内 `u` 菜单维护 |
 | `capture_one.py` | 单帧 RGB-D 采集工具 |
 | `test_dobot.py` | DOBOT 连接测试 |
@@ -28,7 +29,7 @@ DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 
 1. 连接相机和 DOBOT。
 2. 先回 HOME。
-3. 加载 `shelf_layers.json`、`place_point.json` 和 `stow_pose.json`。
+3. 加载 `shelf_layers.json`、`place_point.json`、`place_transition.json` 和 `stow_pose.json`。
 4. 固定默认回到第 2 层观察位，忽略上次退出时的 `current`，避免从第 3/4 层启动造成碰撞。
 
 ## 主菜单
@@ -62,7 +63,27 @@ q         返回
 
 进入 `p` 菜单后，把机械臂拖到放置位置，输入 `s` 保存。放置点保存在 `place_point.json`。
 
+如果最终放置点距离较远，可以再拖动机械臂到中间安全位置，输入 `ts` 保存放置过渡点。过渡点保存在 `place_transition.json`。
+
+常用操作：
+
+```text
+s   记录当前法兰位姿为放置点
+g   移动到放置点；如果有过渡点，会先经过渡点
+d   删除放置点
+ts  记录当前法兰位姿为放置过渡点
+tg  移动到放置过渡点
+td  删除放置过渡点
+q   返回
+```
+
 抓取成功后，如果放置点存在，程序会自动前往放置点并张手；如果放置点不可达或确认距离过大，会停止在当前位置，不继续回层。
+
+记录了放置过渡点时，放置路径会变为：
+
+```text
+当前层/中转层 → 放置过渡点 → 最终放置点 → 张手 → 放置过渡点 → 回层
+```
 
 ## 收起姿态管理
 
@@ -99,6 +120,20 @@ HAND_GRASP_MODE=bottle
 ```bash
 HAND_GRASP_MODE=auto DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 ```
+
+目标选择在 `pick_target_box()` 内完成。当前规则：
+
+- 先按画面纵向 ROI 过滤上下层物品，默认只保留 `y=145~335` 的候选。
+- 在 ROI 内按深度分层，选最前层。
+- 在最前层从右往左选目标，始终从右侧边缘抓取。
+
+如果仍然识别到上下层，可以按现场画面调 ROI：
+
+```bash
+TARGET_ROI_Y_MIN=170 TARGET_ROI_Y_MAX=320 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
+```
+
+检测截图 `/tmp/shelf_detection.jpg` 会画蓝色 ROI 边界线。
 
 每次抓取前会进入微调界面，显示当前模式、偏移参数和固化建议。
 

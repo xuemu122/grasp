@@ -43,9 +43,11 @@ cd /home/nvidia/grasp/识别
 ## 当前关键行为
 
 - 抓取程序启动时固定默认回到第 2 层，避免从上次低层状态恢复造成碰撞。
-- 货架层位姿保存在 `dipan/shelf_layers.json`，放置点保存在 `dipan/place_point.json`，收起姿态保存在 `dipan/stow_pose.json`。
+- 货架层位姿保存在 `dipan/shelf_layers.json`，放置点保存在 `dipan/place_point.json`，放置过渡点保存在 `dipan/place_transition.json`，收起姿态保存在 `dipan/stow_pose.json`。
 - 第 4 层允许低/负 Z，因为当前基座下方是可用空间；其他层仍保留低 Z 拒绝保护。
 - 第 3/4 层抓取后先上撤到第 1 层再放置；第 4 层会上撤经过第 3 层再到第 1 层。
+- 如果记录了放置过渡点，放置时会先经过渡点再到最终放置点，放完也先退回过渡点再回层。
+- 抓取目标会先按画面纵向 ROI 过滤上下层，再在当前层从右往左选择目标。
 - 当前灵巧手默认使用瓶子抓取手势；如需回到原侧抓/上抓手势，可用 `HAND_GRASP_MODE=auto` 启动。
 - 抓取主程序里 `b` 可切换底盘放置流程：开启后会先到收起姿态，再调用 `move_robot.py place`，等待底盘到达后再机械臂放置。
 - 识别程序默认降低置信度阈值，并打印 YOLO 原始候选数量，方便排查新模型无框问题。

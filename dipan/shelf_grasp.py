@@ -42,7 +42,7 @@ HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.16, 0.02, 0.015)
+SIDE_GRASP_OFFSET_M = (-0.14, 0.02, 0.015)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.025)
 
@@ -56,6 +56,11 @@ LOW_Z_GRASP_ADVANCE_M = 0.035  # 第4层低位空间更紧, 先只探入 1.5cm
 TOP_APPROACH_BACKOFF_M = 0.15  # 上面抓时先在抓取轴线上退 15cm 再直线前进
 LOW_Z_APPROACH_SPEED = 60
 LOW_Z_GRASP_SPEED = 20
+
+# 只在画面中间带里选抓取目标，避免误抓上下层物品。
+# 640x480 时默认保留 y=145~335 附近，可按现场画面调。
+TARGET_ROI_Y_MIN = int(os.getenv("TARGET_ROI_Y_MIN", "145"))
+TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "335"))
 
 # D405 内参（自动读取，这里是 fallback）
 FX, FY = 390.4, 390.0
@@ -79,6 +84,8 @@ LOW_Z_LAYER_IDXS = {4}  # 第4层在抬高基座下方, 允许低/负 Z
 # 放置点位姿文件 (笛卡尔: x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)
 PLACE_POINT_FILE = os.path.join(os.path.dirname(__file__), "place_point.json")
 _place_point_pose = None  # ([x,y,z,rx,ry,rz], name)
+PLACE_TRANSITION_FILE = os.path.join(os.path.dirname(__file__), "place_transition.json")
+_place_transition_pose = None  # ([x,y,z,rx,ry,rz], name)
 
 # 收起姿态: 调用底盘前和退出程序前使用, 防止机械臂/灵巧手与环境碰撞
 STOW_POSE_FILE = os.path.join(os.path.dirname(__file__), "stow_pose.json")
@@ -127,6 +134,17 @@ def load_place_point():
     return _place_point_pose
 
 
+def load_place_transition():
+    """从 JSON 加载放置过渡点位姿，返回 (pose, name) 或 None"""
+    global _place_transition_pose
+    if os.path.exists(PLACE_TRANSITION_FILE):
+        with open(PLACE_TRANSITION_FILE) as f:
+            data = json.load(f)
+        if "pose" in data:
+            _place_transition_pose = (data["pose"], data.get("name", "放置过渡点"))
+    return _place_transition_pose
+
+
 def load_stow_pose():
     """从 JSON 加载收起姿态，返回 (pose, name) 或 None"""
     global _stow_pose
@@ -158,6 +176,18 @@ def save_place_point():
     pose, name = _place_point_pose
     data = {"pose": pose, "name": name}
     with open(PLACE_POINT_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def save_place_transition():
+    """保存放置过渡点位姿到 JSON"""
+    if _place_transition_pose is None:
+        if os.path.exists(PLACE_TRANSITION_FILE):
+            os.remove(PLACE_TRANSITION_FILE)
+        return
+    pose, name = _place_transition_pose
+    data = {"pose": pose, "name": name}
+    with open(PLACE_TRANSITION_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
 
@@ -233,9 +263,12 @@ def go_to_place_point(arm: "DobotArm"):
     if _place_point_pose is None:
         print("  [错误] 放置点未记录! 先用 p 进入放置点管理, 拖到目标位置后输入 s")
         return False
+    if not go_to_place_transition(arm):
+        return False
     pose, name = _place_point_pose
     print(f"\n[放置点] 移动到 {name} ...")
-    arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100)
+    if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100):
+        return False
     time.sleep(2)
     try:
         cur = arm.get_pose()
@@ -246,6 +279,19 @@ def go_to_place_point(arm: "DobotArm"):
     if err_mm > 30:
         print(f"  [警告] 当前距放置点 {err_mm:.0f}mm, 本次不自动张手")
         return False
+    return True
+
+
+def go_to_place_transition(arm: "DobotArm"):
+    """如果记录了放置过渡点，则先移动到过渡点。未记录时直接跳过。"""
+    if _place_transition_pose is None:
+        return True
+    pose, name = _place_transition_pose
+    print(f"\n[放置过渡点] 移动到 {name} ...")
+    if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100):
+        print("  [放置过渡点] 移动失败")
+        return False
+    time.sleep(1)
     return True
 
 
@@ -329,6 +375,12 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
     if hand_ok:
         hand.open()
     time.sleep(1)
+
+    if _place_transition_pose is not None:
+        print("\n[Place] 放置后退回过渡点 ...")
+        if not go_to_place_transition(arm):
+            print("  [停止] 放置后回过渡点失败, 停在当前位置")
+            return
 
     if use_transfer_layer:
         home_transfer_idx = transfer_layers[-1]
@@ -751,14 +803,30 @@ class AeroGripper:
 def pick_target_box(detections):
     """
     货架分层抓取:
-      1. 按深度分组 (同层盒子深度差 < 0.1m)
-      2. 选最前层 (深度最小) 
-      3. 在该层里选最靠边的盒子
+      1. 先按画面纵向 ROI 过滤上下层
+      2. 按深度分组 (同层盒子深度差 < 0.15m)
+      3. 选最前层 (深度最小)
+      4. 在该层里从右往左选目标
     """
-    valid = [d for d in detections if d.depth_m and d.depth_m > 0]
+    roi_filtered = []
+    roi_rejected = []
+    for d in detections:
+        y_center = (d.bbox[1] + d.bbox[3]) / 2
+        if TARGET_ROI_Y_MIN <= y_center <= TARGET_ROI_Y_MAX:
+            roi_filtered.append(d)
+        else:
+            roi_rejected.append(d)
+    if roi_rejected:
+        print(f"  ROI过滤: 跳过上下层/边缘候选 {len(roi_rejected)} 个, y范围={TARGET_ROI_Y_MIN}-{TARGET_ROI_Y_MAX}")
+    if not roi_filtered:
+        print("  [警告] ROI 内没有候选, 回退使用全部检测框")
+        roi_filtered = list(detections)
+
+    valid = [d for d in roi_filtered if d.depth_m and d.depth_m > 0]
     if not valid:
-        valid = sorted(detections, key=lambda d: (d.bbox[2]-d.bbox[0])*(d.bbox[3]-d.bbox[1]), reverse=True)
+        valid = sorted(roi_filtered, key=lambda d: ((d.bbox[0] + d.bbox[2]) / 2), reverse=True)
         if valid:
+            print("  无有效深度, 回退选 ROI 内最右侧候选")
             return valid[0], "right"
         return None, None
 
@@ -781,9 +849,11 @@ def pick_target_box(detections):
         depths = [f"{d.depth_m:.2f}" for d in layer]
         print(f"    第{i+1}层: {len(layer)}个盒子 depth=[{', '.join(depths)}]m")
 
-    # 在最前层选 X 方向离中心最远的 (始终从右侧抓取)
-    img_center_x = 320
-    target = max(front_layer, key=lambda d: abs((d.bbox[0] + d.bbox[2]) / 2 - img_center_x))
+    # 在最前层从右往左选目标, 始终从右侧边缘抓取。
+    target = max(front_layer, key=lambda d: ((d.bbox[0] + d.bbox[2]) / 2))
+    tx = (target.bbox[0] + target.bbox[2]) / 2
+    ty = (target.bbox[1] + target.bbox[3]) / 2
+    print(f"  右侧优先: 选 bbox中心=({tx:.0f},{ty:.0f}) 的目标")
     return target, "right"
 
 
@@ -923,7 +993,7 @@ def _layer_management(arm: "DobotArm"):
 
 def _place_point_management(arm: "DobotArm"):
     """放置点管理子菜单: 记录、移动到、删除放置点"""
-    global _place_point_pose
+    global _place_point_pose, _place_transition_pose
 
     while True:
         print(f"\n── 放置点管理 ──")
@@ -932,10 +1002,18 @@ def _place_point_management(arm: "DobotArm"):
             print(f"  当前放置点: {name}  pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
         else:
             print("  当前: 未记录放置点")
+        if _place_transition_pose:
+            pose, name = _place_transition_pose
+            print(f"  当前过渡点: {name}  pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
+        else:
+            print("  当前: 未记录放置过渡点")
         print("\n  操作:")
         print("    s       ← 记录当前法兰位姿为放置点")
-        print("    g       ← 移动到放置点")
+        print("    g       ← 移动到放置点 (若有过渡点则先经过渡点)")
         print("    d       ← 删除放置点")
+        print("    ts      ← 记录当前法兰位姿为放置过渡点")
+        print("    tg      ← 移动到放置过渡点")
+        print("    td      ← 删除放置过渡点")
         print("    q       ← 返回主菜单")
 
         choice = input("  放置点 > ").strip().lower()
@@ -962,11 +1040,35 @@ def _place_point_management(arm: "DobotArm"):
             print("  ✓ 放置点已删除")
             continue
 
+        if choice == "ts":
+            try:
+                pose = arm.get_pose()
+            except Exception:
+                print("  无法获取当前位姿")
+                continue
+            name = input('  过渡点名称 (回车默认"放置过渡点"): ').strip()
+            if not name:
+                name = "放置过渡点"
+            _place_transition_pose = (list(pose[:6]), name)
+            save_place_transition()
+            print(f"  ✓ 放置过渡点 ({name}) 已记录: pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
+            continue
+
+        if choice == "td":
+            _place_transition_pose = None
+            save_place_transition()
+            print("  ✓ 放置过渡点已删除")
+            continue
+
+        if choice == "tg":
+            go_to_place_transition(arm)
+            return
+
         if choice == "g":
             go_to_place_point(arm)
             return
 
-        print("  无效输入, 请输入 s / g / d / q")
+        print("  无效输入, 请输入 s / g / d / ts / tg / td / q")
 
 
 def _stow_pose_management(arm: "DobotArm"):
@@ -1059,6 +1161,7 @@ def main():
     # ── 货架层管理 ──
     load_shelf_layers()
     load_place_point()
+    load_place_transition()
     load_stow_pose()
     if _current_layer_idx == STARTUP_LAYER_IDX:
         save_shelf_layers()
@@ -1257,6 +1360,8 @@ def main():
 
             # 重新画正确的抓取点 (覆盖上面简单画的黄点)
             viz = best_img.copy()
+            cv2.line(viz, (0, TARGET_ROI_Y_MIN), (viz.shape[1] - 1, TARGET_ROI_Y_MIN), (255, 0, 0), 1)
+            cv2.line(viz, (0, TARGET_ROI_Y_MAX), (viz.shape[1] - 1, TARGET_ROI_Y_MAX), (255, 0, 0), 1)
             for d in detections:
                 col = (0, 0, 255) if d is target else (0, 255, 0)
                 cv2.rectangle(viz, (int(d.bbox[0]), int(d.bbox[1])),
@@ -1276,7 +1381,7 @@ def main():
             cv2.putText(viz, "GRIP", (gx + 8, gy - 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
             cv2.imwrite("/tmp/shelf_detection.jpg", viz)
-            print(f"  → 检测画面已保存: /tmp/shelf_detection.jpg  (绿框=检测, 红框=目标, 黄点=抓取点)")
+            print(f"  → 检测画面已保存: /tmp/shelf_detection.jpg  (蓝线=ROI, 绿框=检测, 红框=目标, 黄点=抓取点)")
 
             # ── 用法兰局部轴计算法兰/悬停/抓取位姿 (世界坐标, 米) ──
             R_f = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
