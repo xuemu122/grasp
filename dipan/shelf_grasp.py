@@ -61,6 +61,7 @@ GRASP_SETTLE_S = float(os.getenv("GRASP_SETTLE_S", "0.4"))    # 抓取前进/后
 HAND_CLOSE_WAIT_S = float(os.getenv("HAND_CLOSE_WAIT_S", "3.0"))
 ROBOT_POLL_S = float(os.getenv("ROBOT_POLL_S", "0.2"))        # 等待运动完成时的状态轮询间隔
 PLACE_TRANSITION_CP = os.getenv("PLACE_TRANSITION_CP", "60")       # 过渡点到放置点的平滑比例
+PLACE_RETURN_CLEARANCE_MM = float(os.getenv("PLACE_RETURN_CLEARANCE_MM", "220"))  # 放置后回层的安全抬高量
 
 # 只在画面中间带里选抓取目标，避免误抓上下层物品。
 # 640x480 时默认保留 y=85~430 附近，可按现场画面调。
@@ -251,23 +252,12 @@ def go_to_layer(arm: "DobotArm", layer_idx: int):
 
 
 def go_to_layer_smooth_from_place(arm: "DobotArm", layer_idx: int):
-    """放置后返回层位姿；若有放置过渡点，则平滑经过过渡点。"""
-    if _place_transition_pose is None:
-        return go_to_layer(arm, layer_idx)
+    """放置后返回层位姿；先抬高避碰，再平滑经过高位过渡点。"""
     if layer_idx not in _shelf_layer_poses:
         print(f"  [错误] 第{layer_idx}层未记录! 先用 l s 记录当前位姿")
         return False
 
-    t_pose, t_name = _place_transition_pose
-    cp_pct = _clamp_cp(PLACE_TRANSITION_CP)
-    print(f"\n[放置过渡点] 回程平滑经过 {t_name} (cp={cp_pct}) ...")
-    if not arm.movel(t_pose[0], t_pose[1], t_pose[2], t_pose[3], t_pose[4], t_pose[5],
-                     speed=100, cp=cp_pct, wait=False):
-        print("  [放置过渡点] 回程移动失败")
-        return False
-
     pose, name = _shelf_layer_poses[layer_idx]
-    print(f"\n[货架层] 回到第{layer_idx}层 ({name})...")
     target_z = pose[2]
     allow_low_z = _layer_allows_low_z(layer_idx)
     if target_z < 80.0 and not allow_low_z:
@@ -275,6 +265,40 @@ def go_to_layer_smooth_from_place(arm: "DobotArm", layer_idx: int):
         target_z = 80.0
     if allow_low_z and target_z < 50.0:
         print(f"  [第{layer_idx}层] 允许低位观察 Z={target_z:.1f}mm")
+
+    try:
+        cur = arm.get_pose()
+    except Exception as e:
+        print(f"  [警告] 无法读取当前位姿, 回退为普通回层: {e}")
+        return go_to_layer(arm, layer_idx)
+
+    z_candidates = [cur[2], target_z]
+    if _place_transition_pose is not None:
+        z_candidates.append(_place_transition_pose[0][2])
+    safe_z = min(1100.0, max(z_candidates) + PLACE_RETURN_CLEARANCE_MM)
+    cp_pct = _clamp_cp(PLACE_TRANSITION_CP)
+    descend_cp = min(cp_pct, 40)
+
+    print(f"\n[安全回层] 先抬高到 Z={safe_z:.0f}mm, 再回第{layer_idx}层 ({name})...")
+    if not arm.movel(cur[0], cur[1], safe_z, cur[3], cur[4], cur[5], speed=100, cp=0):
+        print("  [安全回层] 原地抬高失败")
+        return False
+
+    if _place_transition_pose is not None:
+        t_pose, t_name = _place_transition_pose
+        print(f"\n[放置过渡点] 回程高位平滑经过 {t_name} (cp={cp_pct}) ...")
+        if not arm.movel(t_pose[0], t_pose[1], safe_z, t_pose[3], t_pose[4], t_pose[5],
+                         speed=100, cp=cp_pct, wait=False):
+            print("  [放置过渡点] 回程移动失败")
+            return False
+
+    print(f"\n[货架层] 高位移动到第{layer_idx}层上方 ...")
+    if not arm.movel(pose[0], pose[1], safe_z, pose[3], pose[4], pose[5],
+                     speed=100, allow_low_z=allow_low_z and safe_z < 50.0,
+                     cp=descend_cp, wait=False):
+        return False
+
+    print(f"\n[货架层] 下落到第{layer_idx}层 ({name})...")
     if not arm.movel(pose[0], pose[1], target_z, pose[3], pose[4], pose[5],
                      speed=100, allow_low_z=allow_low_z, cp=0):
         return False
