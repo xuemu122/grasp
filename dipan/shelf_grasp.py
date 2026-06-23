@@ -61,7 +61,8 @@ GRASP_SETTLE_S = float(os.getenv("GRASP_SETTLE_S", "0.4"))    # 抓取前进/后
 HAND_CLOSE_WAIT_S = float(os.getenv("HAND_CLOSE_WAIT_S", "3.0"))
 ROBOT_POLL_S = float(os.getenv("ROBOT_POLL_S", "0.2"))        # 等待运动完成时的状态轮询间隔
 PLACE_TRANSITION_CP = os.getenv("PLACE_TRANSITION_CP", "60")       # 过渡点到放置点的平滑比例
-PLACE_RETURN_CLEARANCE_MM = float(os.getenv("PLACE_RETURN_CLEARANCE_MM", "220"))  # 放置后回层的安全抬高量
+PLACE_RETURN_CLEARANCE_MM = float(os.getenv("PLACE_RETURN_CLEARANCE_MM", "140"))  # 放置后回层的安全抬高量
+PLACE_RETURN_MAX_Z_MM = float(os.getenv("PLACE_RETURN_MAX_Z_MM", "820"))  # 回层抬高上限, 避免高位不可达
 
 # 只在画面中间带里选抓取目标，避免误抓上下层物品。
 # 640x480 时默认保留 y=85~430 附近，可按现场画面调。
@@ -275,12 +276,36 @@ def go_to_layer_smooth_from_place(arm: "DobotArm", layer_idx: int):
     z_candidates = [cur[2], target_z]
     if _place_transition_pose is not None:
         z_candidates.append(_place_transition_pose[0][2])
-    safe_z = min(1100.0, max(z_candidates) + PLACE_RETURN_CLEARANCE_MM)
+    base_z = max(z_candidates)
+    max_return_z = min(1100.0, max(base_z + 60.0, PLACE_RETURN_MAX_Z_MM))
+    safe_z = min(max_return_z, base_z + PLACE_RETURN_CLEARANCE_MM)
     cp_pct = _clamp_cp(PLACE_TRANSITION_CP)
     descend_cp = min(cp_pct, 40)
 
-    print(f"\n[安全回层] 先抬高到 Z={safe_z:.0f}mm, 再回第{layer_idx}层 ({name})...")
-    if not arm.movel(cur[0], cur[1], safe_z, cur[3], cur[4], cur[5], speed=100, cp=0):
+    lift_targets = []
+    for z in (
+        safe_z,
+        min(max_return_z, base_z + 100.0),
+        min(max_return_z, base_z + 60.0),
+    ):
+        if z > cur[2] + 20.0 and all(abs(z - seen) > 10.0 for seen in lift_targets):
+            lift_targets.append(z)
+    if not lift_targets:
+        lift_targets.append(max(cur[2], target_z))
+
+    print(f"\n[安全回层] 先原地抬高, 再回第{layer_idx}层 ({name})...")
+    lifted = False
+    for idx, lift_z in enumerate(lift_targets, 1):
+        print(f"  [安全回层] 尝试抬高到 Z={lift_z:.0f}mm ({idx}/{len(lift_targets)})")
+        if arm.movel(cur[0], cur[1], lift_z, cur[3], cur[4], cur[5], speed=80, cp=0):
+            safe_z = lift_z
+            lifted = True
+            break
+        try:
+            cur = arm.get_pose()
+        except Exception:
+            pass
+    if not lifted:
         print("  [安全回层] 原地抬高失败")
         return False
 
