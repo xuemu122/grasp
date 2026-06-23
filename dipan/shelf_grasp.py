@@ -56,9 +56,13 @@ LOW_Z_GRASP_ADVANCE_M = 0.035  # 第4层低位空间更紧, 先只探入 1.5cm
 TOP_APPROACH_BACKOFF_M = 0.15  # 上面抓时先在抓取轴线上退 15cm 再直线前进
 LOW_Z_APPROACH_SPEED = 60
 LOW_Z_GRASP_SPEED = 20
+MOTION_SETTLE_S = float(os.getenv("MOTION_SETTLE_S", "0.2"))  # 运动完成后的短缓冲
+GRASP_SETTLE_S = float(os.getenv("GRASP_SETTLE_S", "0.4"))    # 抓取前进/后退短缓冲
+HAND_CLOSE_WAIT_S = float(os.getenv("HAND_CLOSE_WAIT_S", "3.0"))
+ROBOT_POLL_S = float(os.getenv("ROBOT_POLL_S", "0.2"))        # 等待运动完成时的状态轮询间隔
 
 # 只在画面中间带里选抓取目标，避免误抓上下层物品。
-# 640x480 时默认保留 y=145~430 附近，可按现场画面调。
+# 640x480 时默认保留 y=85~430 附近，可按现场画面调。
 TARGET_ROI_Y_MIN = int(os.getenv("TARGET_ROI_Y_MIN", "85"))
 TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "430"))
 
@@ -102,6 +106,19 @@ def _layer_allows_low_z(layer_idx: Optional[int]) -> bool:
 
 def _current_layer_allows_low_z() -> bool:
     return _layer_allows_low_z(_current_layer_idx)
+
+
+def _clamp_speed_pct(speed) -> int:
+    """DOBOT MovL/MovJ 的 v 参数为 1-100 百分比速度。"""
+    try:
+        return max(1, min(100, int(round(float(speed)))))
+    except (TypeError, ValueError):
+        return 100
+
+
+def _motion_poll_count(timeout_s: float = 30.0) -> int:
+    interval = max(0.05, ROBOT_POLL_S)
+    return max(1, int(round(timeout_s / interval)))
 
 
 def load_shelf_layers():
@@ -220,7 +237,7 @@ def go_to_layer(arm: "DobotArm", layer_idx: int):
     if not arm.movel(pose[0], pose[1], target_z, pose[3], pose[4], pose[5], speed=100,
                      allow_low_z=allow_low_z):
         return False
-    time.sleep(2)
+    time.sleep(MOTION_SETTLE_S)
     return True
 
 
@@ -254,7 +271,7 @@ def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: flo
     if not arm.movel(pose[0], pose[1], target_z, pose[3], pose[4], pose[5], speed=100,
                      allow_low_z=allow_low_z):
         return False
-    time.sleep(2)
+    time.sleep(MOTION_SETTLE_S)
     return True
 
 
@@ -269,7 +286,7 @@ def go_to_place_point(arm: "DobotArm"):
     print(f"\n[放置点] 移动到 {name} ...")
     if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100):
         return False
-    time.sleep(2)
+    time.sleep(MOTION_SETTLE_S)
     try:
         cur = arm.get_pose()
     except Exception:
@@ -291,7 +308,7 @@ def go_to_place_transition(arm: "DobotArm"):
     if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100):
         print("  [放置过渡点] 移动失败")
         return False
-    time.sleep(1)
+    time.sleep(MOTION_SETTLE_S)
     return True
 
 
@@ -313,7 +330,7 @@ def go_to_stow_pose(arm: "DobotArm"):
     if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100):
         print("  [收起姿态] 移动失败")
         return False
-    time.sleep(1)
+    time.sleep(MOTION_SETTLE_S)
     return True
 
 
@@ -382,7 +399,7 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
         return
     if hand_ok:
         hand.open()
-    time.sleep(1)
+    time.sleep(MOTION_SETTLE_S)
 
     if _place_transition_pose is not None:
         print("\n[Place] 放置后退回过渡点 ...")
@@ -474,7 +491,7 @@ class DobotArm:
                 print("[DOBOT] 已处于使能状态, 跳过重复上电等待")
                 return True
             self.send("PowerOn()")
-            time.sleep(1)
+            time.sleep(0.5)
             resp = self.send("RobotMode()")
             mode = self._parse_robot_mode(resp)
             if mode in (3, 4, None):
@@ -566,6 +583,7 @@ class DobotArm:
     def movel(self, x_mm, y_mm, z_mm, rx=None, ry=None, rz=None, speed=100, allow_low_z=False):
         """MovL V4: pose = {x, y, z, rx, ry, rz}，rx/ry/rz=None 则保持当前姿态"""
         try:
+            speed_pct = _clamp_speed_pct(speed)
             if rx is None:
                 pose = self.get_pose()
                 rx, ry, rz = pose[3], pose[4], pose[5]
@@ -577,7 +595,7 @@ class DobotArm:
                 print(f"  [低位放行] Z={z_mm:.0f}mm (第4层/下方工作区)")
             if z_mm > 1100 or z_mm < -300:
                 print(f"  [警告] Z={z_mm:.0f}mm 可能超出工作范围, 请注意!")
-            cmd = f"MovL(pose = {{{x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f}, {rx:.1f}, {ry:.1f}, {rz:.1f}}})"
+            cmd = f"MovL(pose={{{x_mm:.1f},{y_mm:.1f},{z_mm:.1f},{rx:.1f},{ry:.1f},{rz:.1f}}},v={speed_pct})"
             print(f"  >>> {cmd}")
             resp = self.send(cmd)
             print(f"  <<< {resp}")
@@ -585,8 +603,10 @@ class DobotArm:
                 print(f"  [MovL 被拒绝] 错误码={resp.split(',')[0]}, 可能是位姿不可达")
                 return False  # -1/-2 等是立即拒绝, 不是报警, 不调 clear_alarm
             # 等待运动完成: RobotMode=5 表示使能空闲; 7/8 仍在运行/点动中
-            for _ in range(60):
-                time.sleep(0.5)
+            poll_s = max(0.05, ROBOT_POLL_S)
+            seen_moving = False
+            for _ in range(_motion_poll_count()):
+                time.sleep(poll_s)
                 err = self.get_error_id()
                 if "[]" not in err:
                     print(f"  [报警!] 运动中触发报警: {err}")
@@ -595,7 +615,10 @@ class DobotArm:
                     return False
                 rm = self.send("RobotMode()")
                 mode = self._parse_robot_mode(rm)
-                if mode == 5:
+                if mode in (7, 8):
+                    seen_moving = True
+                waited_s = (_ + 1) * poll_s
+                if mode == 5 and (seen_moving or waited_s >= 0.5):
                     return True
                 if mode in (4, 9, 11):
                     print(f"  [MovL 异常状态] RobotMode={mode}, 停止后续动作")
@@ -608,20 +631,23 @@ class DobotArm:
 
     def go_home(self, speed=100):
         """MovJ 回到预设观察位姿"""
-        self.movj(HOME_JOINTS_DEG)
+        self.movj(HOME_JOINTS_DEG, speed=speed)
 
-    def movj(self, joints_deg):
+    def movj(self, joints_deg, speed=100):
         """MovJ 关节运动到目标关节角 (角度制)"""
         j = joints_deg
-        cmd = f"MovJ(joint={{{j[0]:.1f},{j[1]:.1f},{j[2]:.1f},{j[3]:.1f},{j[4]:.1f},{j[5]:.1f}}})"
+        speed_pct = _clamp_speed_pct(speed)
+        cmd = f"MovJ(joint={{{j[0]:.1f},{j[1]:.1f},{j[2]:.1f},{j[3]:.1f},{j[4]:.1f},{j[5]:.1f}}},v={speed_pct})"
         print(f"  >>> {cmd}")
         resp = self.send(cmd)
         print(f"  <<< {resp}")
         if resp.startswith("-"):
             print(f"  [MovJ 被拒绝] 错误码={resp.split(',')[0]}")
             return False
-        for _ in range(60):
-            time.sleep(0.5)
+        poll_s = max(0.05, ROBOT_POLL_S)
+        seen_moving = False
+        for _ in range(_motion_poll_count()):
+            time.sleep(poll_s)
             err = self.get_error_id()
             if "[]" not in err:
                 print(f"  [报警!] MovJ 触发报警: {err}")
@@ -629,7 +655,10 @@ class DobotArm:
                 return False
             rm = self.send("RobotMode()")
             mode = self._parse_robot_mode(rm)
-            if mode == 5:
+            if mode in (7, 8):
+                seen_moving = True
+            waited_s = (_ + 1) * poll_s
+            if mode == 5 and (seen_moving or waited_s >= 0.5):
                 return True
             if mode in (4, 9, 11):
                 print(f"  [MovJ 异常状态] RobotMode={mode}, 停止后续动作")
@@ -643,7 +672,7 @@ class DobotArm:
         old_j6 = joints[5]
         joints[5] = target_j6_deg
         print(f"  MovJ J6 {old_j6:.1f}° → {target_j6_deg:.1f}°")
-        return self.movj(joints)
+        return self.movj(joints, speed=80)
 
     def close(self):
         self.send("DisableRobot()")
@@ -1164,7 +1193,7 @@ def main():
     # 回初始观察位姿
     print("\n[Home] 回到预设初始位姿 ...")
     arm.go_home()
-    time.sleep(2)  # 等待运动完成
+    time.sleep(MOTION_SETTLE_S)  # 短缓冲，MovJ 内部已等待运动完成
 
     # ── 货架层管理 ──
     load_shelf_layers()
@@ -1246,7 +1275,7 @@ def main():
                             continue
                         dj6 = -j6_step if jc == "z" else j6_step
                         arm.move_j6(joints[5] + dj6)
-                        time.sleep(0.5)
+                        time.sleep(MOTION_SETTLE_S)
                         continue
 
                     pose = arm.get_pose()
@@ -1265,8 +1294,7 @@ def main():
                     tz = pose[2] + dz
                     print(f"  MovL({tx:.0f},{ty:.0f},{tz:.0f}) ← ({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f}) + ({dx},{dy},{dz})")
                     resp = arm.movel(tx, ty, tz, speed=50, allow_low_z=_current_layer_allows_low_z())
-                    time.sleep(0.5)
-                continue
+                    time.sleep(MOTION_SETTLE_S)                continue
 
             if cmd.lower() == "l":
                 # 货架层管理
@@ -1467,7 +1495,7 @@ def main():
                      new_z = flange_pose[2] + delta_w[2] * 1000
                      print(f"  目标法兰: ({new_x:.0f}, {new_y:.0f}, {new_z:.0f})mm")
                      arm.movel(new_x, new_y, new_z, speed=100, allow_low_z=_current_layer_allows_low_z())
-                     time.sleep(1)
+                     time.sleep(MOTION_SETTLE_S)
                      continue
                  elif choice == "m":
                      # 简化模式: 沿法兰Z前移
@@ -1481,13 +1509,13 @@ def main():
                      new_z = flange_pose[2] + delta_w[2] * 1000
                      print(f"  目标法兰: ({new_x:.0f}, {new_y:.0f}, {new_z:.0f})mm")
                      arm.movel(new_x, new_y, new_z, speed=60, allow_low_z=_current_layer_allows_low_z())
-                     time.sleep(1)
+                     time.sleep(MOTION_SETTLE_S)
                      continue
                  elif choice == "p":
                      print(f"\n  预览: 移动到 ({ax+offset_x:.0f}, {ay+offset_y:.0f}, {az+offset_z:.0f})mm")
                      arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=100,
                                allow_low_z=_current_layer_allows_low_z())
-                     time.sleep(1)
+                     time.sleep(MOTION_SETTLE_S)
                      continue
                  elif choice.lower() == "f5":
                      offset_x = offset_y = offset_z = 0.0
@@ -1535,7 +1563,7 @@ def main():
             if not is_side_grasp:
                 print(f"  上面抓取 → J6 转到手心向下角度 {TOP_J6_DEG:.1f}°")
                 arm.move_j6(TOP_J6_DEG)
-                time.sleep(0.5)
+                time.sleep(MOTION_SETTLE_S)
                 flange_pose = arm.get_pose()
                 R_f = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])
                 fz_dir = R_f[:, 2]
@@ -1559,7 +1587,7 @@ def main():
                 else:
                     arm.go_home()
                 continue
-            time.sleep(1.5)
+            time.sleep(GRASP_SETTLE_S)
 
             # 3. 前进抓取 (沿手指方向探入 GRASP_ADVANCE_M)
             if not arm.movel(gx + offset_x, gy + offset_y, gz + offset_z, speed=grasp_speed,
@@ -1570,14 +1598,14 @@ def main():
                 else:
                     arm.go_home()
                 continue
-            time.sleep(1.5)
+            time.sleep(GRASP_SETTLE_S)
 
             # 4. 抓取 (动作二) 并等待 5s 握紧
             if not SKIP_HAND:
                 grasp_mode = "bottle" if HAND_GRASP_MODE == "bottle" and is_side_grasp else None
                 if hand.close(top=not is_side_grasp, mode=grasp_mode):
-                    print("  灵巧手 → 闭合, 等待 3s ...")
-                    time.sleep(3.0)
+                    print(f"  灵巧手 → 闭合, 等待 {HAND_CLOSE_WAIT_S:.1f}s ...")
+                    time.sleep(HAND_CLOSE_WAIT_S)
                 else:
                     print("  灵巧手不可用, 继续执行机械臂安全退回")
 
@@ -1587,11 +1615,11 @@ def main():
                              allow_low_z=allow_low_z):
                 print("  [停止] 后退失败/报警, 停在当前位置, 不继续放置流程")
                 continue
-            time.sleep(1.5)
+            time.sleep(GRASP_SETTLE_S)
 
             # 6. 放置并回到当前层观察位
             finish_pick_cycle(arm, hand, _current_layer_idx)
-            time.sleep(2)
+            time.sleep(MOTION_SETTLE_S)
 
             print("抓取完成! 按 Enter 继续 / q 退出")
 

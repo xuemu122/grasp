@@ -25,6 +25,22 @@ cd /home/nvidia/grasp/dipan
 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 ```
 
+动作节奏可用环境变量现场微调：
+
+```bash
+MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAIT_S=2.5 ROBOT_POLL_S=0.15 \
+  DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
+```
+
+含义：
+
+- `MOTION_SETTLE_S`：普通运动完成后的短缓冲，默认 `0.2` 秒。
+- `GRASP_SETTLE_S`：抓取前进、闭手前、后退后的缓冲，默认 `0.4` 秒。
+- `HAND_CLOSE_WAIT_S`：灵巧手闭合后等待物体稳定的时间，默认 `3.0` 秒。
+- `ROBOT_POLL_S`：等待 DOBOT 运动完成时的状态轮询间隔，默认 `0.2` 秒。
+
+代码里的 `speed` 参数会随 `MovL`/`MovJ` 下发为 DOBOT `v=1..100` 百分比速度；超过 100 的值会自动夹到 100。
+
 启动后程序会：
 
 1. 连接相机和 DOBOT。
@@ -123,7 +139,7 @@ HAND_GRASP_MODE=auto DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 
 目标选择在 `pick_target_box()` 内完成。当前规则：
 
-- 先按画面纵向 ROI 过滤上下层物品，默认只保留 `y=145~430` 的候选。
+- 先按画面纵向 ROI 过滤上下层物品，默认只保留 `y=85~430` 的候选。
 - 在 ROI 内按深度分层，选最前层。
 - 在最前层从右往左选目标，始终从右侧边缘抓取。
 
