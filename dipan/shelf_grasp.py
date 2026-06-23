@@ -1294,7 +1294,8 @@ def main():
                     tz = pose[2] + dz
                     print(f"  MovL({tx:.0f},{ty:.0f},{tz:.0f}) ← ({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f}) + ({dx},{dy},{dz})")
                     resp = arm.movel(tx, ty, tz, speed=50, allow_low_z=_current_layer_allows_low_z())
-                    time.sleep(MOTION_SETTLE_S)                continue
+                    time.sleep(MOTION_SETTLE_S)
+                    continue
 
             if cmd.lower() == "l":
                 # 货架层管理
