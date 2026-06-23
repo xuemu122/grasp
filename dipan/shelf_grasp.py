@@ -44,7 +44,7 @@ HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
 SIDE_GRASP_OFFSET_M = (-0.13, 0.02, 0.015)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
-TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.025)
+TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.03)
 
 # 上面抓取前把第六轴转到手心向下的实测角度
 TOP_J6_DEG = 8.3
@@ -944,7 +944,7 @@ class AeroGripper:
     # 抓取 (四指弯曲包络)
     GRASP = [0, 70, 52, 70, 58, 59, 53]
     #上端抓取
-    GRASP_TOP = [0, 86, 49, 71, 50, 70, 70]
+    GRASP_TOP = [15, 100, 35, 54, 44, 60, 56]
     # 瓶子抓取
     GRASP_BOTTLE = [0, 82, 65, 76, 55, 67, 63]
 
