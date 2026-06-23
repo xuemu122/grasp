@@ -60,6 +60,7 @@ MOTION_SETTLE_S = float(os.getenv("MOTION_SETTLE_S", "0.2"))  # 运动完成后�
 GRASP_SETTLE_S = float(os.getenv("GRASP_SETTLE_S", "0.4"))    # 抓取前进/后退短缓冲
 HAND_CLOSE_WAIT_S = float(os.getenv("HAND_CLOSE_WAIT_S", "3.0"))
 ROBOT_POLL_S = float(os.getenv("ROBOT_POLL_S", "0.2"))        # 等待运动完成时的状态轮询间隔
+PLACE_TRANSITION_CP = os.getenv("PLACE_TRANSITION_CP", "60")       # 过渡点到放置点的平滑比例
 
 # 只在画面中间带里选抓取目标，避免误抓上下层物品。
 # 640x480 时默认保留 y=85~430 附近，可按现场画面调。
@@ -119,6 +120,14 @@ def _clamp_speed_pct(speed) -> int:
 def _motion_poll_count(timeout_s: float = 30.0) -> int:
     interval = max(0.05, ROBOT_POLL_S)
     return max(1, int(round(timeout_s / interval)))
+
+
+def _clamp_cp(cp) -> int:
+    """DOBOT 平滑过渡 cp 参数为 0-100。"""
+    try:
+        return max(0, min(100, int(round(float(cp)))))
+    except (TypeError, ValueError):
+        return 0
 
 
 def load_shelf_layers():
@@ -241,6 +250,38 @@ def go_to_layer(arm: "DobotArm", layer_idx: int):
     return True
 
 
+def go_to_layer_smooth_from_place(arm: "DobotArm", layer_idx: int):
+    """放置后返回层位姿；若有放置过渡点，则平滑经过过渡点。"""
+    if _place_transition_pose is None:
+        return go_to_layer(arm, layer_idx)
+    if layer_idx not in _shelf_layer_poses:
+        print(f"  [错误] 第{layer_idx}层未记录! 先用 l s 记录当前位姿")
+        return False
+
+    t_pose, t_name = _place_transition_pose
+    cp_pct = _clamp_cp(PLACE_TRANSITION_CP)
+    print(f"\n[放置过渡点] 回程平滑经过 {t_name} (cp={cp_pct}) ...")
+    if not arm.movel(t_pose[0], t_pose[1], t_pose[2], t_pose[3], t_pose[4], t_pose[5],
+                     speed=100, cp=cp_pct, wait=False):
+        print("  [放置过渡点] 回程移动失败")
+        return False
+
+    pose, name = _shelf_layer_poses[layer_idx]
+    print(f"\n[货架层] 回到第{layer_idx}层 ({name})...")
+    target_z = pose[2]
+    allow_low_z = _layer_allows_low_z(layer_idx)
+    if target_z < 80.0 and not allow_low_z:
+        print(f"  [警告] 第{layer_idx}层记录 Z={target_z:.1f}mm 过低, 自动抬到 80mm")
+        target_z = 80.0
+    if allow_low_z and target_z < 50.0:
+        print(f"  [第{layer_idx}层] 允许低位观察 Z={target_z:.1f}mm")
+    if not arm.movel(pose[0], pose[1], target_z, pose[3], pose[4], pose[5],
+                     speed=100, allow_low_z=allow_low_z, cp=0):
+        return False
+    time.sleep(MOTION_SETTLE_S)
+    return True
+
+
 def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: float = 120.0):
     """先抬高再回到指定层, 用于避开放置点到货架层的直线路径"""
     if layer_idx not in _shelf_layer_poses:
@@ -280,11 +321,19 @@ def go_to_place_point(arm: "DobotArm"):
     if _place_point_pose is None:
         print("  [错误] 放置点未记录! 先用 p 进入放置点管理, 拖到目标位置后输入 s")
         return False
-    if not go_to_place_transition(arm):
-        return False
     pose, name = _place_point_pose
+    if _place_transition_pose is not None:
+        t_pose, t_name = _place_transition_pose
+        cp_pct = _clamp_cp(PLACE_TRANSITION_CP)
+        print(f"\n[放置过渡点] 平滑经过 {t_name} (cp={cp_pct}) ...")
+        if not arm.movel(t_pose[0], t_pose[1], t_pose[2], t_pose[3], t_pose[4], t_pose[5],
+                         speed=100, cp=cp_pct, wait=False):
+            print("  [放置过渡点] 移动失败")
+            return False
+    else:
+        cp_pct = 0
     print(f"\n[放置点] 移动到 {name} ...")
-    if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100):
+    if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100, cp=0):
         return False
     time.sleep(MOTION_SETTLE_S)
     try:
@@ -401,22 +450,20 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
         hand.open()
     time.sleep(MOTION_SETTLE_S)
 
-    if _place_transition_pose is not None:
-        print("\n[Place] 放置后退回过渡点 ...")
-        if not go_to_place_transition(arm):
-            print("  [停止] 放置后回过渡点失败, 停在当前位置")
-            return
-
     if use_transfer_layer:
         home_transfer_idx = transfer_layers[-1]
-        print(f"\n[Transfer] 放置后直接回第{home_transfer_idx}层中转 ...")
-        if not go_to_layer(arm, home_transfer_idx):
+        print(f"\n[Transfer] 放置后回第{home_transfer_idx}层中转 ...")
+        if not go_to_layer_smooth_from_place(arm, home_transfer_idx):
             print(f"  [停止] 放置后回第{home_transfer_idx}层失败, 停在当前位置")
             return
 
     if current_layer_idx in _shelf_layer_poses:
         print(f"\n[Home] 回到第{current_layer_idx}层 ({_shelf_layer_poses[current_layer_idx][1]}) ...")
-        if not go_to_layer_via_clearance(arm, current_layer_idx):
+        if use_transfer_layer:
+            ok = go_to_layer_via_clearance(arm, current_layer_idx)
+        else:
+            ok = go_to_layer_smooth_from_place(arm, current_layer_idx)
+        if not ok:
             print("  [停止] 回当前层失败, 停在当前位置")
             return
     else:
@@ -580,10 +627,12 @@ class DobotArm:
         print(f"[DOBOT] GetErrorID: {err}")
         self.do_enable()
 
-    def movel(self, x_mm, y_mm, z_mm, rx=None, ry=None, rz=None, speed=100, allow_low_z=False):
+    def movel(self, x_mm, y_mm, z_mm, rx=None, ry=None, rz=None, speed=100, allow_low_z=False,
+              cp=0, wait=True):
         """MovL V4: pose = {x, y, z, rx, ry, rz}，rx/ry/rz=None 则保持当前姿态"""
         try:
             speed_pct = _clamp_speed_pct(speed)
+            cp_pct = _clamp_cp(cp)
             if rx is None:
                 pose = self.get_pose()
                 rx, ry, rz = pose[3], pose[4], pose[5]
@@ -595,13 +644,15 @@ class DobotArm:
                 print(f"  [低位放行] Z={z_mm:.0f}mm (第4层/下方工作区)")
             if z_mm > 1100 or z_mm < -300:
                 print(f"  [警告] Z={z_mm:.0f}mm 可能超出工作范围, 请注意!")
-            cmd = f"MovL(pose={{{x_mm:.1f},{y_mm:.1f},{z_mm:.1f},{rx:.1f},{ry:.1f},{rz:.1f}}},v={speed_pct})"
+            cmd = f"MovL(pose={{{x_mm:.1f},{y_mm:.1f},{z_mm:.1f},{rx:.1f},{ry:.1f},{rz:.1f}}},v={speed_pct},cp={cp_pct})"
             print(f"  >>> {cmd}")
             resp = self.send(cmd)
             print(f"  <<< {resp}")
             if resp.startswith("-"):
                 print(f"  [MovL 被拒绝] 错误码={resp.split(',')[0]}, 可能是位姿不可达")
                 return False  # -1/-2 等是立即拒绝, 不是报警, 不调 clear_alarm
+            if not wait:
+                return True
             # 等待运动完成: RobotMode=5 表示使能空闲; 7/8 仍在运行/点动中
             poll_s = max(0.05, ROBOT_POLL_S)
             seen_moving = False

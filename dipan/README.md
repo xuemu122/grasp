@@ -28,7 +28,7 @@ DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 动作节奏可用环境变量现场微调：
 
 ```bash
-MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAIT_S=2.5 ROBOT_POLL_S=0.15 \
+MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAIT_S=2.5 ROBOT_POLL_S=0.15 PLACE_TRANSITION_CP=60 \
   DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 ```
 
@@ -38,8 +38,9 @@ MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAIT_S=2.5 ROBOT_POLL_S=0.15 
 - `GRASP_SETTLE_S`：抓取前进、闭手前、后退后的缓冲，默认 `0.4` 秒。
 - `HAND_CLOSE_WAIT_S`：灵巧手闭合后等待物体稳定的时间，默认 `3.0` 秒。
 - `ROBOT_POLL_S`：等待 DOBOT 运动完成时的状态轮询间隔，默认 `0.2` 秒。
+- `PLACE_TRANSITION_CP`：放置路径经过过渡点时的平滑过渡比例，默认 `60`；调大更顺滑，但会更明显地绕过中间点。
 
-代码里的 `speed` 参数会随 `MovL`/`MovJ` 下发为 DOBOT `v=1..100` 百分比速度；超过 100 的值会自动夹到 100。
+代码里的 `speed` 参数会随 `MovL`/`MovJ` 下发为 DOBOT `v=1..100` 百分比速度；超过 100 的值会自动夹到 100。记录放置过渡点后，前往最终放置点和放置后回层都会连续下发路径，过渡点不会再停顿。
 
 启动后程序会：
 
@@ -98,7 +99,7 @@ q   返回
 记录了放置过渡点时，放置路径会变为：
 
 ```text
-当前层/中转层 → 放置过渡点 → 最终放置点 → 张手 → 放置过渡点 → 回层
+当前层/中转层 → 平滑经过放置过渡点 → 最终放置点 → 张手 → 平滑经过放置过渡点 → 回层
 ```
 
 ## 收起姿态管理
