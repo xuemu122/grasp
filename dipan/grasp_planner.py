@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Target selection and edge-grasp planning."""
+
+import os
+
+import numpy as np
+
+
+TARGET_ROI_Y_MIN = int(os.getenv("TARGET_ROI_Y_MIN", "85"))
+TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "430"))
+
+
+def axis_aligned_approach_m(current_xyz_m, grasp_xyz_m, forward_dir, min_backoff_m):
+    """保持当前前后距离, 先移动到抓取点对应的上下左右对齐位。"""
+    current = np.array(current_xyz_m, dtype=float)
+    grasp = np.array(grasp_xyz_m, dtype=float)
+    axis = np.array(forward_dir, dtype=float)
+    axis = axis / max(np.linalg.norm(axis), 1e-9)
+    forward_offset = float(np.dot(current - grasp, axis))
+    if forward_offset > -min_backoff_m:
+        forward_offset = -min_backoff_m
+    return grasp + forward_offset * axis
+
+
+def pick_target_box(detections):
+    """
+    货架分层抓取:
+      1. 先按画面纵向 ROI 过滤上下层
+      2. 按深度分组 (同层盒子深度差 < 0.15m)
+      3. 选最前层 (深度最小)
+      4. 在该层里从右往左选目标
+    """
+    roi_filtered = []
+    roi_rejected = []
+    for d in detections:
+        y_center = (d.bbox[1] + d.bbox[3]) / 2
+        if TARGET_ROI_Y_MIN <= y_center <= TARGET_ROI_Y_MAX:
+            roi_filtered.append(d)
+        else:
+            roi_rejected.append(d)
+    if roi_rejected:
+        print(f"  ROI过滤: 跳过上下层/边缘候选 {len(roi_rejected)} 个, y范围={TARGET_ROI_Y_MIN}-{TARGET_ROI_Y_MAX}")
+    if not roi_filtered:
+        print("  [警告] ROI 内没有候选, 回退使用全部检测框")
+        roi_filtered = list(detections)
+
+    valid = [d for d in roi_filtered if d.depth_m and d.depth_m > 0]
+    if not valid:
+        valid = sorted(roi_filtered, key=lambda d: ((d.bbox[0] + d.bbox[2]) / 2), reverse=True)
+        if valid:
+            print("  无有效深度, 回退选 ROI 内最右侧候选")
+            return valid[0], "right"
+        return None, None
+
+    valid.sort(key=lambda d: d.depth_m)
+    layers = []
+    current_layer = [valid[0]]
+    for d in valid[1:]:
+        if abs(d.depth_m - current_layer[0].depth_m) < 0.15:
+            current_layer.append(d)
+        else:
+            layers.append(current_layer)
+            current_layer = [d]
+    layers.append(current_layer)
+
+    front_layer = layers[0]
+    print(f"  检测到 {len(layers)} 层货架, 选最前层 ({len(front_layer)} 个盒子, 深度~{front_layer[0].depth_m:.2f}m)")
+    for i, layer in enumerate(layers):
+        depths = [f"{d.depth_m:.2f}" for d in layer]
+        print(f"    第{i+1}层: {len(layer)}个盒子 depth=[{', '.join(depths)}]m")
+
+    target = max(front_layer, key=lambda d: ((d.bbox[0] + d.bbox[2]) / 2))
+    tx = (target.bbox[0] + target.bbox[2]) / 2
+    ty = (target.bbox[1] + target.bbox[3]) / 2
+    print(f"  右侧优先: 选 bbox中心=({tx:.0f},{ty:.0f}) 的目标")
+    return target, "right"
+
+
+def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4):
+    """
+    边缘抓取:
+      - 盒宽 <= 8cm: 侧边缘 (x1/x2) + 垂直中点 (v)
+      - 盒宽 > 8cm: 上边缘 (y1) + 中心 X
+    返回: (world_x, world_y, world_z, grasp_mode, p_cam)
+    """
+    x1, y1, x2, y2 = det.bbox
+    depth = det.depth_m or 0.5
+
+    pixel_w = x2 - x1
+    real_w = pixel_w * depth / fx
+    print(f"  盒宽: {pixel_w}px → {real_w*100:.1f}cm")
+
+    if real_w <= 0.08:
+        edge_u = x1 if edge == "left" else x2
+        edge_v = (y1 + y2) / 2
+        mode = f"{edge}_side"
+        print(f"  → 窄盒 ({real_w*100:.1f}cm ≤ 8cm), 从{edge}侧边缘中点抓取")
+    else:
+        edge_u = (x1 + x2) / 2
+        edge_v = y1
+        mode = "top_center"
+        print(f"  → 宽盒 ({real_w*100:.1f}cm > 8cm), 从上边缘中心抓取")
+
+    p_cam = transformer.pixel_to_camera(edge_u, edge_v, depth)
+    p_robot = transformer.camera_to_robot(p_cam, flange_pose, debug=True)
+    return p_robot[0], p_robot[1], p_robot[2], mode, p_cam

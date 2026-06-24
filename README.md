@@ -47,6 +47,7 @@ cd /home/nvidia/grasp/识别
 ## 当前关键行为
 
 - 抓取程序启动时固定默认回到第 2 层，避免从上次低层状态恢复造成碰撞。
+- 统一入口仍是 `dipan/shelf_grasp.py`；DOBOT 控制在 `dipan/dobot_arm.py`，灵巧手在 `dipan/aero_gripper.py`，手眼变换在 `dipan/hand_eye.py`，目标选择/抓取规划在 `dipan/grasp_planner.py`。
 - 货架层位姿保存在 `dipan/shelf_layers.json`，放置点保存在 `dipan/place_point.json`，放置过渡点保存在 `dipan/place_transition.json`，收起姿态保存在 `dipan/stow_pose.json`。
 - 第 4 层允许低/负 Z，因为当前基座下方是可用空间；其他层仍保留低 Z 拒绝保护。
 - 第 3/4 层抓取后先上撤到第 1 层再放置；第 4 层会上撤经过第 3 层再到第 1 层。

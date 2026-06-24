@@ -6,7 +6,11 @@
 
 | 文件 | 说明 |
 |------|------|
-| `shelf_grasp.py` | 货架抓取主程序：识别盒子、自动判定侧抓/上抓、执行抓取和放置 |
+| `shelf_grasp.py` | 统一入口和流程编排：菜单、识别、抓取、放置、底盘调用 |
+| `dobot_arm.py` | DOBOT Nova5 TCP 控制：连接、使能、MovL/MovJ、报警恢复、关节安全过渡 |
+| `aero_gripper.py` | Aero Hand 控制：张开、普通抓、上端抓、瓶子抓 |
+| `hand_eye.py` | 手眼坐标转换：像素/深度到机器人基座坐标 |
+| `grasp_planner.py` | 抓取目标选择和抓取点规划：ROI 过滤、深度分层、右侧优先、侧抓/上抓判定 |
 | `hand_eye_calib.py` | ArUco 手眼标定，生成 `calib_eye_in_hand.json` |
 | `move_robot.py` | 底盘 TCP 控制，移动到药架/充电点/取消任务，并返回底盘电量 |
 | `shelf_layers.json` | 货架层观察位姿，程序内 `l` 菜单维护 |
@@ -17,6 +21,8 @@
 | `test_dobot.py` | DOBOT 连接测试 |
 
 ## 抓取主程序
+
+统一仍然从 `shelf_grasp.py` 启动；其他模块由入口脚本导入复用，现场不用分别运行。
 
 启动：
 

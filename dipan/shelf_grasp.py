@@ -1,42 +1,41 @@
 #!/usr/bin/env python3
 """
 货架边缘抓取系统
-- YOLO 检测盒子 → 选最外侧（深度最小）
-- 边缘抓取（bbox 下边缘 = 盒子前缘，而不是中心）
-- DOBOT Nova5 TCP 控制 + Aero Hand 灵巧手
+- 统一入口: 识别、抓取、放置、底盘和菜单流程编排
+- 硬件控制/手眼变换/抓取规划拆到独立模块，便于现场调参
 """
 
 import sys
 import os
 import time
-import socket
-import re
 import json
 import subprocess
 import cv2
 import numpy as np
-from typing import List, Tuple, Optional
+from typing import Optional
 
 # ── 识别模块 ──
 sys.path.insert(0, "/home/nvidia/grasp/识别")
 from orbbec_detect import MedicineLocatorSystem, RealSenseCamera
 from orbbec_detect import _assess_lighting
 
-# ── Aero Hand 灵巧手 ──
-AERO_SDK_PATH = "/home/nvidia/grasp/aero-hand-open/sdk/src"
-sys.path.insert(0, AERO_SDK_PATH)
-from aero_open_sdk.aero_hand import AeroHand
+from aero_gripper import AeroGripper
+from dobot_arm import DobotArm, _clamp_cp
+from grasp_planner import (
+    TARGET_ROI_Y_MIN,
+    TARGET_ROI_Y_MAX,
+    axis_aligned_approach_m,
+    pick_target_box,
+    plan_edge_grasp,
+)
+from hand_eye import FX, FY, HandEyeTransformer
 
 
 # ============================================================
 # 参数
 # ============================================================
-DOBOT_IP = os.getenv("DOBOT_IP", "192.168.5.1")
-DOBOT_PORT = 29999
-
 HAND_LENGTH = 0.25      # 法兰 → 指尖 (米)
 HAND_WEIGHT = 0.6       # 末端重量 (kg), Aero Hand
-HAND_COG_Z = 0.12       # 重心 Z 偏移 (米), 12cm 法兰+Z 方向
 HAND_W_Y = 0.095        # 手 Y 方向宽度 (米)
 HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 
@@ -60,27 +59,14 @@ LOW_Z_GRASP_SPEED = 20
 MOTION_SETTLE_S = float(os.getenv("MOTION_SETTLE_S", "0.2"))  # 运动完成后的短缓冲
 GRASP_SETTLE_S = float(os.getenv("GRASP_SETTLE_S", "0.4"))    # 抓取前进/后退短缓冲
 HAND_CLOSE_WAIT_S = float(os.getenv("HAND_CLOSE_WAIT_S", "3.0"))
-ROBOT_POLL_S = float(os.getenv("ROBOT_POLL_S", "0.2"))        # 等待运动完成时的状态轮询间隔
 PLACE_TRANSITION_CP = os.getenv("PLACE_TRANSITION_CP", "60")       # 过渡点到放置点的平滑比例
 PLACE_RETURN_CLEARANCE_MM = float(os.getenv("PLACE_RETURN_CLEARANCE_MM", "140"))  # 放置后回层的安全抬高量
 PLACE_RETURN_MAX_Z_MM = float(os.getenv("PLACE_RETURN_MAX_Z_MM", "820"))  # 回层抬高上限, 避免高位不可达
-
-# 只在画面中间带里选抓取目标，避免误抓上下层物品。
-# 640x480 时默认保留 y=85~430 附近，可按现场画面调。
-TARGET_ROI_Y_MIN = int(os.getenv("TARGET_ROI_Y_MIN", "85"))
-TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "430"))
-
-# D405 内参（自动读取，这里是 fallback）
-FX, FY = 390.4, 390.0
-CX, CY = 324.5, 241.2
 
 # 调试开关: 屏蔽手, 只测试手眼标定 + 机械臂走位
 SKIP_HAND = False
 # 当前识别目标以瓶子为主, 默认使用瓶子抓取手势；原侧抓/上抓手势仍保留。
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "bottle").lower()
-
-# 机械臂初始观察位姿 (角度制)
-HOME_JOINTS_DEG = [-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]
 
 # 货架层位姿文件 (笛卡尔: x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)
 SHELF_LAYERS_FILE = os.path.join(os.path.dirname(__file__), "shelf_layers.json")
@@ -112,39 +98,6 @@ def _layer_allows_low_z(layer_idx: Optional[int]) -> bool:
 
 def _current_layer_allows_low_z() -> bool:
     return _layer_allows_low_z(_current_layer_idx)
-
-
-def _clamp_speed_pct(speed) -> int:
-    """DOBOT MovL/MovJ 的 v 参数为 1-100 百分比速度。"""
-    try:
-        return max(1, min(100, int(round(float(speed)))))
-    except (TypeError, ValueError):
-        return 100
-
-
-def _motion_poll_count(timeout_s: float = 30.0) -> int:
-    interval = max(0.05, ROBOT_POLL_S)
-    return max(1, int(round(timeout_s / interval)))
-
-
-def _clamp_cp(cp) -> int:
-    """DOBOT 平滑过渡 cp 参数为 0-100。"""
-    try:
-        return max(0, min(100, int(round(float(cp)))))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _axis_aligned_approach_m(current_xyz_m, grasp_xyz_m, forward_dir, min_backoff_m):
-    """保持当前前后距离, 先移动到抓取点对应的上下左右对齐位。"""
-    current = np.array(current_xyz_m, dtype=float)
-    grasp = np.array(grasp_xyz_m, dtype=float)
-    axis = np.array(forward_dir, dtype=float)
-    axis = axis / max(np.linalg.norm(axis), 1e-9)
-    forward_offset = float(np.dot(current - grasp, axis))
-    if forward_offset > -min_backoff_m:
-        forward_offset = -min_backoff_m
-    return grasp + forward_offset * axis
 
 
 def load_shelf_layers():
@@ -534,569 +487,6 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
     else:
         print("\n[Home] 回到 HOME ...")
         arm.go_home()
-
-
-# ============================================================
-# DOBOT TCP 控制
-# ============================================================
-class DobotArm:
-    def __init__(self, ip=DOBOT_IP, port=DOBOT_PORT):
-        self.ip = ip
-        self.port = port
-        self.sock = None
-
-    def connect(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.settimeout(3)
-        self.sock.connect((self.ip, self.port))
-        print(f"[DOBOT] 已连接 {self.ip}:{self.port}")
-        # V4 协议: ClearError → RequestControl → PowerOn → SetPayload → EnableRobot
-        resp = self.send("ClearError()")
-        print(f"[DOBOT] ClearError: {resp}")
-        resp = self.send("RequestControl()")
-        print(f"[DOBOT] RequestControl: {resp}")
-        resp = self.send("PowerOn()")
-        print(f"[DOBOT] PowerOn: {resp}  (等待 10 秒上电...)")
-        time.sleep(10)
-
-        # 设置负载
-        resp = self.send(f"SetPayload({HAND_WEIGHT}, 0, 0, {HAND_COG_Z*1000:.0f})")
-        print(f"[DOBOT] SetPayload: {resp}")
-
-        # 使能 (不带负载参数，负载已用 SetPayload 设置)
-        resp = self.send("EnableRobot()")
-        print(f"[DOBOT] EnableRobot: {resp}")
-        time.sleep(0.5)
-
-        resp = self.send("RobotMode()")
-        print(f"[DOBOT] RobotMode: {resp}")
-        if self._is_enabled_mode(resp):
-            print("[DOBOT] 使能确认")
-        else:
-            mode = self._parse_robot_mode(resp)
-            print(f"[DOBOT] 警告! RobotMode={mode if mode is not None else '?'} 未进入使能状态")
-            self.do_enable()
-
-    @staticmethod
-    def _parse_robot_mode(resp: str) -> Optional[int]:
-        """解析 RobotMode() 返回的模式值: ErrorID,{Value},RobotMode();"""
-        match = re.search(r"\{(-?\d+)\}", resp)
-        if not match:
-            return None
-        return int(match.group(1))
-
-    @classmethod
-    def _is_enabled_mode(cls, resp: str) -> bool:
-        mode = cls._parse_robot_mode(resp)
-        return mode in (5, 6, 7, 8)
-
-    def do_enable(self):
-        """重新使能"""
-        for attempt in range(3):
-            self.send("ClearError()")
-            time.sleep(0.3)
-            self.send("RequestControl()")
-            time.sleep(0.3)
-            resp = self.send("RobotMode()")
-            print(f"[DOBOT] RobotMode: {resp}")
-            if self._is_enabled_mode(resp):
-                print("[DOBOT] 已处于使能状态, 跳过重复上电等待")
-                return True
-            self.send("PowerOn()")
-            time.sleep(0.5)
-            resp = self.send("RobotMode()")
-            mode = self._parse_robot_mode(resp)
-            if mode in (3, 4, None):
-                print(f"[DOBOT] 等待上电 10s (重试 {attempt+1}/3)...")
-                time.sleep(10)
-            else:
-                print(f"[DOBOT] RobotMode={mode}, 跳过完整上电等待")
-            self.send(f"SetPayload({HAND_WEIGHT}, 0, 0, {HAND_COG_Z*1000:.0f})")
-            resp = self.send("EnableRobot()")
-            print(f"[DOBOT] EnableRobot: {resp}")
-            time.sleep(0.5)
-            resp = self.send("RobotMode()")
-            print(f"[DOBOT] RobotMode: {resp}")
-            if self._is_enabled_mode(resp):
-                print("[DOBOT] 使能成功!")
-                return True
-        print("[DOBOT] 使能失败! 请手动检查机械臂状态")
-        return False
-
-    def send(self, cmd: str) -> str:
-        if not cmd.endswith("\n"):
-            cmd += "\n"
-        self.sock.sendall(cmd.encode())
-        resp = b""
-        while True:
-            try:
-                chunk = self.sock.recv(4096)
-                if not chunk:
-                    break
-                resp += chunk
-                if b";" in chunk or b"}" in chunk:
-                    break
-            except socket.timeout:
-                break
-        return resp.decode().strip()
-
-    def reconnect(self):
-        """断开并重新使能"""
-        print("[DOBOT] 重连中...")
-        try:
-            self.sock.close()
-        except:
-            pass
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.settimeout(3)
-        self.sock.connect((self.ip, self.port))
-        self.do_enable()
-
-    def get_pose(self) -> Tuple[float, float, float, float, float, float]:
-        """返回 (x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)，失败时重试"""
-        for attempt in range(3):
-            resp = self.send("GetPose()")
-            nums = re.findall(r"[-+]?\d*\.?\d+", resp)
-            if len(nums) >= 6:
-                pose = tuple(map(float, nums[-6:]))
-                self._last_pose = pose
-                return pose
-            print(f"  [GetPose 重试 {attempt+1}]: {resp}")
-            time.sleep(0.3)
-        if self._last_pose is not None:
-            print(f"  [GetPose] 用缓存位姿")
-            return self._last_pose
-        raise RuntimeError(f"无法解析位姿: {resp}")
-
-    def get_joints(self) -> Tuple[float, float, float, float, float, float]:
-        """返回 (j1, j2, j3, j4, j5, j6)，单位: 度"""
-        resp = self.send("GetAngle()")
-        nums = re.findall(r"[-+]?\d*\.?\d+", resp)
-        if len(nums) >= 6:
-            return tuple(map(float, nums[-6:]))
-        raise RuntimeError(f"无法解析关节角: {resp}")
-
-    _last_pose = None
-
-    def get_error_id(self) -> str:
-        """查询当前报警码，返回错误码字符串"""
-        resp = self.send("GetErrorID()")
-        return resp
-
-    def clear_alarm(self):
-        """清除报警并重新使能"""
-        print("[DOBOT] 清除报警并重新使能...")
-        self.send("ClearError()")
-        time.sleep(0.5)
-        err = self.get_error_id()
-        print(f"[DOBOT] GetErrorID: {err}")
-        self.do_enable()
-
-    def movel(self, x_mm, y_mm, z_mm, rx=None, ry=None, rz=None, speed=100, allow_low_z=False,
-              cp=0, wait=True):
-        """MovL V4: pose = {x, y, z, rx, ry, rz}，rx/ry/rz=None 则保持当前姿态"""
-        try:
-            speed_pct = _clamp_speed_pct(speed)
-            cp_pct = _clamp_cp(cp)
-            if rx is None:
-                pose = self.get_pose()
-                rx, ry, rz = pose[3], pose[4], pose[5]
-            # 安全: Z<50mm 拒绝执行, 防止撞击底座
-            if z_mm < 50 and not allow_low_z:
-                print(f"  [拒绝!] Z={z_mm:.0f}mm 太低, 可能碰撞, 跳过低抓取")
-                return False
-            if z_mm < 50 and allow_low_z:
-                print(f"  [低位放行] Z={z_mm:.0f}mm (第4层/下方工作区)")
-            if z_mm > 1100 or z_mm < -300:
-                print(f"  [警告] Z={z_mm:.0f}mm 可能超出工作范围, 请注意!")
-            cmd = f"MovL(pose={{{x_mm:.1f},{y_mm:.1f},{z_mm:.1f},{rx:.1f},{ry:.1f},{rz:.1f}}},v={speed_pct},cp={cp_pct})"
-            print(f"  >>> {cmd}")
-            resp = self.send(cmd)
-            print(f"  <<< {resp}")
-            if resp.startswith("-"):
-                print(f"  [MovL 被拒绝] 错误码={resp.split(',')[0]}, 可能是位姿不可达")
-                return False  # -1/-2 等是立即拒绝, 不是报警, 不调 clear_alarm
-            if not wait:
-                return True
-            # 等待运动完成: RobotMode=5 表示使能空闲; 7/8 仍在运行/点动中
-            poll_s = max(0.05, ROBOT_POLL_S)
-            seen_moving = False
-            for _ in range(_motion_poll_count()):
-                time.sleep(poll_s)
-                err = self.get_error_id()
-                if "[]" not in err:
-                    print(f"  [报警!] 运动中触发报警: {err}")
-                    print(f"  → 自动 clear_alarm() 恢复...")
-                    self.clear_alarm()
-                    return False
-                rm = self.send("RobotMode()")
-                mode = self._parse_robot_mode(rm)
-                if mode in (7, 8):
-                    seen_moving = True
-                waited_s = (_ + 1) * poll_s
-                if mode == 5 and (seen_moving or waited_s >= 0.5):
-                    return True
-                if mode in (4, 9, 11):
-                    print(f"  [MovL 异常状态] RobotMode={mode}, 停止后续动作")
-                    return False
-            print("  [MovL 超时] 运动 30s 未完成")
-            return False
-        except Exception as e:
-            print(f"  [MovL 异常] {e}")
-            return False
-
-    def go_home(self, speed=100):
-        """MovJ 回到预设观察位姿"""
-        self.movj(HOME_JOINTS_DEG, speed=speed)
-
-    def move_pose_safe(self, pose, joints=None, speed=80):
-        """用关节运动到目标点，避免 MovL 大姿态变化时腕部自碰撞。"""
-        if joints is not None:
-            print("  [安全过渡] 使用记录关节角 MovJ")
-            return self.movj(joints, speed=speed)
-        near_joints = self.inverse_kin_near(pose)
-        if near_joints is not None:
-            print("  [安全过渡] 使用当前关节附近逆解 MovJ")
-            return self.movj(near_joints, speed=speed)
-        print("  [安全过渡] 未能求近邻逆解, 回退 pose MovJ")
-        return self.movj_pose(pose, speed=speed)
-
-    def inverse_kin_near(self, pose):
-        """按当前关节附近求 IK, 降低腕部翻腕/自碰撞概率。"""
-        try:
-            near = self.get_joints()
-            p = pose
-            cmd = (
-                f"InverseKin({p[0]:.1f},{p[1]:.1f},{p[2]:.1f},{p[3]:.1f},{p[4]:.1f},{p[5]:.1f},"
-                f"useJointNear=1,jointNear={{{near[0]:.1f},{near[1]:.1f},{near[2]:.1f},{near[3]:.1f},{near[4]:.1f},{near[5]:.1f}}})"
-            )
-            print(f"  >>> {cmd}")
-            resp = self.send(cmd)
-            print(f"  <<< {resp}")
-            if resp.startswith("-"):
-                return None
-            match = re.match(r"^-?\d+,\{([^{}]+)\},InverseKin", resp)
-            if not match:
-                return None
-            nums = re.findall(r"[-+]?\d*\.?\d+", match.group(1))
-            if len(nums) >= 6:
-                return list(map(float, nums[:6]))
-        except Exception as e:
-            print(f"  [InverseKin 异常] {e}")
-        return None
-
-    def movj_pose(self, pose, speed=80):
-        """MovJ 以关节运动方式到笛卡尔目标位姿。"""
-        p = pose
-        speed_pct = _clamp_speed_pct(speed)
-        cmd = f"MovJ(pose={{{p[0]:.1f},{p[1]:.1f},{p[2]:.1f},{p[3]:.1f},{p[4]:.1f},{p[5]:.1f}}},v={speed_pct})"
-        print(f"  >>> {cmd}")
-        resp = self.send(cmd)
-        print(f"  <<< {resp}")
-        if resp.startswith("-"):
-            print(f"  [MovJ(pose) 被拒绝] 错误码={resp.split(',')[0]}")
-            return False
-        return self._wait_motion_done("MovJ(pose)")
-
-    def movj(self, joints_deg, speed=100):
-        """MovJ 关节运动到目标关节角 (角度制)"""
-        j = joints_deg
-        speed_pct = _clamp_speed_pct(speed)
-        cmd = f"MovJ(joint={{{j[0]:.1f},{j[1]:.1f},{j[2]:.1f},{j[3]:.1f},{j[4]:.1f},{j[5]:.1f}}},v={speed_pct})"
-        print(f"  >>> {cmd}")
-        resp = self.send(cmd)
-        print(f"  <<< {resp}")
-        if resp.startswith("-"):
-            print(f"  [MovJ 被拒绝] 错误码={resp.split(',')[0]}")
-            return False
-        return self._wait_motion_done("MovJ")
-
-    def _wait_motion_done(self, label: str) -> bool:
-        poll_s = max(0.05, ROBOT_POLL_S)
-        seen_moving = False
-        for _ in range(_motion_poll_count()):
-            time.sleep(poll_s)
-            err = self.get_error_id()
-            if "[]" not in err:
-                print(f"  [报警!] {label} 触发报警: {err}")
-                self.clear_alarm()
-                return False
-            rm = self.send("RobotMode()")
-            mode = self._parse_robot_mode(rm)
-            if mode in (7, 8):
-                seen_moving = True
-            waited_s = (_ + 1) * poll_s
-            if mode == 5 and (seen_moving or waited_s >= 0.5):
-                return True
-            if mode in (4, 9, 11):
-                print(f"  [{label} 异常状态] RobotMode={mode}, 停止后续动作")
-                return False
-        print(f"  [{label} 超时] 运动 30s 未完成")
-        return False
-
-    def move_j6(self, target_j6_deg: float):
-        """只调整第六轴到目标角度，其他关节保持当前角度"""
-        joints = list(self.get_joints())
-        old_j6 = joints[5]
-        joints[5] = target_j6_deg
-        print(f"  MovJ J6 {old_j6:.1f}° → {target_j6_deg:.1f}°")
-        return self.movj(joints, speed=80)
-
-    def close(self):
-        self.send("DisableRobot()")
-        self.sock.close()
-        print("[DOBOT] 已断开")
-
-
-# ============================================================
-# 手眼坐标转换
-# ============================================================
-CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib_eye_in_hand.json")
-
-
-class HandEyeTransformer:
-    # 手动覆盖相机在法兰系的位姿 (mm)。设为 None 则使用标定文件。
-    # 相机在法兰 -X 方向约 12cm, 光轴 ∥ 法兰+Z (手指方向), 相机+X→法兰-Y (rz≈-90°)
-    MANUAL_OFFSET_MM = [-120, 0, 0]
-    #MANUAL_OFFSET_MM = None
-
-    def __init__(self, fx=FX, fy=FY, cx=CX, cy=CY):
-        self.fx, self.fy = fx, fy
-        
-        self.cx, self.cy = cx, cy
-        self.flange_pose = None
-        # 加载标定结果
-        self.T_flange_to_cam = np.eye(4)
-        if os.path.exists(CALIB_FILE):
-            with open(CALIB_FILE) as f:
-                calib = json.load(f)
-            self.T_flange_to_cam = np.array(calib["T_flange_to_camera"])
-        # 手动覆盖: 相机光轴∥法兰+Z, 相机+X→法兰-Y (≈ rz=-90°)
-        if self.MANUAL_OFFSET_MM is not None:
-            self.T_flange_to_cam[:3, 3] = np.array(self.MANUAL_OFFSET_MM) / 1000.0
-            rz = np.deg2rad(-90)  # 相机相对于法兰绕 Z 转了 -90°
-            self.T_flange_to_cam[:3, :3] = np.array([
-                [np.cos(rz), -np.sin(rz), 0],
-                [np.sin(rz),  np.cos(rz), 0],
-                [0, 0, 1]
-            ])
-            print(f"[标定] 手动覆盖: 法兰→相机 平移=({self.MANUAL_OFFSET_MM[0]},{self.MANUAL_OFFSET_MM[1]},{self.MANUAL_OFFSET_MM[2]})mm, rz={np.rad2deg(rz):.0f}°")
-        t = self.T_flange_to_cam[:3, 3]
-        print(f"[标定] 已加载手眼标定: t=({t[0]*1000:.1f},{t[1]*1000:.1f},{t[2]*1000:.1f})mm")
-
-    def set_flange(self, pose):
-        self.flange_pose = pose
-
-    def pixel_to_camera(self, u, v, depth_m):
-        """像素 → 相机坐标系 (X右 Y下 Z前, 米)"""
-        x = (u - self.cx) * depth_m / self.fx
-        y = (v - self.cy) * depth_m / self.fy
-        return np.array([x, y, depth_m], dtype=np.float64)
-
-    def camera_to_robot(self, p_cam, flange_pose=None, debug=False):
-        """相机坐标系 → 机器人基座 (米)
-        法兰 RPY 完整变换 (相机与法兰同轴)
-        """
-        pose = flange_pose or self.flange_pose
-
-        # 法兰→基座 (用完整 RPY pose 构造)
-        T_base_flange = np.eye(4)
-        T_base_flange[:3, :3] = self._rpy_to_rot(pose[3], pose[4], pose[5])
-        T_base_flange[:3, 3] = [pose[0]/1000, pose[1]/1000, pose[2]/1000]
-        # base←flange * flange←cam * cam←point
-        p_cam_h = np.append(p_cam, 1.0)
-        p_w = T_base_flange @ self.T_flange_to_cam @ p_cam_h
-
-        if debug:
-            cam_w = T_base_flange @ self.T_flange_to_cam @ np.array([0, 0, 0, 1.0])
-            print(f"\n  [DEBUG 手眼变换]")
-            print(f"    法兰(基座): ({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f})mm  rpy=({pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
-            print(f"    T_cam→flange (mm): ({self.T_flange_to_cam[0,3]*1000:.0f}, {self.T_flange_to_cam[1,3]*1000:.0f}, {self.T_flange_to_cam[2,3]*1000:.0f})")
-            print(f"    相机在世界: ({cam_w[0]:.3f},{cam_w[1]:.3f},{cam_w[2]:.3f})m")
-            print(f"    盒子在相机: ({p_cam[0]:.3f},{p_cam[1]:.3f},{p_cam[2]:.3f})m")
-            print(f"    盒子在世界: ({p_w[0]:.3f},{p_w[1]:.3f},{p_w[2]:.3f})m")
-
-        return p_w[:3]
-
-    @staticmethod
-    def _rpy_to_rot(rx_deg, ry_deg, rz_deg):
-        """RPY (度, extrinsic ZYX) → 3×3 旋转矩阵"""
-        rx, ry, rz = np.deg2rad([rx_deg, ry_deg, rz_deg])
-        Rz = np.array([[np.cos(rz), -np.sin(rz), 0],
-                        [np.sin(rz),  np.cos(rz), 0],
-                        [0, 0, 1]])
-        Ry = np.array([[ np.cos(ry), 0, np.sin(ry)],
-                        [0, 1, 0],
-                        [-np.sin(ry), 0, np.cos(ry)]])
-        Rx = np.array([[1, 0, 0],
-                        [0, np.cos(rx), -np.sin(rx)],
-                        [0, np.sin(rx),  np.cos(rx)]])
-        return Rz @ Ry @ Rx
-
-
-# ============================================================
-# Aero Hand 灵巧手
-# ============================================================
-# 7 关节: thumb_abd, thumb_flex, thumb_mcp, index, middle, ring, pinky (度)
-class AeroGripper:
-    # 完全张开
-    OPEN = [0, 0, 0, 0, 0, 0, 0]
-    # 抓取 (四指弯曲包络)
-    GRASP = [0, 70, 52, 70, 58, 59, 53]
-    #上端抓取
-    GRASP_TOP = [15, 100, 35, 54, 44, 60, 56]
-    # 瓶子抓取
-    GRASP_BOTTLE = [0, 82, 65, 76, 55, 67, 63]
-
-    def __init__(self, port=None):
-        self.hand = AeroHand(port=port)
-        self.ok = True
-
-    def connect(self):
-        print(f"[Aero] 已连接")
-
-    def disconnect(self):
-        if not self.ok:
-            print("[Aero] 已禁用, 跳过断开")
-            return
-        try:
-            self.hand.close()
-            print("[Aero] 已断开")
-        except Exception as e:
-            self.ok = False
-            print(f"[Aero] 断开失败, 已禁用灵巧手: {e}")
-
-    def open(self):
-        if not self.ok:
-            print("[Aero] 已禁用, 跳过张开")
-            return False
-        try:
-            self.hand.set_joint_positions(self.OPEN)
-            print("[Aero] 张开")
-            return True
-        except Exception as e:
-            self.ok = False
-            print(f"[Aero] 张开失败, 已禁用灵巧手: {e}")
-            return False
-
-    def close(self, top=False, mode=None):
-        if not self.ok:
-            print("[Aero] 已禁用, 跳过抓取")
-            return False
-        try:
-            if mode == "bottle":
-                pose = self.GRASP_BOTTLE
-                label = "瓶子抓取"
-            elif top:
-                pose = self.GRASP_TOP
-                label = "上端抓取"
-            else:
-                pose = self.GRASP
-                label = "抓取"
-            self.hand.set_joint_positions(pose)
-            print(f"[Aero] {label}")
-            return True
-        except Exception as e:
-            self.ok = False
-            print(f"[Aero] 抓取失败, 已禁用灵巧手: {e}")
-            return False
-
-
-# ============================================================
-# 抓取规划
-# ============================================================
-def pick_target_box(detections):
-    """
-    货架分层抓取:
-      1. 先按画面纵向 ROI 过滤上下层
-      2. 按深度分组 (同层盒子深度差 < 0.15m)
-      3. 选最前层 (深度最小)
-      4. 在该层里从右往左选目标
-    """
-    roi_filtered = []
-    roi_rejected = []
-    for d in detections:
-        y_center = (d.bbox[1] + d.bbox[3]) / 2
-        if TARGET_ROI_Y_MIN <= y_center <= TARGET_ROI_Y_MAX:
-            roi_filtered.append(d)
-        else:
-            roi_rejected.append(d)
-    if roi_rejected:
-        print(f"  ROI过滤: 跳过上下层/边缘候选 {len(roi_rejected)} 个, y范围={TARGET_ROI_Y_MIN}-{TARGET_ROI_Y_MAX}")
-    if not roi_filtered:
-        print("  [警告] ROI 内没有候选, 回退使用全部检测框")
-        roi_filtered = list(detections)
-
-    valid = [d for d in roi_filtered if d.depth_m and d.depth_m > 0]
-    if not valid:
-        valid = sorted(roi_filtered, key=lambda d: ((d.bbox[0] + d.bbox[2]) / 2), reverse=True)
-        if valid:
-            print("  无有效深度, 回退选 ROI 内最右侧候选")
-            return valid[0], "right"
-        return None, None
-
-    # 按深度分组 (容差 0.15m)
-    valid.sort(key=lambda d: d.depth_m)
-    layers = []
-    current_layer = [valid[0]]
-    for d in valid[1:]:
-        if abs(d.depth_m - current_layer[0].depth_m) < 0.15:
-            current_layer.append(d)
-        else:
-            layers.append(current_layer)
-            current_layer = [d]
-    layers.append(current_layer)
-
-    # 选最前层 (深度最小的那层)
-    front_layer = layers[0]
-    print(f"  检测到 {len(layers)} 层货架, 选最前层 ({len(front_layer)} 个盒子, 深度~{front_layer[0].depth_m:.2f}m)")
-    for i, layer in enumerate(layers):
-        depths = [f"{d.depth_m:.2f}" for d in layer]
-        print(f"    第{i+1}层: {len(layer)}个盒子 depth=[{', '.join(depths)}]m")
-
-    # 在最前层从右往左选目标, 始终从右侧边缘抓取。
-    target = max(front_layer, key=lambda d: ((d.bbox[0] + d.bbox[2]) / 2))
-    tx = (target.bbox[0] + target.bbox[2]) / 2
-    ty = (target.bbox[1] + target.bbox[3]) / 2
-    print(f"  右侧优先: 选 bbox中心=({tx:.0f},{ty:.0f}) 的目标")
-    return target, "right"
-
-
-def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4):
-    """
-    边缘抓取: 
-      - 盒宽 ≤ 8cm: 侧边缘 (x1/x2) + 上边缘 (y1), 手从外侧进入
-      - 盒宽 > 8cm: 上边缘 (y1) + 中心 X, 手从上方进入
-    返回: (world_x, world_y, world_z, grasp_mode)
-    """
-    x1, y1, x2, y2 = det.bbox
-    depth = det.depth_m or 0.5
-
-    # 计算盒子实际宽度 (米)
-    pixel_w = x2 - x1
-    real_w = pixel_w * depth / fx  # 小孔模型: pixel = fx * real / depth
-    print(f"  盒宽: {pixel_w}px → {real_w*100:.1f}cm")
-
-    if real_w <= 0.08:
-        # 窄盒 → 侧边抓: 侧边缘(u) + 垂直中点(v)
-        if edge == "left":
-            edge_u = x1
-        else:
-            edge_u = x2
-        edge_v = (y1 + y2) / 2
-        mode = f"{edge}_side"
-        print(f"  → 窄盒 ({real_w*100:.1f}cm ≤ 8cm), 从{edge}侧边缘中点抓取")
-    else:
-        # 宽盒 → 上方抓: 中心 X + 上边缘
-        edge_u = (x1 + x2) / 2
-        edge_v = y1
-        mode = "top_center"
-        print(f"  → 宽盒 ({real_w*100:.1f}cm > 8cm), 从上边缘中心抓取")
-
-    # 像素 → 相机 3D → 机器人基座
-    p_cam = transformer.pixel_to_camera(edge_u, edge_v, depth)
-    p_robot = transformer.camera_to_robot(p_cam, flange_pose, debug=True)
-    return p_robot[0], p_robot[1], p_robot[2], mode, p_cam
 
 
 # ============================================================
@@ -1613,7 +1003,7 @@ def main():
             grasp_pt = flange_pt + grasp_advance_m * fz_dir
 
             # 对齐: 保持当前前后距离, 先移动到抓取点对应的上下左右位置。
-            approach_pt = _axis_aligned_approach_m(
+            approach_pt = axis_aligned_approach_m(
                 np.array(flange_pose[:3]) / 1000.0,
                 grasp_pt,
                 fz_dir,
@@ -1751,7 +1141,7 @@ def main():
                 fz_dir = R_f[:, 2]
                 flange_pt = fingertip_w - HAND_LENGTH * fz_dir
                 grasp_pt = flange_pt + grasp_advance_m * fz_dir
-                approach_pt = _axis_aligned_approach_m(
+                approach_pt = axis_aligned_approach_m(
                     np.array(flange_pose[:3]) / 1000.0,
                     grasp_pt,
                     fz_dir,
