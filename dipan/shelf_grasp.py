@@ -41,7 +41,7 @@ HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.13, 0.02, 0.015)
+SIDE_GRASP_OFFSET_M = (-0.13, 0.02, 0.02)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.03)
 
@@ -65,6 +65,8 @@ PLACE_RETURN_MAX_Z_MM = float(os.getenv("PLACE_RETURN_MAX_Z_MM", "820"))  # 回�
 
 # 调试开关: 屏蔽手, 只测试手眼标定 + 机械臂走位
 SKIP_HAND = False
+# YOLO 显示/输出阈值。抓取现场默认放宽到 0.3，避免框不上。
+DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.3"))
 # 当前识别目标以瓶子为主, 默认使用瓶子抓取手势；原侧抓/上抓手势仍保留。
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "bottle").lower()
 
@@ -745,7 +747,7 @@ def main():
     locator = MedicineLocatorSystem(
         model_path="/home/nvidia/grasp/识别/best.pt",
         mapping_path="/home/nvidia/grasp/识别/shelf_mapping.yaml",
-        conf_threshold=0.5,
+        conf_threshold=DETECT_CONF_THRESHOLD,
         use_ocr=False,
     )
     locator.init_camera = lambda: None

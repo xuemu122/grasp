@@ -21,7 +21,7 @@ cd /home/nvidia/grasp/dipan
 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 
 # 动作节奏调试：缩短运动后缓冲、状态轮询和抓取等待
-MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAIT_S=2.5 ROBOT_POLL_S=0.15 PLACE_TRANSITION_CP=60 PLACE_RETURN_CLEARANCE_MM=140 PLACE_RETURN_MAX_Z_MM=820 \
+DETECT_CONF_THRESHOLD=0.3 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAIT_S=2.5 ROBOT_POLL_S=0.15 PLACE_TRANSITION_CP=60 PLACE_RETURN_CLEARANCE_MM=140 PLACE_RETURN_MAX_Z_MM=820 \
   DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 
 # 手眼标定
@@ -57,7 +57,7 @@ cd /home/nvidia/grasp/识别
 - 当前灵巧手侧面抓默认使用瓶子抓取手势；上端抓取仍使用上端手势。如需侧面抓也回到原手势，可用 `HAND_GRASP_MODE=auto` 启动。
 - 机械臂 `MovL`/`MovJ` 会把代码里的 `speed` 参数下发为 DOBOT `v=1..100`；动作节奏可用 `MOTION_SETTLE_S`、`GRASP_SETTLE_S`、`HAND_CLOSE_WAIT_S`、`ROBOT_POLL_S` 微调，放置回程安全高度可用 `PLACE_RETURN_CLEARANCE_MM` 调整。
 - 抓取主程序里 `b` 可切换底盘放置流程：开启后会先回第 2 层，再到收起姿态，然后调用 `move_robot.py place`，等待底盘到达后再机械臂放置。
-- 识别程序默认降低置信度阈值，并打印 YOLO 原始候选数量，方便排查新模型无框问题。
+- 抓取主程序识别阈值默认 `DETECT_CONF_THRESHOLD=0.3`；独立识别调试程序会打印 YOLO 原始候选数量，方便排查新模型无框问题。
 - `move_robot.py` 下发底盘移动后默认等待 `/api/robot_status` 的 `move_status=succeeded`，并额外查询 `/api/get_power_status` 返回 `power_status`。
 
 各子目录的详细操作见对应 README。
