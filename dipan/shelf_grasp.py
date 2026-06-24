@@ -958,7 +958,9 @@ def main():
                   f"depth={target.depth_m:.3f}m ===")
 
             # ── 计算抓取位姿 ──
-            wx, wy, wz, grip_mode, p_cam = plan_edge_grasp(target, edge, transformer, flange_pose, fx=camera.fx)
+            wx, wy, wz, grip_mode, p_cam, grip_pixel = plan_edge_grasp(
+                target, edge, transformer, flange_pose, fx=camera.fx
+            )
             print(f"抓取点 ({grip_mode}): ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
 
             # 重新画正确的抓取点 (覆盖上面简单画的黄点)
@@ -972,14 +974,8 @@ def main():
                 cv2.putText(viz, f"{d.class_name or '?'} {d.depth_m:.2f}m" if d.depth_m else f"{d.class_name or '?'}",
                             (int(d.bbox[0]), int(d.bbox[1]) - 8),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
-            # 目标抓取点: 侧边抓取用边缘中点, 上方抓取用顶边中心
-            x1, y1, x2, y2 = target.bbox
-            if "side" in grip_mode:
-                gx = int(x2 if "right" in grip_mode else x1)
-                gy = int((y1 + y2) / 2)
-            else:
-                gx = int((x1 + x2) / 2)
-                gy = int(y1)
+            # 目标抓取点: 使用规划模块返回的真实像素点，避免调试图仍显示旧的 bbox 中点。
+            gx, gy = int(round(grip_pixel[0])), int(round(grip_pixel[1]))
             cv2.circle(viz, (gx, gy), 6, (0, 255, 255), -1)
             cv2.putText(viz, "GRIP", (gx + 8, gy - 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)

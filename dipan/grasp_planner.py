@@ -95,24 +95,32 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4):
     print(f"  盒宽: {pixel_w}px → {real_w*100:.1f}cm, 盒高: {pixel_h}px → {real_h*100:.1f}cm")
 
     if real_w <= 0.08:
-        if real_h <= SIDE_GRASP_MIN_HEIGHT_M:
+        edge_u = x1 if edge == "left" else x2
+        p_bottom_cam = transformer.pixel_to_camera(edge_u, y2, depth)
+        p_top_cam = transformer.pixel_to_camera(edge_u, y1, depth)
+        p_bottom_robot = transformer.camera_to_robot(p_bottom_cam, flange_pose, debug=False)
+        p_top_robot = transformer.camera_to_robot(p_top_cam, flange_pose, debug=False)
+        world_h = p_top_robot[2] - p_bottom_robot[2]
+
+        if real_h <= SIDE_GRASP_MIN_HEIGHT_M or world_h <= SIDE_GRASP_MIN_HEIGHT_M:
             edge_u = (x1 + x2) / 2
             edge_v = y1
             mode = "top_center"
             print(
-                f"  → 窄盒但高度 {real_h*100:.1f}cm ≤ 侧抓安全高度 "
+                f"  → 窄盒但高度 {real_h*100:.1f}cm / Z高差 {world_h*100:.1f}cm ≤ 侧抓安全高度 "
                 f"{SIDE_GRASP_MIN_HEIGHT_M*100:.1f}cm, 改为上面抓取"
             )
         else:
-            edge_u = x1 if edge == "left" else x2
             midpoint_height_m = real_h / 2
-            side_height_m = max(midpoint_height_m, SIDE_GRASP_MIN_HEIGHT_M)
-            edge_v = y2 - side_height_m * fy / depth
+            pixel_ratio = max(midpoint_height_m / real_h, SIDE_GRASP_MIN_HEIGHT_M / world_h)
+            pixel_ratio = max(0.0, min(1.0, pixel_ratio))
+            edge_v = y2 + pixel_ratio * (y1 - y2)
             edge_v = max(y1, min(y2, edge_v))
             mode = f"{edge}_side"
+            side_height_m = world_h * pixel_ratio
             print(
                 f"  → 窄盒 ({real_w*100:.1f}cm ≤ 8cm), 从{edge}侧边缘抓取, "
-                f"抓点离底部 {side_height_m*100:.1f}cm"
+                f"抓点离底部 Z高差 {side_height_m*100:.1f}cm, 像素=({edge_u:.0f},{edge_v:.0f})"
             )
     else:
         edge_u = (x1 + x2) / 2
@@ -122,4 +130,4 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4):
 
     p_cam = transformer.pixel_to_camera(edge_u, edge_v, depth)
     p_robot = transformer.camera_to_robot(p_cam, flange_pose, debug=True)
-    return p_robot[0], p_robot[1], p_robot[2], mode, p_cam
+    return p_robot[0], p_robot[1], p_robot[2], mode, p_cam, (edge_u, edge_v)
