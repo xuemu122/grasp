@@ -49,7 +49,8 @@ DETECT_CONF_THRESHOLD=0.3 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAI
 - `PLACE_RETURN_CLEARANCE_MM`：放置后回层时先向上抬高的安全量，默认 `140` mm；如果回第 2 层仍擦碰，可以继续调大。
 - `PLACE_RETURN_MAX_Z_MM`：放置后回层抬高的默认上限，默认 `820` mm；用于避免在靠外放置点抬得过高触发机械臂报警。
 - `GRASP_APPROACH_BACKOFF_M`：抓取前保持的最小前后退距，默认 `0.15` m；抓取时会先对齐上下左右，再沿手指方向过去。
-- `SIDE_GRASP_MIN_HEIGHT_M`：侧面抓取点离物体底部的最小高度，默认 `0.055` m；物体高度不够时自动改为上面抓。
+- `SIDE_GRASP_MIN_HEIGHT_M`：侧面抓取点离物体底部的最小高度，默认 `0.06` m；物体高度不够时自动改为上面抓。
+- `LAYER_Z_TOLERANCE_M`：当前层世界 Z 过滤容差，默认 `0.16` m；如果误识别上一层会被剔除，现场层高/标定偏差大时可调大。
 
 代码里的 `speed` 参数会随 `MovL`/`MovJ` 下发为 DOBOT `v=1..100` 百分比速度；超过 100 的值会自动夹到 100。记录放置过渡点后，前往最终放置点和放置后回层都会连续下发路径；回层会先原地抬高，再高位平滑经过过渡点，避免低空横扫。
 
@@ -133,7 +134,7 @@ q   返回
 - 盒宽 `<= 8cm`：侧面抓，使用 `SIDE_GRASP_OFFSET_M`
 - 盒宽 `> 8cm`：上面抓，使用 `TOP_GRASP_OFFSET_M`，抓取前 J6 转到 `TOP_J6_DEG`
 
-侧面抓取点不会低于物体底部上方 `5.5cm`。如果检测框估算出的物体高度小于等于 `5.5cm`，会自动改成上面抓取，避免手掌或手指低位撞到货架/物体。
+侧面抓取点不会低于物体底部上方 `6cm`。如果检测框估算出的物体高度小于等于 `6cm`，会自动改成上面抓取，避免手掌或手指低位撞到货架/物体。
 
 机械臂路径仍按侧抓/上抓自动判定。灵巧手侧面抓当前默认使用瓶子抓取手势：
 
@@ -156,6 +157,7 @@ HAND_GRASP_MODE=auto DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 目标选择在 `pick_target_box()` 内完成。当前规则：
 
 - 先按画面纵向 ROI 过滤上下层物品，默认只保留 `y=85~430` 的候选。
+- 再按当前层记录位姿的世界 Z 过滤上下层，默认容差 `±16cm`。
 - 在 ROI 内按深度分层，选最前层。
 - 在最前层从右往左选目标，始终从右侧边缘抓取。
 
@@ -163,6 +165,13 @@ HAND_GRASP_MODE=auto DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 
 ```bash
 TARGET_ROI_Y_MIN=170 TARGET_ROI_Y_MAX=320 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
+```
+
+如果当前层目标也被层高过滤误杀，可以临时调大或关闭：
+
+```bash
+LAYER_Z_TOLERANCE_M=0.22 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
+LAYER_Z_FILTER_ENABLE=0 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 ```
 
 检测截图 `/tmp/shelf_detection.jpg` 会画蓝色 ROI 边界线。

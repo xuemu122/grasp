@@ -48,10 +48,10 @@ TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.03)
 # 上面抓取前把第六轴转到手心向下的实测角度
 TOP_J6_DEG = 8.3
 
-# 抓取前悬停/探入距离
-APPROACH_LIFT_M = 0.00    # 悬停位比目标法兰点高 1cm
-GRASP_ADVANCE_M = 0.04    # 抓取时沿手指方向前进 5cm
-LOW_Z_GRASP_ADVANCE_M = 0.035  # 第4层低位空间更紧, 先只探入 1.5cm
+# 抓取执行参数: 对齐位 -> 沿手指方向前进抓取 -> 后退。
+APPROACH_LIFT_M = 0.00    # 对齐位额外抬高量, 当前不抬高
+GRASP_ADVANCE_M = 0.04    # 抓取时沿手指方向前进 4cm
+LOW_Z_GRASP_ADVANCE_M = 0.035  # 第4层低位空间更紧, 只探入 3.5cm
 GRASP_APPROACH_BACKOFF_M = float(os.getenv("GRASP_APPROACH_BACKOFF_M", "0.15"))  # 抓取前沿手指方向后退对齐
 TOP_APPROACH_BACKOFF_M = 0.15  # 上面抓时先在抓取轴线上退 15cm 再直线前进
 LOW_Z_APPROACH_SPEED = 60
@@ -66,7 +66,7 @@ PLACE_RETURN_MAX_Z_MM = float(os.getenv("PLACE_RETURN_MAX_Z_MM", "820"))  # 回�
 # 调试开关: 屏蔽手, 只测试手眼标定 + 机械臂走位
 SKIP_HAND = False
 # YOLO 显示/输出阈值。抓取现场默认放宽到 0.3，避免框不上。
-DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.3"))
+DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.28"))
 # 当前识别目标以瓶子为主, 默认使用瓶子抓取手势；原侧抓/上抓手势仍保留。
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "bottle").lower()
 
@@ -951,8 +951,16 @@ def main():
                 print(f"  → 原图已保存: {cv2_path}")
                 continue
 
-            # ── 选最靠边的盒子 ──
-            target, edge = pick_target_box(detections)
+            # ── 选最靠边的盒子。先按当前层记录的世界 Z 过滤上下层，避免误抓上一层。 ──
+            current_layer_z_m = None
+            if _current_layer_idx in _shelf_layer_poses:
+                current_layer_z_m = _shelf_layer_poses[_current_layer_idx][0][2] / 1000.0
+            target, edge = pick_target_box(
+                detections,
+                transformer=transformer,
+                flange_pose=flange_pose,
+                layer_z_m=current_layer_z_m,
+            )
             if target is None:
                 print("无法确定目标")
                 continue

@@ -8,7 +8,9 @@ import numpy as np
 
 TARGET_ROI_Y_MIN = int(os.getenv("TARGET_ROI_Y_MIN", "85"))
 TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "430"))
-SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv("SIDE_GRASP_MIN_HEIGHT_M", "0.055"))
+SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv("SIDE_GRASP_MIN_HEIGHT_M", "0.06"))
+LAYER_Z_FILTER_ENABLE = os.getenv("LAYER_Z_FILTER_ENABLE", "1").lower() in ("1", "true", "yes", "on")
+LAYER_Z_TOLERANCE_M = float(os.getenv("LAYER_Z_TOLERANCE_M", "0.16"))
 
 
 def axis_aligned_approach_m(current_xyz_m, grasp_xyz_m, forward_dir, min_backoff_m):
@@ -23,13 +25,25 @@ def axis_aligned_approach_m(current_xyz_m, grasp_xyz_m, forward_dir, min_backoff
     return grasp + forward_offset * axis
 
 
-def pick_target_box(detections):
+def _det_center_robot_z(det, transformer, flange_pose):
+    if not det.depth_m or det.depth_m <= 0:
+        return None
+    x1, y1, x2, y2 = det.bbox
+    u = (x1 + x2) / 2
+    v = (y1 + y2) / 2
+    p_cam = transformer.pixel_to_camera(u, v, det.depth_m)
+    p_robot = transformer.camera_to_robot(p_cam, flange_pose, debug=False)
+    return float(p_robot[2])
+
+
+def pick_target_box(detections, transformer=None, flange_pose=None, layer_z_m=None):
     """
     货架分层抓取:
       1. 先按画面纵向 ROI 过滤上下层
-      2. 按深度分组 (同层盒子深度差 < 0.15m)
-      3. 选最前层 (深度最小)
-      4. 在该层里从右往左选目标
+      2. 按当前货架层世界 Z 过滤上下层
+      3. 按深度分组 (同层盒子深度差 < 0.15m)
+      4. 选最前层 (深度最小)
+      5. 在该层里从右往左选目标
     """
     roi_filtered = []
     roi_rejected = []
@@ -44,6 +58,33 @@ def pick_target_box(detections):
     if not roi_filtered:
         print("  [警告] ROI 内没有候选, 回退使用全部检测框")
         roi_filtered = list(detections)
+
+    if LAYER_Z_FILTER_ENABLE and transformer is not None and flange_pose is not None and layer_z_m is not None:
+        z_filtered = []
+        z_rejected = []
+        for d in roi_filtered:
+            z = _det_center_robot_z(d, transformer, flange_pose)
+            if z is None:
+                z_filtered.append(d)
+                continue
+            dz = z - layer_z_m
+            if abs(dz) <= LAYER_Z_TOLERANCE_M:
+                z_filtered.append(d)
+            else:
+                z_rejected.append((d, z, dz))
+        if z_rejected:
+            details = ", ".join(
+                f"{d.class_name or '?'} z={z*1000:.0f}mm Δ={dz*1000:+.0f}mm"
+                for d, z, dz in z_rejected[:6]
+            )
+            print(
+                f"  层高过滤: 跳过非当前层候选 {len(z_rejected)} 个 "
+                f"(当前层Z≈{layer_z_m*1000:.0f}mm, 容差±{LAYER_Z_TOLERANCE_M*1000:.0f}mm): {details}"
+            )
+        if not z_filtered:
+            print("  [停止] 层高过滤后没有当前层候选, 本次不抓取")
+            return None, None
+        roi_filtered = z_filtered
 
     valid = [d for d in roi_filtered if d.depth_m and d.depth_m > 0]
     if not valid:
@@ -80,7 +121,7 @@ def pick_target_box(detections):
 def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4):
     """
     边缘抓取:
-      - 盒宽 <= 8cm: 侧边缘 (x1/x2) + 离底部至少 5.5cm 的安全高度
+      - 盒宽 <= 8cm: 侧边缘 (x1/x2) + 离底部至少 SIDE_GRASP_MIN_HEIGHT_M 的安全高度
       - 盒宽 > 8cm: 上边缘 (y1) + 中心 X
     返回: (world_x, world_y, world_z, grasp_mode, p_cam)
     """
