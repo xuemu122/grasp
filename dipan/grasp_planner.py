@@ -8,6 +8,7 @@ import numpy as np
 
 TARGET_ROI_Y_MIN = int(os.getenv("TARGET_ROI_Y_MIN", "85"))
 TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "430"))
+SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv("SIDE_GRASP_MIN_HEIGHT_M", "0.055"))
 
 
 def axis_aligned_approach_m(current_xyz_m, grasp_xyz_m, forward_dir, min_backoff_m):
@@ -79,22 +80,40 @@ def pick_target_box(detections):
 def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4):
     """
     边缘抓取:
-      - 盒宽 <= 8cm: 侧边缘 (x1/x2) + 垂直中点 (v)
+      - 盒宽 <= 8cm: 侧边缘 (x1/x2) + 离底部至少 5.5cm 的安全高度
       - 盒宽 > 8cm: 上边缘 (y1) + 中心 X
     返回: (world_x, world_y, world_z, grasp_mode, p_cam)
     """
     x1, y1, x2, y2 = det.bbox
     depth = det.depth_m or 0.5
+    fy = getattr(transformer, "fy", fx)
 
     pixel_w = x2 - x1
+    pixel_h = y2 - y1
     real_w = pixel_w * depth / fx
-    print(f"  盒宽: {pixel_w}px → {real_w*100:.1f}cm")
+    real_h = pixel_h * depth / fy
+    print(f"  盒宽: {pixel_w}px → {real_w*100:.1f}cm, 盒高: {pixel_h}px → {real_h*100:.1f}cm")
 
     if real_w <= 0.08:
-        edge_u = x1 if edge == "left" else x2
-        edge_v = (y1 + y2) / 2
-        mode = f"{edge}_side"
-        print(f"  → 窄盒 ({real_w*100:.1f}cm ≤ 8cm), 从{edge}侧边缘中点抓取")
+        if real_h <= SIDE_GRASP_MIN_HEIGHT_M:
+            edge_u = (x1 + x2) / 2
+            edge_v = y1
+            mode = "top_center"
+            print(
+                f"  → 窄盒但高度 {real_h*100:.1f}cm ≤ 侧抓安全高度 "
+                f"{SIDE_GRASP_MIN_HEIGHT_M*100:.1f}cm, 改为上面抓取"
+            )
+        else:
+            edge_u = x1 if edge == "left" else x2
+            midpoint_height_m = real_h / 2
+            side_height_m = max(midpoint_height_m, SIDE_GRASP_MIN_HEIGHT_M)
+            edge_v = y2 - side_height_m * fy / depth
+            edge_v = max(y1, min(y2, edge_v))
+            mode = f"{edge}_side"
+            print(
+                f"  → 窄盒 ({real_w*100:.1f}cm ≤ 8cm), 从{edge}侧边缘抓取, "
+                f"抓点离底部 {side_height_m*100:.1f}cm"
+            )
     else:
         edge_u = (x1 + x2) / 2
         edge_v = y1
