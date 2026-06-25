@@ -9,6 +9,7 @@ import numpy as np
 TARGET_ROI_Y_MIN = int(os.getenv("TARGET_ROI_Y_MIN", "85"))
 TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "430"))
 SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv("SIDE_GRASP_MIN_HEIGHT_M", "0.06"))
+SIDE_GRASP_MAX_HEIGHT_M = float(os.getenv("SIDE_GRASP_MAX_HEIGHT_M", "0.11"))  # 侧抓点离底部最大高度，防止磕相机
 LAYER_Z_FILTER_ENABLE = os.getenv("LAYER_Z_FILTER_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 LAYER_Z_TOLERANCE_M = float(os.getenv("LAYER_Z_TOLERANCE_M", "0.16"))
 MAX_GRASP_DEPTH_M = float(os.getenv("MAX_GRASP_DEPTH_M", "0.38"))  # 超过此深度的物品不抓取，避免碰撞
@@ -171,6 +172,11 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
             edge_v = max(y1, min(y2, edge_v))
             mode = f"{edge}_side"
             side_height_m = world_h * pixel_ratio
+            if side_height_m > SIDE_GRASP_MAX_HEIGHT_M:
+                side_height_m = SIDE_GRASP_MAX_HEIGHT_M
+                pixel_ratio = side_height_m / max(world_h, 0.001)
+                edge_v = y2 + pixel_ratio * (y1 - y2)
+                edge_v = max(y1, min(y2, edge_v))
             print(
                 f"  → 窄盒 ({real_w*100:.1f}cm ≤ 8cm), 从{edge}侧边缘抓取, "
                 f"抓点离底部 Z高差 {side_height_m*100:.1f}cm, 像素=({edge_u:.0f},{edge_v:.0f})"
