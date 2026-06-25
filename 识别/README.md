@@ -418,6 +418,15 @@ JSON 示例：
 yolo detect train data=识别/madata.yaml model=yolov8n.pt imgsz=640 epochs=100
 ```
 
+复杂光照/塑料瓶反光场景可以先生成一版 OA-DG 思路的对象感知增强数据集，再训练：
+
+```bash
+python3 识别/oa_mix_augment_yolo.py --data 识别/madata.yaml --classes 70-77,80-86 --copies 3 --include-original
+yolo detect train data=/home/nvidia/grasp/dataset/yolo_rpc_test_oa_mix/dataset.yaml model=yolov8n.pt imgsz=640 epochs=100
+```
+
+`--classes` 用来优先增强饮料/塑料瓶类；如果想所有类别都做对象感知增强，可以去掉这个参数。
+
 建议：
 
 - 先拆分 `train/val/test`，不要三个阶段共用同一目录。

@@ -16,3 +16,4 @@ __pycache__/
 
 # Dataset captures
 识别/dataset_captures/
+dataset/*_oa_mix/
