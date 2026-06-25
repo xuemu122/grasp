@@ -978,7 +978,7 @@ def main():
 
             # ── 计算抓取位姿 ──
             wx, wy, wz, grip_mode, p_cam, grip_pixel = plan_edge_grasp(
-                target, edge, transformer, flange_pose, fx=camera.fx
+                target, edge, transformer, flange_pose, fx=camera.fx, camera=camera, depth_img=best_depth
             )
             print(f"抓取点 ({grip_mode}): ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
 

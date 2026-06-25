@@ -118,7 +118,7 @@ def pick_target_box(detections, transformer=None, flange_pose=None, layer_z_m=No
     return target, "right"
 
 
-def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4):
+def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, depth_img=None):
     """
     边缘抓取:
       - 盒宽 <= 8cm: 侧边缘 (x1/x2) + 离底部至少 SIDE_GRASP_MIN_HEIGHT_M 的安全高度
@@ -169,6 +169,14 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4):
         mode = "top_center"
         print(f"  → 宽盒 ({real_w*100:.1f}cm > 8cm), 从上边缘中心抓取")
 
-    p_cam = transformer.pixel_to_camera(edge_u, edge_v, depth)
+    grasp_depth = depth
+    if camera is not None and depth_img is not None:
+        sampled_depth = camera.get_depth_at(depth_img, edge_u, edge_v, radius=10)
+        if sampled_depth and sampled_depth > 0:
+            grasp_depth = sampled_depth
+            if abs(grasp_depth - depth) > 0.015:
+                print(f"  抓取点深度修正: bbox中心 {depth:.3f}m → 抓取点 {grasp_depth:.3f}m")
+
+    p_cam = transformer.pixel_to_camera(edge_u, edge_v, grasp_depth)
     p_robot = transformer.camera_to_robot(p_cam, flange_pose, debug=True)
     return p_robot[0], p_robot[1], p_robot[2], mode, p_cam, (edge_u, edge_v)

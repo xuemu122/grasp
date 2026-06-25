@@ -46,6 +46,7 @@ class RealSenseCamera:
         self.device_id = device_id
         self._pipeline = None
         self._config = None
+        self._align = None
         self.cap_color = None
         self.use_sdk = False
         self._connected = False
@@ -72,6 +73,7 @@ class RealSenseCamera:
                                        rs.format.z16, self.fps)
 
             self._pipeline.start(self._config)
+            self._align = rs.align(rs.stream.color)
             self.use_sdk = True
             self._connected = True
 
@@ -82,7 +84,8 @@ class RealSenseCamera:
             except:
                 pass
             for _ in range(30):
-                self._pipeline.wait_for_frames()
+                frames = self._pipeline.wait_for_frames()
+                self._align.process(frames)
 
             # 读取实际内参
             try:
@@ -95,7 +98,7 @@ class RealSenseCamera:
             except Exception:
                 pass
 
-            print(f"[相机] RealSense 已连接 ({self.width}x{self.height}@{self.fps}fps)")
+            print(f"[相机] RealSense 已连接 ({self.width}x{self.height}@{self.fps}fps), 深度已对齐到彩色图")
         except ImportError:
             print("[相机] pyrealsense2 未安装，使用 OpenCV 回退...")
             print("       安装: pip install pyrealsense2")
@@ -144,6 +147,8 @@ class RealSenseCamera:
         try:
             import pyrealsense2 as rs
             frames = self._pipeline.wait_for_frames(timeout_ms=1000)
+            if self._align is not None:
+                frames = self._align.process(frames)
 
             color_frame = frames.get_color_frame()
             depth_frame = frames.get_depth_frame()
@@ -168,13 +173,12 @@ class RealSenseCamera:
             print(f"[相机] 读取帧失败: {e}")
             return None, None
 
-    def get_depth_at(self, depth_img, cx, cy, box, radius=15):
-        """获取目标区域的中位数深度值（米），无效时返回 None"""
+    def get_depth_at(self, depth_img, cx, cy, box=None, radius=15):
+        """获取指定像素附近的中位数深度值（米），无效时返回 None。"""
         if depth_img is None:
             return None
-        x1, y1, x2, y2 = box
-        cx = (x1 + x2) // 2
-        cy = (y1 + y2) // 2
+        cx = int(round(cx))
+        cy = int(round(cy))
         h, w = depth_img.shape[:2]
         y_start = max(cy - radius, 0)
         y_end = min(cy + radius, h)
@@ -207,6 +211,7 @@ class RealSenseCamera:
             except:
                 pass
             self._pipeline = None
+            self._align = None
         if self.cap_color:
             self.cap_color.release()
 
