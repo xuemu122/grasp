@@ -176,6 +176,8 @@ LAYER_Z_FILTER_ENABLE=0 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 
 检测截图 `/tmp/shelf_detection.jpg` 会画蓝色 ROI 边界线。
 
+每次抓取识别后还会保存 `/tmp/shelf_yolo_candidates.jpg`：绿色框表示达到 `DETECT_CONF_THRESHOLD`，橙色框表示 YOLO 有原始候选但置信度低于阈值；图左上角会写 raw/显示/低置信数量和光照评分。
+
 每次抓取前会进入微调界面，显示当前模式、偏移参数和固化建议。
 
 常用微调键：

@@ -760,6 +760,58 @@ class RetailProductLocatorSystem:
             "frame": self.frame_counter,
         })
 
+    def save_candidate_debug_image(self, color_img, output_path: str, max_candidates: int = 20):
+        """保存 YOLO 原始候选诊断图，包含低置信候选和光照评分。"""
+        if color_img is None:
+            return False
+        viz = color_img.copy()
+        candidates = sorted(
+            self.last_candidates,
+            key=lambda item: item["confidence"],
+            reverse=True,
+        )[:max_candidates]
+
+        for item in candidates:
+            x1, y1, x2, y2 = item["bbox"]
+            conf = item["confidence"]
+            ok = conf >= self.conf_threshold
+            color = (0, 220, 0) if ok else (0, 165, 255)
+            cv2.rectangle(viz, (x1, y1), (x2, y2), color, 2)
+            label = f"{item['class_name']} {conf:.2f}"
+            cv2.putText(
+                viz,
+                label,
+                (x1, max(15, y1 - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                color,
+                1,
+            )
+
+        score, grade, _, mean_v, std_v, extra = _assess_lighting(color_img)
+        lines = [
+            f"raw={self.raw_box_count} shown={self.filtered_box_count} low={self.low_conf_box_count}",
+            f"raw_conf={self.raw_conf_threshold:.2f} conf={self.conf_threshold:.2f}",
+            f"light={grade} score={score:.0f} mean={mean_v:.0f} std={std_v:.0f} glare={extra['glare_ratio']*100:.1f}%",
+        ]
+        for i, line in enumerate(lines):
+            y = 22 + i * 22
+            cv2.putText(viz, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 3)
+            cv2.putText(viz, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (40, 40, 40), 1)
+
+        if not candidates:
+            cv2.putText(
+                viz,
+                "NO YOLO RAW CANDIDATES",
+                (10, 95),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (0, 0, 255),
+                2,
+            )
+
+        return cv2.imwrite(output_path, viz)
+
     def process_frame(self, color_img, depth_img=None):
         """处理单帧"""
         results_list = []

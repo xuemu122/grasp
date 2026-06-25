@@ -41,7 +41,7 @@ HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.13, 0.02, 0.02)
+SIDE_GRASP_OFFSET_M = (-0.13, 0.02, 0.018)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.03)
 
@@ -66,7 +66,7 @@ PLACE_RETURN_MAX_Z_MM = float(os.getenv("PLACE_RETURN_MAX_Z_MM", "820"))  # 回�
 # 调试开关: 屏蔽手, 只测试手眼标定 + 机械臂走位
 SKIP_HAND = False
 # YOLO 显示/输出阈值。抓取现场默认放宽到 0.3，避免框不上。
-DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.28"))
+DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.3"))
 # 当前识别目标以瓶子为主, 默认使用瓶子抓取手势；原侧抓/上抓手势仍保留。
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "bottle").lower()
 
@@ -943,12 +943,21 @@ def main():
                 continue
 
             detections = locator.process_frame(best_img, best_depth)
+            cand_path = "/tmp/shelf_yolo_candidates.jpg"
+            if locator.save_candidate_debug_image(best_img, cand_path):
+                print(f"  → YOLO候选诊断图已保存: {cand_path} (绿=达阈值, 橙=低置信)")
             if not detections:
                 print("未检测到盒子")
                 # 保存原图排查
                 cv2_path = "/tmp/shelf_no_detection.jpg"
                 cv2.imwrite(cv2_path, best_img)
                 print(f"  → 原图已保存: {cv2_path}")
+                if locator.last_candidates:
+                    top = sorted(locator.last_candidates, key=lambda item: item["confidence"], reverse=True)[:6]
+                    cand_text = " | ".join(
+                        f"{c['class_name']}:{c['confidence']:.2f}@{c['bbox']}" for c in top
+                    )
+                    print(f"  → 低置信候选Top: {cand_text}")
                 continue
 
             # ── 选最靠边的盒子。先按当前层记录的世界 Z 过滤上下层，避免误抓上一层。 ──
