@@ -11,6 +11,7 @@ TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "430"))
 SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv("SIDE_GRASP_MIN_HEIGHT_M", "0.06"))
 LAYER_Z_FILTER_ENABLE = os.getenv("LAYER_Z_FILTER_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 LAYER_Z_TOLERANCE_M = float(os.getenv("LAYER_Z_TOLERANCE_M", "0.16"))
+MAX_GRASP_DEPTH_M = float(os.getenv("MAX_GRASP_DEPTH_M", "0.38"))  # 超过此深度的物品不抓取，避免碰撞
 
 
 def axis_aligned_approach_m(current_xyz_m, grasp_xyz_m, forward_dir, min_backoff_m):
@@ -87,6 +88,17 @@ def pick_target_box(detections, transformer=None, flange_pose=None, layer_z_m=No
         roi_filtered = z_filtered
 
     valid = [d for d in roi_filtered if d.depth_m and d.depth_m > 0]
+    depth_rejected = [d for d in valid if d.depth_m > MAX_GRASP_DEPTH_M]
+    if depth_rejected:
+        details = ", ".join(
+            f"{d.class_name or '?'} depth={d.depth_m:.3f}m"
+            for d in depth_rejected[:6]
+        )
+        print(
+            f"  深度过滤: 跳过过深候选 {len(depth_rejected)} 个 "
+            f"(阈值 {MAX_GRASP_DEPTH_M*100:.0f}cm): {details}"
+        )
+    valid = [d for d in valid if d.depth_m <= MAX_GRASP_DEPTH_M]
     if not valid:
         valid = sorted(roi_filtered, key=lambda d: ((d.bbox[0] + d.bbox[2]) / 2), reverse=True)
         if valid:

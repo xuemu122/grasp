@@ -51,6 +51,7 @@ DETECT_CONF_THRESHOLD=0.3 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAI
 - `GRASP_APPROACH_BACKOFF_M`：抓取前保持的最小前后退距，默认 `0.15` m；抓取时会先对齐上下左右，再沿手指方向过去。
 - `SIDE_GRASP_MIN_HEIGHT_M`：侧面抓取点离物体底部的最小高度，默认 `0.06` m；物体高度不够时自动改为上面抓。
 - `LAYER_Z_TOLERANCE_M`：当前层世界 Z 过滤容差，默认 `0.16` m；如果误识别上一层会被剔除，现场层高/标定偏差大时可调大。
+- `MAX_GRASP_DEPTH_M`：最大抓取深度，默认 `0.38` m；超过此深度的物品不抓取，避免机械臂伸太深导致货架层板碰撞相机。如果货架很深但确认安全可调大，如 `MAX_GRASP_DEPTH_M=0.45`。
 
 代码里的 `speed` 参数会随 `MovL`/`MovJ` 下发为 DOBOT `v=1..100` 百分比速度；超过 100 的值会自动夹到 100。记录放置过渡点后，前往最终放置点和放置后回层都会连续下发路径；回层会先原地抬高，再高位平滑经过过渡点，避免低空横扫。
 
