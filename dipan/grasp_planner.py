@@ -170,8 +170,11 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
         print(f"  → 宽盒 ({real_w*100:.1f}cm > 8cm), 从上边缘中心抓取")
 
     grasp_depth = depth
-    if camera is not None and depth_img is not None:
-        sampled_depth = camera.get_depth_at(depth_img, edge_u, edge_v, radius=10)
+    # 只在非侧抓模式下重采样抓取点深度
+    # 侧抓点在 bbox 边缘(x1/x2), get_depth_at 的 radius 区域会混入背景,
+    # 中位数被拉深。bbox 中心深度与侧抓点在同一前表面, 直接复用。
+    if not mode.endswith("_side") and camera is not None and depth_img is not None:
+        sampled_depth = camera.get_depth_at(depth_img, edge_u, edge_v, radius=5)
         if sampled_depth and sampled_depth > 0:
             grasp_depth = sampled_depth
             if abs(grasp_depth - depth) > 0.015:
