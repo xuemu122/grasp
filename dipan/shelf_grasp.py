@@ -292,15 +292,19 @@ def go_to_layer_smooth_from_place(arm: "DobotArm", layer_idx: int):
 
     if _place_transition_pose is not None:
         t_pose, t_name = _place_transition_pose
-        print(f"\n[放置过渡点] 回程关节运动到 {t_name} ...")
-        smooth_cp = _clamp_cp(PLACE_TRANSITION_CP) if PLACE_SMOOTH_TRANSITION else 0
-        if not arm.move_pose_safe(
-            t_pose,
-            joints=_place_transition_joints,
-            speed=80,
-            cp=smooth_cp,
-            wait=not PLACE_SMOOTH_TRANSITION,
-        ):
+        smooth_cp = _clamp_cp(PLACE_TRANSITION_CP)
+        if PLACE_SMOOTH_TRANSITION:
+            print(f"\n[放置过渡点] 回程平滑经过 {t_name} ...")
+            ok = arm.movel(
+                t_pose[0], t_pose[1], t_pose[2], t_pose[3], t_pose[4], t_pose[5],
+                speed=80,
+                cp=smooth_cp,
+                wait=False,
+            )
+        else:
+            print(f"\n[放置过渡点] 回程关节运动到 {t_name} ...")
+            ok = arm.move_pose_safe(t_pose, joints=_place_transition_joints, speed=80)
+        if not ok:
             print("  [放置过渡点] 回程移动失败")
             return False
 
@@ -360,15 +364,19 @@ def go_to_place_point(arm: "DobotArm"):
     pose, name = _place_point_pose
     if _place_transition_pose is not None:
         t_pose, t_name = _place_transition_pose
-        print(f"\n[放置过渡点] 关节运动到 {t_name} ...")
-        smooth_cp = _clamp_cp(PLACE_TRANSITION_CP) if PLACE_SMOOTH_TRANSITION else 0
-        if not arm.move_pose_safe(
-            t_pose,
-            joints=_place_transition_joints,
-            speed=80,
-            cp=smooth_cp,
-            wait=not PLACE_SMOOTH_TRANSITION,
-        ):
+        smooth_cp = _clamp_cp(PLACE_TRANSITION_CP)
+        if PLACE_SMOOTH_TRANSITION:
+            print(f"\n[放置过渡点] 平滑经过 {t_name} ...")
+            ok = arm.movel(
+                t_pose[0], t_pose[1], t_pose[2], t_pose[3], t_pose[4], t_pose[5],
+                speed=80,
+                cp=smooth_cp,
+                wait=False,
+            )
+        else:
+            print(f"\n[放置过渡点] 关节运动到 {t_name} ...")
+            ok = arm.move_pose_safe(t_pose, joints=_place_transition_joints, speed=80)
+        if not ok:
             print("  [放置过渡点] 移动失败")
             return False
     print(f"\n[放置点] 移动到 {name} ...")
@@ -392,15 +400,19 @@ def go_to_place_transition(arm: "DobotArm"):
     if _place_transition_pose is None:
         return True
     pose, name = _place_transition_pose
-    print(f"\n[放置过渡点] 移动到 {name} ...")
-    smooth_cp = _clamp_cp(PLACE_TRANSITION_CP) if PLACE_SMOOTH_TRANSITION else 0
-    if not arm.move_pose_safe(
-        pose,
-        joints=_place_transition_joints,
-        speed=80,
-        cp=smooth_cp,
-        wait=not PLACE_SMOOTH_TRANSITION,
-    ):
+    smooth_cp = _clamp_cp(PLACE_TRANSITION_CP)
+    if PLACE_SMOOTH_TRANSITION:
+        print(f"\n[放置过渡点] 平滑经过 {name} ...")
+        ok = arm.movel(
+            pose[0], pose[1], pose[2], pose[3], pose[4], pose[5],
+            speed=80,
+            cp=smooth_cp,
+            wait=False,
+        )
+    else:
+        print(f"\n[放置过渡点] 移动到 {name} ...")
+        ok = arm.move_pose_safe(pose, joints=_place_transition_joints, speed=80)
+    if not ok:
         print("  [放置过渡点] 移动失败")
         return False
     if not PLACE_SMOOTH_TRANSITION:
