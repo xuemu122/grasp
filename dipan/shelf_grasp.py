@@ -67,9 +67,9 @@ PLACE_RETURN_MAX_Z_MM = float(os.getenv("PLACE_RETURN_MAX_Z_MM", "820"))  # 回�
 # 调试开关: 屏蔽手, 只测试手眼标定 + 机械臂走位
 SKIP_HAND = False
 # YOLO 显示/输出阈值。抓取现场默认放宽到 0.3，避免框不上。
-DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.3"))
+DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.7"))
 # 透明矿泉水/塑料瓶在复杂光照下置信度会明显偏低，只对饮料类单独放宽。
-WATER_CONF_THRESHOLD = float(os.getenv("WATER_CONF_THRESHOLD", "0.12"))
+WATER_CONF_THRESHOLD = float(os.getenv("WATER_CONF_THRESHOLD", "0.52"))
 DRINK_CLASS_IDS = set(range(70, 78)) | set(range(80, 87))
 # 当前识别目标以瓶子为主, 默认使用瓶子抓取手势；原侧抓/上抓手势仍保留。
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "bottle").lower()
@@ -292,18 +292,8 @@ def go_to_layer_smooth_from_place(arm: "DobotArm", layer_idx: int):
 
     if _place_transition_pose is not None:
         t_pose, t_name = _place_transition_pose
-        smooth_cp = _clamp_cp(PLACE_TRANSITION_CP)
-        if PLACE_SMOOTH_TRANSITION:
-            print(f"\n[放置过渡点] 回程平滑经过 {t_name} ...")
-            ok = arm.movel(
-                t_pose[0], t_pose[1], t_pose[2], t_pose[3], t_pose[4], t_pose[5],
-                speed=80,
-                cp=smooth_cp,
-                wait=False,
-            )
-        else:
-            print(f"\n[放置过渡点] 回程关节运动到 {t_name} ...")
-            ok = arm.move_pose_safe(t_pose, joints=_place_transition_joints, speed=80)
+        print(f"\n[放置过渡点] 回程关节运动到 {t_name} ...")
+        ok = arm.move_pose_safe(t_pose, joints=_place_transition_joints, speed=80)
         if not ok:
             print("  [放置过渡点] 回程移动失败")
             return False
@@ -364,23 +354,14 @@ def go_to_place_point(arm: "DobotArm"):
     pose, name = _place_point_pose
     if _place_transition_pose is not None:
         t_pose, t_name = _place_transition_pose
-        smooth_cp = _clamp_cp(PLACE_TRANSITION_CP)
-        if PLACE_SMOOTH_TRANSITION:
-            print(f"\n[放置过渡点] 平滑经过 {t_name} ...")
-            ok = arm.movel(
-                t_pose[0], t_pose[1], t_pose[2], t_pose[3], t_pose[4], t_pose[5],
-                speed=80,
-                cp=smooth_cp,
-                wait=False,
-            )
-        else:
-            print(f"\n[放置过渡点] 关节运动到 {t_name} ...")
-            ok = arm.move_pose_safe(t_pose, joints=_place_transition_joints, speed=80)
+        print(f"\n[放置过渡点] 关节运动到 {t_name} ...")
+        ok = arm.move_pose_safe(t_pose, joints=_place_transition_joints, speed=80)
         if not ok:
             print("  [放置过渡点] 移动失败")
             return False
     print(f"\n[放置点] 移动到 {name} ...")
-    if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100, cp=0):
+    place_cp = _clamp_cp(PLACE_TRANSITION_CP) if PLACE_SMOOTH_TRANSITION else 0
+    if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100, cp=place_cp):
         return False
     time.sleep(MOTION_SETTLE_S)
     try:
@@ -400,23 +381,12 @@ def go_to_place_transition(arm: "DobotArm"):
     if _place_transition_pose is None:
         return True
     pose, name = _place_transition_pose
-    smooth_cp = _clamp_cp(PLACE_TRANSITION_CP)
-    if PLACE_SMOOTH_TRANSITION:
-        print(f"\n[放置过渡点] 平滑经过 {name} ...")
-        ok = arm.movel(
-            pose[0], pose[1], pose[2], pose[3], pose[4], pose[5],
-            speed=80,
-            cp=smooth_cp,
-            wait=False,
-        )
-    else:
-        print(f"\n[放置过渡点] 移动到 {name} ...")
-        ok = arm.move_pose_safe(pose, joints=_place_transition_joints, speed=80)
+    print(f"\n[放置过渡点] 移动到 {name} ...")
+    ok = arm.move_pose_safe(pose, joints=_place_transition_joints, speed=80)
     if not ok:
         print("  [放置过渡点] 移动失败")
         return False
-    if not PLACE_SMOOTH_TRANSITION:
-        time.sleep(MOTION_SETTLE_S)
+    time.sleep(MOTION_SETTLE_S)
     return True
 
 
