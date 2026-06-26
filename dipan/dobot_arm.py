@@ -208,16 +208,16 @@ class DobotArm:
     def go_home(self, speed=100):
         return self.movj(HOME_JOINTS_DEG, speed=speed)
 
-    def move_pose_safe(self, pose, joints=None, speed=80):
+    def move_pose_safe(self, pose, joints=None, speed=80, cp=0, wait=True):
         if joints is not None:
             print("  [安全过渡] 使用记录关节角 MovJ")
-            return self.movj(joints, speed=speed)
+            return self.movj(joints, speed=speed, cp=cp, wait=wait)
         near_joints = self.inverse_kin_near(pose)
         if near_joints is not None:
             print("  [安全过渡] 使用当前关节附近逆解 MovJ")
-            return self.movj(near_joints, speed=speed)
+            return self.movj(near_joints, speed=speed, cp=cp, wait=wait)
         print("  [安全过渡] 未能求近邻逆解, 回退 pose MovJ")
-        return self.movj_pose(pose, speed=speed)
+        return self.movj_pose(pose, speed=speed, cp=cp, wait=wait)
 
     def inverse_kin_near(self, pose):
         try:
@@ -242,28 +242,34 @@ class DobotArm:
             print(f"  [InverseKin 异常] {e}")
         return None
 
-    def movj_pose(self, pose, speed=80):
+    def movj_pose(self, pose, speed=80, cp=0, wait=True):
         p = pose
         speed_pct = _clamp_speed_pct(speed)
-        cmd = f"MovJ(pose={{{p[0]:.1f},{p[1]:.1f},{p[2]:.1f},{p[3]:.1f},{p[4]:.1f},{p[5]:.1f}}},v={speed_pct})"
+        cp_pct = _clamp_cp(cp)
+        cmd = f"MovJ(pose={{{p[0]:.1f},{p[1]:.1f},{p[2]:.1f},{p[3]:.1f},{p[4]:.1f},{p[5]:.1f}}},v={speed_pct},cp={cp_pct})"
         print(f"  >>> {cmd}")
         resp = self.send(cmd)
         print(f"  <<< {resp}")
         if resp.startswith("-"):
             print(f"  [MovJ(pose) 被拒绝] 错误码={resp.split(',')[0]}")
             return False
+        if not wait:
+            return True
         return self._wait_motion_done("MovJ(pose)")
 
-    def movj(self, joints_deg, speed=100):
+    def movj(self, joints_deg, speed=100, cp=0, wait=True):
         j = joints_deg
         speed_pct = _clamp_speed_pct(speed)
-        cmd = f"MovJ(joint={{{j[0]:.1f},{j[1]:.1f},{j[2]:.1f},{j[3]:.1f},{j[4]:.1f},{j[5]:.1f}}},v={speed_pct})"
+        cp_pct = _clamp_cp(cp)
+        cmd = f"MovJ(joint={{{j[0]:.1f},{j[1]:.1f},{j[2]:.1f},{j[3]:.1f},{j[4]:.1f},{j[5]:.1f}}},v={speed_pct},cp={cp_pct})"
         print(f"  >>> {cmd}")
         resp = self.send(cmd)
         print(f"  <<< {resp}")
         if resp.startswith("-"):
             print(f"  [MovJ 被拒绝] 错误码={resp.split(',')[0]}")
             return False
+        if not wait:
+            return True
         return self._wait_motion_done("MovJ")
 
     def _wait_motion_done(self, label: str, clear_alarm: bool = False) -> bool:

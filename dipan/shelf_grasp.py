@@ -60,6 +60,7 @@ MOTION_SETTLE_S = float(os.getenv("MOTION_SETTLE_S", "0.2"))  # 运动完成后�
 GRASP_SETTLE_S = float(os.getenv("GRASP_SETTLE_S", "0.4"))    # 抓取前进/后退短缓冲
 HAND_CLOSE_WAIT_S = float(os.getenv("HAND_CLOSE_WAIT_S", "3.0"))
 PLACE_TRANSITION_CP = os.getenv("PLACE_TRANSITION_CP", "60")       # 过渡点到放置点的平滑比例
+PLACE_SMOOTH_TRANSITION = os.getenv("PLACE_SMOOTH_TRANSITION", "0").lower() in ("1", "true", "yes", "on")
 PLACE_RETURN_CLEARANCE_MM = float(os.getenv("PLACE_RETURN_CLEARANCE_MM", "140"))  # 放置后回层的安全抬高量
 PLACE_RETURN_MAX_Z_MM = float(os.getenv("PLACE_RETURN_MAX_Z_MM", "820"))  # 回层抬高上限, 避免高位不可达
 
@@ -292,7 +293,14 @@ def go_to_layer_smooth_from_place(arm: "DobotArm", layer_idx: int):
     if _place_transition_pose is not None:
         t_pose, t_name = _place_transition_pose
         print(f"\n[放置过渡点] 回程关节运动到 {t_name} ...")
-        if not arm.move_pose_safe(t_pose, joints=_place_transition_joints, speed=80):
+        smooth_cp = _clamp_cp(PLACE_TRANSITION_CP) if PLACE_SMOOTH_TRANSITION else 0
+        if not arm.move_pose_safe(
+            t_pose,
+            joints=_place_transition_joints,
+            speed=80,
+            cp=smooth_cp,
+            wait=not PLACE_SMOOTH_TRANSITION,
+        ):
             print("  [放置过渡点] 回程移动失败")
             return False
 
@@ -353,7 +361,14 @@ def go_to_place_point(arm: "DobotArm"):
     if _place_transition_pose is not None:
         t_pose, t_name = _place_transition_pose
         print(f"\n[放置过渡点] 关节运动到 {t_name} ...")
-        if not arm.move_pose_safe(t_pose, joints=_place_transition_joints, speed=80):
+        smooth_cp = _clamp_cp(PLACE_TRANSITION_CP) if PLACE_SMOOTH_TRANSITION else 0
+        if not arm.move_pose_safe(
+            t_pose,
+            joints=_place_transition_joints,
+            speed=80,
+            cp=smooth_cp,
+            wait=not PLACE_SMOOTH_TRANSITION,
+        ):
             print("  [放置过渡点] 移动失败")
             return False
     print(f"\n[放置点] 移动到 {name} ...")
@@ -378,10 +393,18 @@ def go_to_place_transition(arm: "DobotArm"):
         return True
     pose, name = _place_transition_pose
     print(f"\n[放置过渡点] 移动到 {name} ...")
-    if not arm.move_pose_safe(pose, joints=_place_transition_joints, speed=80):
+    smooth_cp = _clamp_cp(PLACE_TRANSITION_CP) if PLACE_SMOOTH_TRANSITION else 0
+    if not arm.move_pose_safe(
+        pose,
+        joints=_place_transition_joints,
+        speed=80,
+        cp=smooth_cp,
+        wait=not PLACE_SMOOTH_TRANSITION,
+    ):
         print("  [放置过渡点] 移动失败")
         return False
-    time.sleep(MOTION_SETTLE_S)
+    if not PLACE_SMOOTH_TRANSITION:
+        time.sleep(MOTION_SETTLE_S)
     return True
 
 

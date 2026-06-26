@@ -169,11 +169,27 @@ def _add_plastic_glare(img, labels, classes, rng):
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
-def _augment_object_aware(img, labels, classes, rng):
-    mask = _make_object_mask(img.shape, labels, classes)
-    if mask is None:
-        return None
+def _add_vignette(img, strength, rng):
+    h, w = img.shape[:2]
+    y, x = np.ogrid[:h, :w]
+    cy = h / 2.0 + rng.uniform(-0.05, 0.05) * h
+    cx = w / 2.0 + rng.uniform(-0.05, 0.05) * w
+    ry = max(h * rng.uniform(0.72, 0.92), 1.0)
+    rx = max(w * rng.uniform(0.72, 0.92), 1.0)
+    dist = ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2
+    vignette = np.clip(1.0 - strength * np.maximum(dist - 0.15, 0.0), 0.35, 1.0).astype(np.float32)
+    return np.clip(img.astype(np.float32) * vignette[:, :, None], 0, 255).astype(np.uint8)
 
+
+def _add_sensor_noise(img, np_rng, sigma_range):
+    sigma = np_rng.uniform(*sigma_range)
+    if sigma <= 0:
+        return img
+    noisy = img.astype(np.float32) + np_rng.normal(0, sigma, img.shape)
+    return np.clip(noisy, 0, 255).astype(np.uint8)
+
+
+def _make_daylight_variant(img, mask, labels, classes, rng, np_rng):
     bg = _adjust_hsv(
         img,
         sat_scale=rng.uniform(0.65, 1.25),
@@ -195,10 +211,46 @@ def _augment_object_aware(img, labels, classes, rng):
         fg = _add_plastic_glare(fg, labels, classes, rng)
 
     mixed = fg.astype(np.float32) * mask + bg.astype(np.float32) * (1.0 - mask)
-    noise_sigma = rng.uniform(0, 4.0)
-    if noise_sigma > 0:
-        mixed += rng.normal(0, noise_sigma, mixed.shape)
-    return np.clip(mixed, 0, 255).astype(np.uint8)
+    return _add_sensor_noise(np.clip(mixed, 0, 255).astype(np.uint8), np_rng, (0.0, 4.0))
+
+
+def _make_low_light_variant(img, mask, labels, classes, rng, np_rng):
+    bg = _adjust_hsv(
+        img,
+        sat_scale=rng.uniform(0.25, 0.9),
+        val_scale=rng.uniform(0.12, 0.55),
+        hue_shift=rng.uniform(-6, 6),
+    )
+    bg = _gamma(bg, rng.uniform(0.35, 0.9))
+    if rng.random() < 0.8:
+        bg = _add_shadow(bg, rng)
+    if rng.random() < 0.9:
+        bg = _add_vignette(bg, rng.uniform(0.18, 0.6), rng)
+
+    fg = _adjust_hsv(
+        img,
+        sat_scale=rng.uniform(0.35, 1.1),
+        val_scale=rng.uniform(0.2, 0.85),
+        hue_shift=rng.uniform(-8, 8),
+    )
+    fg = _gamma(fg, rng.uniform(0.4, 0.95))
+    if rng.random() < 0.35:
+        fg = _add_plastic_glare(fg, labels, classes, rng)
+    if rng.random() < 0.6:
+        fg = _add_vignette(fg, rng.uniform(0.08, 0.35), rng)
+
+    mixed = fg.astype(np.float32) * mask + bg.astype(np.float32) * (1.0 - mask)
+    return _add_sensor_noise(np.clip(mixed, 0, 255).astype(np.uint8), np_rng, (4.0, 12.0))
+
+
+def _augment_object_aware(img, labels, classes, rng, np_rng):
+    mask = _make_object_mask(img.shape, labels, classes)
+    if mask is None:
+        return None
+
+    if rng.random() < 0.5:
+        return _make_daylight_variant(img, mask, labels, classes, rng, np_rng)
+    return _make_low_light_variant(img, mask, labels, classes, rng, np_rng)
 
 
 def _iter_images(images_dir: Path):
@@ -241,6 +293,7 @@ def main():
 
     classes = _parse_classes(args.classes)
     rng = random.Random(args.seed)
+    np_rng = np.random.default_rng(args.seed)
     images = _iter_images(images_dir)
     made = 0
     skipped = 0
@@ -259,7 +312,7 @@ def main():
                 shutil.copy2(label_path, out_labels / label_path.name)
 
         for idx in range(args.copies):
-            aug = _augment_object_aware(img, labels, classes, rng)
+            aug = _augment_object_aware(img, labels, classes, rng, np_rng)
             if aug is None:
                 skipped += 1
                 continue
