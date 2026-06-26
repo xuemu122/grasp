@@ -17,7 +17,7 @@ from typing import Optional
 # ── 识别模块 ──
 sys.path.insert(0, "/home/nvidia/grasp/识别")
 from orbbec_detect import MedicineLocatorSystem, RealSenseCamera
-from orbbec_detect import _assess_lighting
+from orbbec_detect import DetectionResult, _assess_lighting
 
 from aero_gripper import AeroGripper
 from dobot_arm import DobotArm, _clamp_cp
@@ -67,8 +67,12 @@ PLACE_RETURN_MAX_Z_MM = float(os.getenv("PLACE_RETURN_MAX_Z_MM", "820"))  # 回�
 SKIP_HAND = False
 # YOLO 显示/输出阈值。抓取现场默认放宽到 0.3，避免框不上。
 DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.3"))
+# 透明矿泉水/塑料瓶在复杂光照下置信度会明显偏低，只对饮料类单独放宽。
+WATER_CONF_THRESHOLD = float(os.getenv("WATER_CONF_THRESHOLD", "0.12"))
+DRINK_CLASS_IDS = set(range(70, 78)) | set(range(80, 87))
 # 当前识别目标以瓶子为主, 默认使用瓶子抓取手势；原侧抓/上抓手势仍保留。
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "bottle").lower()
+DETECTION_STABILITY_IOU = float(os.getenv("DETECTION_STABILITY_IOU", "0.35"))
 
 # 货架层位姿文件 (笛卡尔: x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)
 SHELF_LAYERS_FILE = os.path.join(os.path.dirname(__file__), "shelf_layers.json")
@@ -734,6 +738,79 @@ def _toggle_chassis_place():
         print("  流程: 先回第2层 → 到收起姿态 → 调用 move_robot.py place → 等底盘到达 → 机械臂放置")
 
 
+def _bbox_iou(a, b) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = iw * ih
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _fuse_detection_tracks(frame_detections, iou_threshold=0.35):
+    tracks = []
+    for frame_idx, detections in enumerate(frame_detections):
+        for det in detections:
+            matched = None
+            best_iou = 0.0
+            for track in tracks:
+                if track["class_id"] != det.class_id:
+                    continue
+                iou = _bbox_iou(track["bbox"], det.bbox)
+                if iou > best_iou:
+                    best_iou = iou
+                    matched = track
+            if matched is None or best_iou < iou_threshold:
+                tracks.append({
+                    "class_id": det.class_id,
+                    "items": [(frame_idx, det)],
+                    "bbox": det.bbox,
+                })
+                continue
+            matched["items"].append((frame_idx, det))
+            boxes = np.array([item.bbox for _, item in matched["items"]], dtype=float)
+            matched["bbox"] = tuple(np.median(boxes, axis=0).astype(int).tolist())
+
+    fused_with_support = []
+    for track in tracks:
+        items = [item for _, item in track["items"]]
+        boxes = np.array([d.bbox for d in items], dtype=float)
+        bbox = tuple(np.median(boxes, axis=0).astype(int).tolist())
+        conf = float(np.mean([d.confidence for d in items]))
+        depths = [d.depth_m for d in items if d.depth_m is not None]
+        depth_m = float(np.median(depths)) if depths else None
+        best = max(items, key=lambda d: d.confidence)
+        cx = int(round((bbox[0] + bbox[2]) / 2))
+        cy = int(round((bbox[1] + bbox[3]) / 2))
+        fused_det = DetectionResult(
+            class_id=best.class_id,
+            class_name=best.class_name,
+            confidence=conf,
+            bbox=bbox,
+            center_pixel=(cx, cy),
+            depth_m=depth_m,
+            camera_xyz=best.camera_xyz,
+            shelf_pos=best.shelf_pos,
+            product_id=best.product_id,
+            product_name=best.product_name,
+            category=best.category,
+            package_type=best.package_type,
+            medicine_name=best.medicine_name,
+            mapping_source=best.mapping_source,
+            match_confidence=best.match_confidence,
+            match_sources=best.match_sources,
+            ocr_text=best.ocr_text,
+        )
+        fused_with_support.append((len(items), conf, fused_det))
+
+    fused_with_support.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [item[2] for item in fused_with_support], tracks
+
+
 def main():
     print("=" * 60)
     print("  货架边缘抓取系统")
@@ -748,6 +825,7 @@ def main():
         model_path="/home/nvidia/grasp/识别/best.pt",
         mapping_path="/home/nvidia/grasp/识别/shelf_mapping.yaml",
         conf_threshold=DETECT_CONF_THRESHOLD,
+        class_conf_thresholds={cls_id: WATER_CONF_THRESHOLD for cls_id in DRINK_CLASS_IDS},
         use_ocr=False,
     )
     locator.init_camera = lambda: None
@@ -921,6 +999,8 @@ def main():
             best_img, best_depth = None, None
             best_score, best_grade = -1, ""
             best_idx = -1
+            frame_detections = []
+            captured_frames = []
 
             print(f"拍照中 ({N_FRAMES + WARMUP} 帧, 丢弃前 {WARMUP})...", end=" ", flush=True)
             for i in range(N_FRAMES + WARMUP):
@@ -934,6 +1014,9 @@ def main():
                     best_score, best_grade = score, grade
                     best_img, best_depth = c, d
                     best_idx = i
+                dets = locator.process_frame(c, d)
+                frame_detections.append(dets)
+                captured_frames.append((c, d))
                 # 反光和过暗都有惩罚, 纯正常最高; 有反光也能选出相对最好的
             print(f"完成")
             print(f"  → 第 {best_idx} 帧 评分: {best_grade} ({best_score:.0f}分)")
@@ -942,7 +1025,19 @@ def main():
                 print("相机未就绪")
                 continue
 
-            detections = locator.process_frame(best_img, best_depth)
+            detections, tracks = _fuse_detection_tracks(frame_detections, DETECTION_STABILITY_IOU)
+            if tracks:
+                stable = sorted(
+                    tracks,
+                    key=lambda t: (len(t["items"]), max(item.confidence for _, item in t["items"])),
+                    reverse=True,
+                )[:6]
+                stable_text = " | ".join(
+                    f"{t['items'][0][1].class_name}:frames={len(t['items'])}/{N_FRAMES},"
+                    f"max={max(item.confidence for _, item in t['items']):.2f}"
+                    for t in stable
+                )
+                print(f"  → 多帧稳定候选: {stable_text}")
             cand_path = "/tmp/shelf_yolo_candidates.jpg"
             if locator.save_candidate_debug_image(best_img, cand_path):
                 print(f"  → YOLO候选诊断图已保存: {cand_path} (绿=达阈值, 橙=低置信)")
@@ -973,6 +1068,19 @@ def main():
             if target is None:
                 print("无法确定目标")
                 continue
+            target_tracks = [
+                t for t in tracks
+                if t["class_id"] == target.class_id and _bbox_iou(t["bbox"], target.bbox) >= DETECTION_STABILITY_IOU
+            ]
+            if target_tracks:
+                best_track = max(
+                    target_tracks,
+                    key=lambda t: (len(t["items"]), max(item.confidence for _, item in t["items"])),
+                )
+                best_frame_idx, _ = max(best_track["items"], key=lambda item: item[1].confidence)
+                if 0 <= best_frame_idx < len(captured_frames):
+                    best_img, best_depth = captured_frames[best_frame_idx]
+                    print(f"  → 使用目标最高置信帧作为抓取参考: frame={best_frame_idx}")
             print(f"\n=== 选中: {edge}侧盒子 bbox=({target.bbox[0]},{target.bbox[1]})-({target.bbox[2]},{target.bbox[3]}) "
                   f"depth={target.depth_m:.3f}m ===")
 

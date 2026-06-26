@@ -646,6 +646,7 @@ class RetailProductLocatorSystem:
                  dataset_config_path: Optional[str] = None,
                  conf_threshold: float = 0.15,
                  raw_conf_threshold: float = 0.01,
+                 class_conf_thresholds: Optional[Dict[int, float]] = None,
                  use_ocr: bool = True,
                  ocr_interval: int = 90):
         
@@ -655,9 +656,16 @@ class RetailProductLocatorSystem:
         self.model = YOLO(model_path)
         self.conf_threshold = conf_threshold
         self.raw_conf_threshold = min(raw_conf_threshold, conf_threshold)
+        self.class_conf_thresholds = class_conf_thresholds or {}
         self.use_ocr = use_ocr and EASYOCR_AVAILABLE
         names = getattr(self.model, "names", {}) or {}
         print(f"[模型] 显示阈值 conf={self.conf_threshold:.2f}, 原始候选阈值 raw_conf={self.raw_conf_threshold:.2f}")
+        if self.class_conf_thresholds:
+            preview = ", ".join(
+                f"{cls}:{thr:.2f}"
+                for cls, thr in sorted(self.class_conf_thresholds.items())[:20]
+            )
+            print(f"[模型] 类别专用阈值: {preview}")
         print(f"[模型] 类别数: {len(names)}")
         if names:
             preview = ", ".join(f"{k}:{v}" for k, v in list(names.items())[:10])
@@ -687,6 +695,9 @@ class RetailProductLocatorSystem:
         self.prev_time = time.time()
         self.fps = 0.0
         self.frame_count = 0
+
+    def _threshold_for_class(self, class_id: int) -> float:
+        return self.class_conf_thresholds.get(class_id, self.conf_threshold)
 
     def _init_ocr(self):
         """在主进程中初始化 EasyOCR Reader（只加载一次模型）"""
@@ -779,10 +790,11 @@ class RetailProductLocatorSystem:
         for item in candidates:
             x1, y1, x2, y2 = item["bbox"]
             conf = item["confidence"]
-            ok = conf >= self.conf_threshold
+            ok = conf >= self._threshold_for_class(item["class_id"])
             color = (0, 220, 0) if ok else (0, 165, 255)
             cv2.rectangle(viz, (x1, y1), (x2, y2), color, 2)
-            label = f"{item['class_name']} {conf:.2f}"
+            thr = self._threshold_for_class(item["class_id"])
+            label = f"{item['class_name']} {conf:.2f}/{thr:.2f}"
             cv2.putText(
                 viz,
                 label,
@@ -841,15 +853,17 @@ class RetailProductLocatorSystem:
             cls_id = int(box.cls[0])
             conf_score = float(box.conf[0])
             class_name = result.names[cls_id]
+            conf_threshold = self._threshold_for_class(cls_id)
 
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             self.last_candidates.append({
                 "class_id": cls_id,
                 "class_name": class_name,
                 "confidence": conf_score,
+                "threshold": conf_threshold,
                 "bbox": (x1, y1, x2, y2),
             })
-            if conf_score < self.conf_threshold:
+            if conf_score < conf_threshold:
                 self.low_conf_box_count += 1
                 continue
 

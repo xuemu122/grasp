@@ -41,6 +41,8 @@ DETECT_CONF_THRESHOLD=0.3 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAI
 含义：
 
 - `DETECT_CONF_THRESHOLD`：抓取主程序 YOLO 显示/输出阈值，默认 `0.3`。
+- `WATER_CONF_THRESHOLD`：饮料/矿泉水类专用阈值，默认 `0.12`；只放宽 `drink` 类，避免所有类别一起降阈值造成误检。
+- `DETECTION_STABILITY_IOU`：抓取前多帧检测融合的同目标 IoU 阈值，默认 `0.35`；矿泉水识别闪烁时会按多帧稳定候选融合。
 - `MOTION_SETTLE_S`：普通运动完成后的短缓冲，默认 `0.2` 秒。
 - `GRASP_SETTLE_S`：抓取前进、闭手前、后退后的缓冲，默认 `0.4` 秒。
 - `HAND_CLOSE_WAIT_S`：灵巧手闭合后等待物体稳定的时间，默认 `3.0` 秒。
