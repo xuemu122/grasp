@@ -348,7 +348,7 @@ raw_conf=0.01
 
 ## 数据集抽帧
 
-`capture_frames.py` 用于从相机保存训练图片，不加载 YOLO/OCR。默认抽 10 张，文件名精确到毫秒：
+`capture_frames.py` 用于从相机保存训练数据，不加载 YOLO/OCR。默认会同时保存 RGB、深度和 mask，文件名精确到毫秒：
 
 ```bash
 cd /home/nvidia/grasp/识别
@@ -358,7 +358,10 @@ cd /home/nvidia/grasp/识别
 输出示例：
 
 ```text
-dataset_captures/20260618_064812_153.jpg
+dataset_captures/images/20260618_064812_153.jpg
+dataset_captures/depth_raw/20260618_064812_153.png
+dataset_captures/depth_vis/20260618_064812_153.jpg
+dataset_captures/masks/20260618_064812_153.png
 ```
 
 常用参数：
@@ -366,9 +369,11 @@ dataset_captures/20260618_064812_153.jpg
 ```bash
 ./capture_frames.py -n 10 --interval 0.5 -o dataset_captures
 ./capture_frames.py -n 50 -o /home/nvidia/grasp/识别/my_dataset_images
+./capture_frames.py -n 20 --seg-model /home/nvidia/grasp/识别/best-seg.pt --mask-source seg-or-depth
 ```
 
 脚本优先使用 RealSense；如果 RealSense SDK 不可用，会回退到 OpenCV 摄像头。
+如果提供 `--seg-model`，会优先使用分割模型输出实例 mask；否则默认用深度阈值生成前景 mask。
 
 ## 输出结果
 
@@ -436,9 +441,9 @@ yolo detect train data=/home/nvidia/grasp/dataset/yolo_rpc_test_oa_mix/dataset.y
 
 ## 当前局限
 
-1. **RGB-D 未显式对齐**
+1. **RGB-D 对齐后仍可能有遮挡误差**
    
-   当前 RealSense 彩色流和深度流没有使用 `rs.align(rs.stream.color)`。密集货架中，深度可能取到相邻商品或背景。
+   当前采集脚本和识别主流程都已做彩色/深度对齐，但密集货架中，深度仍可能取到相邻商品或背景。
 
 2. **深度估计仍较粗**
    
@@ -467,6 +472,14 @@ yolo detect train data=/home/nvidia/grasp/dataset/yolo_rpc_test_oa_mix/dataset.y
 5. 条码识别：使用 `pyzbar` 或 OpenCV barcode detector。
 6. 视觉检索：使用 CLIP/DINOv2 + FAISS 建商品图库。
 7. 价签识别和关联：检测 `price_tag`，OCR 价签文本并与上方商品绑定。
+
+## 透视补偿
+
+`hand_eye.py` 里默认开启远距透视补偿：
+
+- 只压纵向像素，不收左右
+- 目标越远，纵向像素偏移压得越多
+- 可用 `PERSPECTIVE_COMP_GAIN` 调强弱，`PERSPECTIVE_COMP_Z_REF_M` 调参考距离
 
 可选依赖见：
 
