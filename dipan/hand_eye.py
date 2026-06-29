@@ -10,6 +10,10 @@ import numpy as np
 CALIB_FILE = os.path.join(os.path.dirname(__file__), "calib_eye_in_hand.json")
 FX, FY = 390.4, 390.0
 CX, CY = 324.5, 241.2
+PERSPECTIVE_COMP_ENABLE = os.getenv("PERSPECTIVE_COMP_ENABLE", "1").lower() in ("1", "true", "yes", "on")
+PERSPECTIVE_COMP_Z_REF_M = float(os.getenv("PERSPECTIVE_COMP_Z_REF_M", "0.32"))
+PERSPECTIVE_COMP_GAIN = float(os.getenv("PERSPECTIVE_COMP_GAIN", "2.0"))
+PERSPECTIVE_COMP_MIN_SCALE = float(os.getenv("PERSPECTIVE_COMP_MIN_SCALE", "0.65"))
 
 
 class HandEyeTransformer:
@@ -39,6 +43,13 @@ class HandEyeTransformer:
                 f"{self.MANUAL_OFFSET_MM[1]},{self.MANUAL_OFFSET_MM[2]})mm, "
                 f"rz={np.rad2deg(rz):.0f}°"
             )
+        if PERSPECTIVE_COMP_ENABLE:
+            print(
+                "[透视补偿] 已开启: "
+                f"z_ref={PERSPECTIVE_COMP_Z_REF_M:.2f}m "
+                f"gain={PERSPECTIVE_COMP_GAIN:.2f} "
+                f"min_scale={PERSPECTIVE_COMP_MIN_SCALE:.2f}"
+            )
         t = self.T_flange_to_cam[:3, 3]
         print(f"[标定] 已加载手眼标定: t=({t[0]*1000:.1f},{t[1]*1000:.1f},{t[2]*1000:.1f})mm")
 
@@ -47,6 +58,11 @@ class HandEyeTransformer:
 
     def pixel_to_camera(self, u, v, depth_m):
         """像素 -> 相机坐标系 (X右 Y下 Z前, 米)。"""
+        if PERSPECTIVE_COMP_ENABLE:
+            depth_delta = max(float(depth_m) - PERSPECTIVE_COMP_Z_REF_M, 0.0)
+            v_scale = 1.0 / (1.0 + PERSPECTIVE_COMP_GAIN * depth_delta)
+            v_scale = float(np.clip(v_scale, PERSPECTIVE_COMP_MIN_SCALE, 1.0))
+            v = self.cy + (v - self.cy) * v_scale
         x = (u - self.cx) * depth_m / self.fx
         y = (v - self.cy) * depth_m / self.fy
         return np.array([x, y, depth_m], dtype=np.float64)
