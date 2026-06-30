@@ -540,6 +540,8 @@ def main():
     parser.add_argument("--vis", action="store_true", help="enable X11/OpenCV visualization")
     parser.add_argument("--execute", action="store_true", help="send one clipped MovJ step to Nova5")
     parser.add_argument("--max-step-deg", type=float, default=3.0, help="limit each joint step when executing")
+    parser.add_argument("--goal-tol-deg", type=float, default=2.0, help="stop executing when goal error is below this threshold")
+    parser.add_argument("--max-exec-iters", type=int, default=12, help="max replan/move iterations per selected goal")
     parser.add_argument("--goal-joints-deg", nargs=6, help="explicit 6 joint goal in degrees")
     parser.add_argument("--goal-pose-mm", nargs="+", help="explicit goal pose in mm: x y z [rx ry rz]")
     parser.add_argument("--goal-layer", choices=("1", "2"), help="use shelf layer 1 or 2 pose as goal")
@@ -646,62 +648,71 @@ def main():
                 goal_rad_6 = np.deg2rad(goal_deg_6)
 
             goal_rad_7 = _pad_nova5_to_7(goal_rad_6)
-            robot_pcd = bridge.sampler.sample(current_rad_7[:6], num_points=1024)[0].detach().cpu().numpy()
             scene_pcd_vis = _pad_scene_points(scene_pcd, 2048)
-            next_q_rad_7 = bridge.next_action(current_rad_7, goal_rad_7, scene_pcd_vis)
-            next_q_deg_7 = np.rad2deg(next_q_rad_7[:6])
-            next_q_deg_7 = _clip_to_limits(
-                next_q_deg_7,
-                joint_lower_deg,
-                joint_upper_deg,
-            )
-
-            print("\n[DRP] current(deg):", np.round(current_deg, 3).tolist())
-            print("[DRP] goal(deg):   ", np.round(goal_deg_6, 3).tolist())
-            print("[DRP] next(deg):   ", np.round(next_q_deg_7, 3).tolist())
             print(f"[DRP] scene_pcd={scene_pcd.shape[0]} points")
 
-            if vis is not None:
-                vis.show(
-                    color_img=color_img,
-                    depth_img=depth_img,
-                    robot_pcd=robot_pcd,
-                    scene_pcd=scene_pcd_vis,
-                    current_deg=current_deg,
-                    goal_deg=goal_deg_6,
-                    next_deg=next_q_deg_7,
-                    scene_n=scene_pcd.shape[0],
-                    execute=args.execute,
-                    camera_on=not args.no_camera,
-                    model_id=args.model_id,
-                )
-
-            if args.execute:
-                step = np.clip(next_q_deg_7 - current_deg, -args.max_step_deg, args.max_step_deg)
-                target_deg = current_deg + step
-                print("[DRP] execute step(deg):", np.round(step, 3).tolist())
-                print("[DRP] target(deg):      ", np.round(target_deg, 3).tolist())
-                arm.movj(target_deg.tolist(), speed=20, cp=0)
-            else:
+            if not args.execute:
+                robot_pcd = bridge.sampler.sample(current_rad_7[:6], num_points=1024)[0].detach().cpu().numpy()
+                next_q_rad_7 = bridge.next_action(current_rad_7, goal_rad_7, scene_pcd_vis)
+                next_q_deg_7 = np.rad2deg(next_q_rad_7[:6])
+                next_q_deg_7 = _clip_to_limits(next_q_deg_7, joint_lower_deg, joint_upper_deg)
+                print("\n[DRP] current(deg):", np.round(current_deg, 3).tolist())
+                print("[DRP] goal(deg):   ", np.round(goal_deg_6, 3).tolist())
+                print("[DRP] next(deg):   ", np.round(next_q_deg_7, 3).tolist())
                 print("[DRP] dry-run only, no robot motion sent")
+                if vis is not None:
+                    vis.show(
+                        color_img=color_img,
+                        depth_img=depth_img,
+                        robot_pcd=robot_pcd,
+                        scene_pcd=scene_pcd_vis,
+                        current_deg=current_deg,
+                        goal_deg=goal_deg_6,
+                        next_deg=next_q_deg_7,
+                        scene_n=scene_pcd.shape[0],
+                        execute=False,
+                        camera_on=not args.no_camera,
+                        model_id=args.model_id,
+                    )
+            else:
+                for exec_idx in range(max(1, args.max_exec_iters)):
+                    current_deg = np.asarray(arm.get_joints(), dtype=np.float32)
+                    current_rad_7 = _pad_nova5_to_7(np.deg2rad(current_deg))
+                    goal_err = goal_deg_6 - current_deg
+                    if np.max(np.abs(goal_err)) <= args.goal_tol_deg:
+                        print(f"[DRP] goal reached within {args.goal_tol_deg:.1f} deg")
+                        break
+
+                    robot_pcd = bridge.sampler.sample(current_rad_7[:6], num_points=1024)[0].detach().cpu().numpy()
+                    next_q_rad_7 = bridge.next_action(current_rad_7, goal_rad_7, scene_pcd_vis)
+                    next_q_deg_7 = np.rad2deg(next_q_rad_7[:6])
+                    next_q_deg_7 = _clip_to_limits(next_q_deg_7, joint_lower_deg, joint_upper_deg)
+                    step = np.clip(next_q_deg_7 - current_deg, -args.max_step_deg, args.max_step_deg)
+                    target_deg = current_deg + step
+                    print("\n[DRP] current(deg):", np.round(current_deg, 3).tolist())
+                    print("[DRP] goal(deg):   ", np.round(goal_deg_6, 3).tolist())
+                    print("[DRP] next(deg):   ", np.round(next_q_deg_7, 3).tolist())
+                    print("[DRP] execute step(deg):", np.round(step, 3).tolist())
+                    print("[DRP] target(deg):      ", np.round(target_deg, 3).tolist())
+                    arm.movj(target_deg.tolist(), speed=20, cp=0)
+                    if vis is not None:
+                        vis.show(
+                            color_img=color_img,
+                            depth_img=depth_img,
+                            robot_pcd=robot_pcd,
+                            scene_pcd=scene_pcd_vis,
+                            current_deg=current_deg,
+                            goal_deg=goal_deg_6,
+                            next_deg=next_q_deg_7,
+                            scene_n=scene_pcd.shape[0],
+                            execute=True,
+                            camera_on=not args.no_camera,
+                            model_id=args.model_id,
+                        )
+                    time.sleep(MOTION_SETTLE_S)
 
             if args.vis:
-                key = cv2.waitKey(0) & 0xFF
-                if key in (ord("q"), 27):
-                    break
-                if key in (ord("1"), ord("2")):
-                    args.goal_layer = chr(key)
-                elif key == ord("j"):
-                    args.goal_joints_deg = None
-                    args.goal_layer = None
-                    args.goal_pose_mm = None
-                elif key == ord("p"):
-                    args.goal_joints_deg = None
-                    args.goal_layer = None
-                    args.goal_pose_mm = None
-                continue
-
-            break
+                cv2.waitKey(1)
 
     finally:
         try:
