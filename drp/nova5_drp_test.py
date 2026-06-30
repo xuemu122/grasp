@@ -9,6 +9,7 @@ pads Nova5's 6-DoF joints to 7 DoF for a first connection test.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -53,6 +54,7 @@ NOVA5_MESH_ROOT = (
 )
 NOVA5_HOME_RAD = np.array([0.0, 0.5378, -1.1869, 0.0, 1.7785, 0.0], dtype=np.float32)
 NOVA5_HOME_DEG = np.rad2deg(NOVA5_HOME_RAD)
+SHELF_LAYERS_JSON = DIPAN_ROOT / "shelf_layers.json"
 
 
 def _ensure_float_array(values: Iterable[float], length: int) -> np.ndarray:
@@ -483,6 +485,20 @@ def _parse_goal_pose(values: Optional[list[str]], current_pose: Iterable[float])
     return pose
 
 
+def _load_goal_layer_pose(layer_id: Optional[str]) -> Optional[np.ndarray]:
+    if layer_id is None:
+        return None
+    data = json.loads(SHELF_LAYERS_JSON.read_text(encoding="utf-8"))
+    layer = data.get("layers", {}).get(str(layer_id))
+    if layer is None:
+        raise ValueError(f"unknown shelf layer: {layer_id}")
+    pose = np.asarray(layer["pose"], dtype=np.float32)
+    if pose.shape != (6,):
+        raise ValueError(f"invalid pose for shelf layer {layer_id}: {pose}")
+    print(f"[DRP] goal layer: {layer_id} ({layer.get('name', '')})")
+    return pose
+
+
 def _load_scene_pcd(
     depth_img: Optional[np.ndarray],
     depth_scale: float,
@@ -516,6 +532,7 @@ def main():
     parser.add_argument("--max-step-deg", type=float, default=3.0, help="limit each joint step when executing")
     parser.add_argument("--goal-joints-deg", nargs=6, help="explicit 6 joint goal in degrees")
     parser.add_argument("--goal-pose-mm", nargs="+", help="explicit goal pose in mm: x y z [rx ry rz]")
+    parser.add_argument("--goal-layer", choices=("1", "2"), help="use shelf layer 1 or 2 pose as goal")
     parser.add_argument("--once", action="store_true", help="run one inference and exit")
     args = parser.parse_args()
 
@@ -534,7 +551,14 @@ def main():
         current_rad_6 = np.deg2rad(current_deg)
         current_rad_7 = _pad_nova5_to_7(current_rad_6)
         goal_deg_6 = _parse_floats(args.goal_joints_deg, 6)
-        goal_pose_mm = _parse_goal_pose(args.goal_pose_mm, arm.get_pose()) if args.goal_pose_mm else None
+        if args.goal_layer and args.goal_pose_mm:
+            raise ValueError("--goal-layer and --goal-pose-mm cannot be used together")
+        if args.goal_layer and args.goal_joints_deg:
+            raise ValueError("--goal-layer and --goal-joints-deg cannot be used together")
+        current_pose = arm.get_pose()
+        goal_pose_mm = _load_goal_layer_pose(args.goal_layer)
+        if goal_pose_mm is None and args.goal_pose_mm:
+            goal_pose_mm = _parse_goal_pose(args.goal_pose_mm, current_pose)
         if goal_pose_mm is not None:
             ik_joints = arm.inverse_kin_near(goal_pose_mm.tolist())
             if ik_joints is None:

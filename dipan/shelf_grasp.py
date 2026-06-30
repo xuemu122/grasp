@@ -43,7 +43,7 @@ HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
 SIDE_GRASP_OFFSET_M = (-0.13, 0.02, 0.018)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
-TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.03)
+TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.035)
 
 # 上面抓取前把第六轴转到手心向下的实测角度
 TOP_J6_DEG = 8.3
@@ -66,7 +66,7 @@ PLACE_RETURN_MAX_Z_MM = float(os.getenv("PLACE_RETURN_MAX_Z_MM", "820"))  # 回�
 
 # 调试开关: 屏蔽手, 只测试手眼标定 + 机械臂走位
 SKIP_HAND = False
-# YOLO 显示/输出阈值。抓取现场默认放宽到 0.3，避免框不上。
+# YOLO 显示/输出阈值。抓取现场默认放宽到 0.7，避免框不上。
 DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.7"))
 # 透明矿泉水/塑料瓶在复杂光照下置信度会明显偏低，只对饮料类单独放宽。
 WATER_CONF_THRESHOLD = float(os.getenv("WATER_CONF_THRESHOLD", "0.52"))
