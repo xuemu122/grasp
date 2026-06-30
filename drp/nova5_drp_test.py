@@ -23,11 +23,12 @@ import trimesh
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRP_ROOT = REPO_ROOT / "drp"
+POINTNET2_ROOT = DRP_ROOT / "pointnet2_ops"
 ROB0FIN_ROOT = DRP_ROOT / "robofin"
 VISION_ROOT = REPO_ROOT / "识别"
 DIPAN_ROOT = REPO_ROOT / "dipan"
 
-for path in (REPO_ROOT, DRP_ROOT, ROB0FIN_ROOT, VISION_ROOT, DIPAN_ROOT):
+for path in (REPO_ROOT, POINTNET2_ROOT, DRP_ROOT, ROB0FIN_ROOT, VISION_ROOT, DIPAN_ROOT):
     sys.path.insert(0, str(path))
 
 from drp.model.impact import IMPACT
