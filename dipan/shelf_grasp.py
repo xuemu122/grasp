@@ -846,16 +846,6 @@ def main():
     arm.go_home()
     time.sleep(MOTION_SETTLE_S)  # 短缓冲，MovJ 内部已等待运动完成
 
-    # ── 货架层管理 ──
-    load_shelf_layers()
-    load_place_point()
-    load_place_transition()
-    load_stow_pose()
-    if _current_layer_idx == STARTUP_LAYER_IDX:
-        save_shelf_layers()
-    if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
-        go_to_layer_via_clearance(arm, _current_layer_idx)
-
     # ── 3. 连接灵巧手 ──
     if SKIP_HAND:
         print("\n[3/4] 灵巧手 已屏蔽 (SKIP_HAND=True)")
@@ -864,6 +854,18 @@ def main():
         print("\n[3/4] 连接 Aero Hand 灵巧手 ...")
         hand = AeroGripper()
         hand.connect()
+
+    # ── 货架层管理 ──
+    load_shelf_layers()
+    load_place_point()
+    load_place_transition()
+    load_stow_pose()
+    if _current_layer_idx == STARTUP_LAYER_IDX:
+        save_shelf_layers()
+    if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
+        if go_to_layer_via_clearance(arm, _current_layer_idx) and hand is not None:
+            hand.open()
+            time.sleep(MOTION_SETTLE_S)
 
     # ── 4. 手眼标定 ──
     print("\n[4/4] 手眼标定 ...")

@@ -590,6 +590,8 @@ def main():
             compile_model=args.compile,
             robot_pcd_points=1024,
         )
+        joint_lower_deg = np.rad2deg(np.array([lim[0] for lim in bridge.sampler.joint_limits], dtype=np.float32))
+        joint_upper_deg = np.rad2deg(np.array([lim[1] for lim in bridge.sampler.joint_limits], dtype=np.float32))
 
         if args.vis:
             vis = Nova5X11Visualizer()
@@ -650,8 +652,8 @@ def main():
             next_q_deg_7 = np.rad2deg(next_q_rad_7[:6])
             next_q_deg_7 = _clip_to_limits(
                 next_q_deg_7,
-                np.array([lim[0] for lim in bridge.sampler.joint_limits], dtype=np.float32),
-                np.array([lim[1] for lim in bridge.sampler.joint_limits], dtype=np.float32),
+                joint_lower_deg,
+                joint_upper_deg,
             )
 
             print("\n[DRP] current(deg):", np.round(current_deg, 3).tolist())
