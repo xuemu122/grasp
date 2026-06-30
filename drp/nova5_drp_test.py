@@ -499,6 +499,16 @@ def _load_goal_layer_pose(layer_id: Optional[str]) -> Optional[np.ndarray]:
     return pose
 
 
+def _prompt_goal_mode() -> str:
+    print("\n[DRP] 目标切换:")
+    print("  1 = 第1层")
+    print("  2 = 第2层")
+    print("  j = 自定义关节角")
+    print("  p = 自定义空间点")
+    print("  q = 退出")
+    return input("  > ").strip().lower()
+
+
 def _load_scene_pcd(
     depth_img: Optional[np.ndarray],
     depth_scale: float,
@@ -550,31 +560,6 @@ def main():
         current_deg = np.asarray(arm.get_joints(), dtype=np.float32)
         current_rad_6 = np.deg2rad(current_deg)
         current_rad_7 = _pad_nova5_to_7(current_rad_6)
-        goal_deg_6 = _parse_floats(args.goal_joints_deg, 6)
-        if args.goal_layer and args.goal_pose_mm:
-            raise ValueError("--goal-layer and --goal-pose-mm cannot be used together")
-        if args.goal_layer and args.goal_joints_deg:
-            raise ValueError("--goal-layer and --goal-joints-deg cannot be used together")
-        current_pose = arm.get_pose()
-        goal_pose_mm = _load_goal_layer_pose(args.goal_layer)
-        if goal_pose_mm is None and args.goal_pose_mm:
-            goal_pose_mm = _parse_goal_pose(args.goal_pose_mm, current_pose)
-        if goal_pose_mm is not None:
-            ik_joints = arm.inverse_kin_near(goal_pose_mm.tolist())
-            if ik_joints is None:
-                raise RuntimeError(f"无法为目标点求逆解: {goal_pose_mm.tolist()}")
-            goal_deg_6 = np.asarray(ik_joints, dtype=np.float32)
-            goal_rad_6 = np.deg2rad(goal_deg_6)
-            print("[DRP] goal pose(mm):", np.round(goal_pose_mm, 3).tolist())
-            print("[DRP] goal joints(deg) from IK:", np.round(goal_deg_6, 3).tolist())
-        elif goal_deg_6 is None:
-            goal_rad_6 = NOVA5_HOME_RAD.copy()
-            goal_deg_6 = NOVA5_HOME_DEG.copy()
-            print("[DRP] using default home joints as goal")
-        else:
-            goal_rad_6 = np.deg2rad(goal_deg_6)
-        goal_rad_7 = _pad_nova5_to_7(goal_rad_6)
-
         color_img = None
         depth_img = None
         if not args.no_camera:
@@ -608,49 +593,113 @@ def main():
 
         if args.vis:
             vis = Nova5X11Visualizer()
+        if args.goal_layer and args.goal_pose_mm:
+            raise ValueError("--goal-layer and --goal-pose-mm cannot be used together")
+        if args.goal_layer and args.goal_joints_deg:
+            raise ValueError("--goal-layer and --goal-joints-deg cannot be used together")
 
-        robot_pcd = bridge.sampler.sample(current_rad_7[:6], num_points=1024)[0].detach().cpu().numpy()
-        scene_pcd_vis = _pad_scene_points(scene_pcd, 2048)
-        next_q_rad_7 = bridge.next_action(current_rad_7, goal_rad_7, scene_pcd_vis)
-        next_q_deg_7 = np.rad2deg(next_q_rad_7[:6])
-        next_q_deg_7 = _clip_to_limits(
-            next_q_deg_7,
-            np.array([lim[0] for lim in bridge.sampler.joint_limits], dtype=np.float32),
-            np.array([lim[1] for lim in bridge.sampler.joint_limits], dtype=np.float32),
-        )
+        while True:
+            current_deg = np.asarray(arm.get_joints(), dtype=np.float32)
+            current_rad_6 = np.deg2rad(current_deg)
+            current_rad_7 = _pad_nova5_to_7(current_rad_6)
+            current_pose = arm.get_pose()
 
-        print("\n[DRP] current(deg):", np.round(current_deg, 3).tolist())
-        print("[DRP] goal(deg):   ", np.round(goal_deg_6, 3).tolist())
-        print("[DRP] next(deg):   ", np.round(next_q_deg_7, 3).tolist())
-        print(f"[DRP] scene_pcd={scene_pcd.shape[0]} points")
+            goal_deg_6 = _parse_floats(args.goal_joints_deg, 6)
+            if args.goal_layer is not None:
+                goal_pose_mm = _load_goal_layer_pose(args.goal_layer)
+            elif args.goal_pose_mm:
+                goal_pose_mm = _parse_goal_pose(args.goal_pose_mm, current_pose)
+            else:
+                choice = _prompt_goal_mode()
+                if choice == "q":
+                    break
+                if choice in ("1", "2"):
+                    goal_pose_mm = _load_goal_layer_pose(choice)
+                elif choice == "j":
+                    raw = input("  输入 6 个关节角(deg, 空格分隔): ").strip().split()
+                    goal_deg_6 = _parse_floats(raw, 6)
+                    goal_pose_mm = None
+                elif choice == "p":
+                    raw = input("  输入目标点 x y z [rx ry rz] (mm, 空格分隔): ").strip().split()
+                    goal_pose_mm = _parse_goal_pose(raw, current_pose)
+                else:
+                    print("[DRP] 未识别输入")
+                    continue
 
-        if vis is not None:
-            vis.show(
-                color_img=color_img,
-                depth_img=depth_img,
-                robot_pcd=robot_pcd,
-                scene_pcd=scene_pcd_vis,
-                current_deg=current_deg,
-                goal_deg=goal_deg_6,
-                next_deg=next_q_deg_7,
-                scene_n=scene_pcd.shape[0],
-                execute=args.execute,
-                camera_on=not args.no_camera,
-                model_id=args.model_id,
+            if goal_deg_6 is None:
+                if goal_pose_mm is None:
+                    goal_deg_6 = NOVA5_HOME_DEG.copy()
+                    goal_rad_6 = NOVA5_HOME_RAD.copy()
+                    print("[DRP] using default home joints as goal")
+                else:
+                    ik_joints = arm.inverse_kin_near(goal_pose_mm.tolist())
+                    if ik_joints is None:
+                        print(f"[DRP] 无法为目标点求逆解: {goal_pose_mm.tolist()}")
+                        continue
+                    goal_deg_6 = np.asarray(ik_joints, dtype=np.float32)
+                    goal_rad_6 = np.deg2rad(goal_deg_6)
+                    print("[DRP] goal pose(mm):", np.round(goal_pose_mm, 3).tolist())
+                    print("[DRP] goal joints(deg) from IK:", np.round(goal_deg_6, 3).tolist())
+            else:
+                goal_rad_6 = np.deg2rad(goal_deg_6)
+
+            goal_rad_7 = _pad_nova5_to_7(goal_rad_6)
+            robot_pcd = bridge.sampler.sample(current_rad_7[:6], num_points=1024)[0].detach().cpu().numpy()
+            scene_pcd_vis = _pad_scene_points(scene_pcd, 2048)
+            next_q_rad_7 = bridge.next_action(current_rad_7, goal_rad_7, scene_pcd_vis)
+            next_q_deg_7 = np.rad2deg(next_q_rad_7[:6])
+            next_q_deg_7 = _clip_to_limits(
+                next_q_deg_7,
+                np.array([lim[0] for lim in bridge.sampler.joint_limits], dtype=np.float32),
+                np.array([lim[1] for lim in bridge.sampler.joint_limits], dtype=np.float32),
             )
 
-        if args.execute:
-            step = np.clip(next_q_deg_7 - current_deg, -args.max_step_deg, args.max_step_deg)
-            target_deg = current_deg + step
-            print("[DRP] execute step(deg):", np.round(step, 3).tolist())
-            print("[DRP] target(deg):      ", np.round(target_deg, 3).tolist())
-            arm.movj(target_deg.tolist(), speed=20, cp=0)
-        else:
-            print("[DRP] dry-run only, no robot motion sent")
+            print("\n[DRP] current(deg):", np.round(current_deg, 3).tolist())
+            print("[DRP] goal(deg):   ", np.round(goal_deg_6, 3).tolist())
+            print("[DRP] next(deg):   ", np.round(next_q_deg_7, 3).tolist())
+            print(f"[DRP] scene_pcd={scene_pcd.shape[0]} points")
 
-        if args.vis:
-            print("[DRP] X11 窗口已打开，按任意键关闭")
-            vis.wait()
+            if vis is not None:
+                vis.show(
+                    color_img=color_img,
+                    depth_img=depth_img,
+                    robot_pcd=robot_pcd,
+                    scene_pcd=scene_pcd_vis,
+                    current_deg=current_deg,
+                    goal_deg=goal_deg_6,
+                    next_deg=next_q_deg_7,
+                    scene_n=scene_pcd.shape[0],
+                    execute=args.execute,
+                    camera_on=not args.no_camera,
+                    model_id=args.model_id,
+                )
+
+            if args.execute:
+                step = np.clip(next_q_deg_7 - current_deg, -args.max_step_deg, args.max_step_deg)
+                target_deg = current_deg + step
+                print("[DRP] execute step(deg):", np.round(step, 3).tolist())
+                print("[DRP] target(deg):      ", np.round(target_deg, 3).tolist())
+                arm.movj(target_deg.tolist(), speed=20, cp=0)
+            else:
+                print("[DRP] dry-run only, no robot motion sent")
+
+            if args.vis:
+                key = cv2.waitKey(0) & 0xFF
+                if key in (ord("q"), 27):
+                    break
+                if key in (ord("1"), ord("2")):
+                    args.goal_layer = chr(key)
+                elif key == ord("j"):
+                    args.goal_joints_deg = None
+                    args.goal_layer = None
+                    args.goal_pose_mm = None
+                elif key == ord("p"):
+                    args.goal_joints_deg = None
+                    args.goal_layer = None
+                    args.goal_pose_mm = None
+                continue
+
+            break
 
     finally:
         try:
