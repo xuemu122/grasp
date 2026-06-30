@@ -48,6 +48,7 @@ Notes:
 - `--vis` opens a local X11 window, which works with MobaXterm X11 forwarding.
 - The bundled `pointnet2_ops` has a PyTorch fallback when the CUDA extension is not usable on the current device.
 - If the camera is disconnected, the script now continues in no-camera mode instead of exiting.
+- You can set a target pose with `--goal-pose-mm x y z [rx ry rz]` or a target joint configuration with `--goal-joints-deg ...`.
 
 ## Citation
 If you find this codebase useful in your research, please cite:

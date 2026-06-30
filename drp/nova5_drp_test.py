@@ -471,6 +471,18 @@ def _parse_floats(values: Optional[list[str]], expected: int) -> Optional[np.nda
     return np.asarray([float(v) for v in values], dtype=np.float32)
 
 
+def _parse_goal_pose(values: Optional[list[str]], current_pose: Iterable[float]) -> Optional[np.ndarray]:
+    if values is None:
+        return None
+    if len(values) not in (3, 6):
+        raise ValueError("expected 3 or 6 values for goal pose")
+    pose = np.asarray([float(v) for v in values], dtype=np.float32)
+    if len(values) == 3:
+        cur = np.asarray(list(current_pose), dtype=np.float32)
+        pose = np.concatenate([pose, cur[3:6]], axis=0)
+    return pose
+
+
 def _load_scene_pcd(
     depth_img: Optional[np.ndarray],
     depth_scale: float,
@@ -503,6 +515,7 @@ def main():
     parser.add_argument("--execute", action="store_true", help="send one clipped MovJ step to Nova5")
     parser.add_argument("--max-step-deg", type=float, default=3.0, help="limit each joint step when executing")
     parser.add_argument("--goal-joints-deg", nargs=6, help="explicit 6 joint goal in degrees")
+    parser.add_argument("--goal-pose-mm", nargs="+", help="explicit goal pose in mm: x y z [rx ry rz]")
     parser.add_argument("--once", action="store_true", help="run one inference and exit")
     args = parser.parse_args()
 
@@ -521,9 +534,19 @@ def main():
         current_rad_6 = np.deg2rad(current_deg)
         current_rad_7 = _pad_nova5_to_7(current_rad_6)
         goal_deg_6 = _parse_floats(args.goal_joints_deg, 6)
-        if goal_deg_6 is None:
+        goal_pose_mm = _parse_goal_pose(args.goal_pose_mm, arm.get_pose()) if args.goal_pose_mm else None
+        if goal_pose_mm is not None:
+            ik_joints = arm.inverse_kin_near(goal_pose_mm.tolist())
+            if ik_joints is None:
+                raise RuntimeError(f"无法为目标点求逆解: {goal_pose_mm.tolist()}")
+            goal_deg_6 = np.asarray(ik_joints, dtype=np.float32)
+            goal_rad_6 = np.deg2rad(goal_deg_6)
+            print("[DRP] goal pose(mm):", np.round(goal_pose_mm, 3).tolist())
+            print("[DRP] goal joints(deg) from IK:", np.round(goal_deg_6, 3).tolist())
+        elif goal_deg_6 is None:
             goal_rad_6 = NOVA5_HOME_RAD.copy()
             goal_deg_6 = NOVA5_HOME_DEG.copy()
+            print("[DRP] using default home joints as goal")
         else:
             goal_rad_6 = np.deg2rad(goal_deg_6)
         goal_rad_7 = _pad_nova5_to_7(goal_rad_6)
