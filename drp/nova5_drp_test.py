@@ -531,6 +531,105 @@ def _load_scene_pcd(
     )
 
 
+def _capture_scene_snapshot(
+    camera: Optional[RealSenseCamera],
+    arm: DobotArm,
+    hand_eye: HandEyeTransformer,
+    depth_stride: int,
+    scene_max_points: int,
+) -> tuple[Optional[np.ndarray], Optional[np.ndarray], np.ndarray]:
+    if camera is None:
+        return None, None, np.zeros((0, 3), dtype=np.float32)
+    flange_pose = arm.get_pose()
+    hand_eye.set_flange(flange_pose)
+    color_img, depth_img = camera.read()
+    if depth_img is None:
+        return color_img, None, np.zeros((0, 3), dtype=np.float32)
+    depth_scale = getattr(camera, "_depth_scale", None) or 0.001
+    scene_pcd = _load_scene_pcd(
+        depth_img=depth_img,
+        depth_scale=depth_scale,
+        flange_pose_mm=flange_pose,
+        hand_eye=hand_eye,
+        stride=depth_stride,
+        max_points=scene_max_points,
+    )
+    return color_img, depth_img, scene_pcd
+
+
+def _trajectory_clearance_mm(
+    bridge: Nova5DRPBridge,
+    q_start_deg: np.ndarray,
+    q_target_deg: np.ndarray,
+    scene_pcd: np.ndarray,
+    interp_steps: int,
+    robot_points: int,
+) -> tuple[float, float]:
+    if scene_pcd.shape[0] == 0:
+        return float("inf"), 0.0
+
+    device = bridge.device
+    scene = torch.as_tensor(scene_pcd, device=device, dtype=torch.float32)
+    q_start = np.asarray(q_start_deg[:6], dtype=np.float32)
+    q_target = np.asarray(q_target_deg[:6], dtype=np.float32)
+
+    min_clearance_mm = float("inf")
+    worst_alpha = 0.0
+    for alpha in np.linspace(0.0, 1.0, max(2, interp_steps)):
+        q = (1.0 - alpha) * q_start + alpha * q_target
+        robot_pcd = bridge.sampler.sample(q, num_points=robot_points)[0]
+        if robot_pcd.numel() == 0:
+            continue
+        dist_mm = torch.cdist(robot_pcd, scene).min().item() * 1000.0
+        if dist_mm < min_clearance_mm:
+            min_clearance_mm = dist_mm
+            worst_alpha = float(alpha)
+
+    return min_clearance_mm, worst_alpha
+
+
+def _select_safe_target(
+    bridge: Nova5DRPBridge,
+    current_deg: np.ndarray,
+    suggested_deg: np.ndarray,
+    scene_pcd: np.ndarray,
+    max_step_deg: float,
+    clearance_mm: float,
+    interp_steps: int,
+    robot_points: int,
+) -> tuple[Optional[np.ndarray], float, float, float]:
+    candidate_scales = (1.0, 0.75, 0.5, 0.35, 0.25, 0.15)
+    best_candidate = None
+    best_clearance = -float("inf")
+    best_alpha = 0.0
+    best_scale = 0.0
+
+    current_deg = np.asarray(current_deg, dtype=np.float32)
+    suggested_deg = np.asarray(suggested_deg, dtype=np.float32)
+    raw_step = suggested_deg - current_deg
+
+    for scale in candidate_scales:
+        step = np.clip(raw_step * scale, -max_step_deg, max_step_deg)
+        target_deg = current_deg + step
+        min_clearance_mm, worst_alpha = _trajectory_clearance_mm(
+            bridge=bridge,
+            q_start_deg=current_deg,
+            q_target_deg=target_deg,
+            scene_pcd=scene_pcd,
+            interp_steps=interp_steps,
+            robot_points=robot_points,
+        )
+        if min_clearance_mm >= clearance_mm:
+            return target_deg, min_clearance_mm, worst_alpha, scale
+        if min_clearance_mm > best_clearance:
+            best_candidate = target_deg
+            best_clearance = min_clearance_mm
+            best_alpha = worst_alpha
+            best_scale = scale
+
+    return None, best_clearance, best_alpha, best_scale
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-id", default="jimyoung6709/DRP", help="HF model id or local model repo")
@@ -542,8 +641,14 @@ def main():
     parser.add_argument("--vis", action="store_true", help="enable X11/OpenCV visualization")
     parser.add_argument("--execute", action="store_true", help="send one clipped MovJ step to Nova5")
     parser.add_argument("--max-step-deg", type=float, default=3.0, help="limit each joint step when executing")
+    parser.add_argument("--action-gain", type=float, default=2.0, help="multiply DRP suggested step before safety clipping")
+    parser.add_argument("--exec-speed", type=float, default=30.0, help="MovJ speed used in streaming execution")
+    parser.add_argument("--exec-cp", type=float, default=20.0, help="MovJ cp used in streaming execution")
+    parser.add_argument("--control-hz", type=float, default=4.0, help="streaming replan rate while executing")
     parser.add_argument("--goal-tol-deg", type=float, default=2.0, help="stop executing when goal error is below this threshold")
     parser.add_argument("--max-exec-iters", type=int, default=12, help="max replan/move iterations per selected goal")
+    parser.add_argument("--collision-clearance-mm", type=float, default=55.0, help="minimum allowed robot-to-scene clearance during execution")
+    parser.add_argument("--collision-interp-steps", type=int, default=5, help="trajectory samples used for clearance checking")
     parser.add_argument("--goal-joints-deg", nargs=6, help="explicit 6 joint goal in degrees")
     parser.add_argument("--goal-pose-mm", nargs="+", help="explicit goal pose in mm: x y z [rx ry rz]")
     parser.add_argument("--goal-layer", choices=("1", "2"), help="use shelf layer 1 or 2 pose as goal")
@@ -650,6 +755,13 @@ def main():
                 goal_rad_6 = np.deg2rad(goal_deg_6)
 
             goal_rad_7 = _pad_nova5_to_7(goal_rad_6)
+            color_img, depth_img, scene_pcd = _capture_scene_snapshot(
+                camera=camera,
+                arm=arm,
+                hand_eye=hand_eye,
+                depth_stride=args.depth_stride,
+                scene_max_points=args.scene_max_points,
+            )
             scene_pcd_vis = _pad_scene_points(scene_pcd, 2048)
             print(f"[DRP] scene_pcd={scene_pcd.shape[0]} points")
 
@@ -658,9 +770,15 @@ def main():
                 next_q_rad_7 = bridge.next_action(current_rad_7, goal_rad_7, scene_pcd_vis)
                 next_q_deg_7 = np.rad2deg(next_q_rad_7[:6])
                 next_q_deg_7 = _clip_to_limits(next_q_deg_7, joint_lower_deg, joint_upper_deg)
+                raw_step = next_q_deg_7 - current_deg
+                scaled_step = raw_step * args.action_gain
+                target_deg = current_deg + np.clip(scaled_step, -args.max_step_deg, args.max_step_deg)
+                print(f"[DRP] infer loop latency: not measured, one-shot dry run")
                 print("\n[DRP] current(deg):", np.round(current_deg, 3).tolist())
                 print("[DRP] goal(deg):   ", np.round(goal_deg_6, 3).tolist())
                 print("[DRP] next(deg):   ", np.round(next_q_deg_7, 3).tolist())
+                print("[DRP] scaled step(deg):", np.round(np.clip(scaled_step, -args.max_step_deg, args.max_step_deg), 3).tolist())
+                print("[DRP] target(deg):      ", np.round(target_deg, 3).tolist())
                 print("[DRP] dry-run only, no robot motion sent")
                 if vis is not None:
                     vis.show(
@@ -678,6 +796,7 @@ def main():
                     )
             else:
                 for exec_idx in range(max(1, args.max_exec_iters)):
+                    loop_t0 = time.time()
                     current_deg = np.asarray(arm.get_joints(), dtype=np.float32)
                     current_rad_7 = _pad_nova5_to_7(np.deg2rad(current_deg))
                     goal_err = goal_deg_6 - current_deg
@@ -685,18 +804,45 @@ def main():
                         print(f"[DRP] goal reached within {args.goal_tol_deg:.1f} deg")
                         break
 
+                    color_img, depth_img, scene_pcd = _capture_scene_snapshot(
+                        camera=camera,
+                        arm=arm,
+                        hand_eye=hand_eye,
+                        depth_stride=args.depth_stride,
+                        scene_max_points=args.scene_max_points,
+                    )
+                    scene_pcd_vis = _pad_scene_points(scene_pcd, 2048)
                     robot_pcd = bridge.sampler.sample(current_rad_7[:6], num_points=1024)[0].detach().cpu().numpy()
                     next_q_rad_7 = bridge.next_action(current_rad_7, goal_rad_7, scene_pcd_vis)
                     next_q_deg_7 = np.rad2deg(next_q_rad_7[:6])
                     next_q_deg_7 = _clip_to_limits(next_q_deg_7, joint_lower_deg, joint_upper_deg)
-                    step = np.clip(next_q_deg_7 - current_deg, -args.max_step_deg, args.max_step_deg)
-                    target_deg = current_deg + step
+                    raw_step = next_q_deg_7 - current_deg
+                    suggested_deg = current_deg + np.clip(raw_step * args.action_gain, -args.max_step_deg, args.max_step_deg)
+                    target_deg, clearance_mm, worst_alpha, scale = _select_safe_target(
+                        bridge=bridge,
+                        current_deg=current_deg,
+                        suggested_deg=suggested_deg,
+                        scene_pcd=scene_pcd_vis,
+                        max_step_deg=args.max_step_deg,
+                        clearance_mm=args.collision_clearance_mm,
+                        interp_steps=args.collision_interp_steps,
+                        robot_points=256,
+                    )
+                    if target_deg is None:
+                        print(
+                            f"[DRP][安全] 所有缩步方案都低于 {args.collision_clearance_mm:.0f}mm, 停止本轮"
+                        )
+                        print(f"[DRP][安全] best_clearance={clearance_mm:.1f}mm at alpha={worst_alpha:.2f}, scale={scale:.2f}")
+                        break
+                    step = target_deg - current_deg
                     print("\n[DRP] current(deg):", np.round(current_deg, 3).tolist())
                     print("[DRP] goal(deg):   ", np.round(goal_deg_6, 3).tolist())
                     print("[DRP] next(deg):   ", np.round(next_q_deg_7, 3).tolist())
+                    print("[DRP] scaled step(deg):", np.round(suggested_deg - current_deg, 3).tolist())
                     print("[DRP] execute step(deg):", np.round(step, 3).tolist())
                     print("[DRP] target(deg):      ", np.round(target_deg, 3).tolist())
-                    arm.movj(target_deg.tolist(), speed=20, cp=0)
+                    print(f"[DRP][安全] clearance={clearance_mm:.1f}mm alpha={worst_alpha:.2f} scale={scale:.2f}")
+                    arm.movj(target_deg.tolist(), speed=args.exec_speed, cp=args.exec_cp, wait=False)
                     if vis is not None:
                         vis.show(
                             color_img=color_img,
@@ -711,7 +857,8 @@ def main():
                             camera_on=not args.no_camera,
                             model_id=args.model_id,
                         )
-                    time.sleep(MOTION_SETTLE_S)
+                    time.sleep(max(0.01, 1.0 / max(args.control_hz, 0.1)))
+                    print(f"[DRP] exec loop latency: {time.time() - loop_t0:.2f}s")
 
             if args.vis:
                 cv2.waitKey(1)
