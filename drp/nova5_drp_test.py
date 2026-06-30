@@ -56,6 +56,7 @@ NOVA5_MESH_ROOT = (
 NOVA5_HOME_RAD = np.array([0.0, 0.5378, -1.1869, 0.0, 1.7785, 0.0], dtype=np.float32)
 NOVA5_HOME_DEG = np.rad2deg(NOVA5_HOME_RAD)
 SHELF_LAYERS_JSON = DIPAN_ROOT / "shelf_layers.json"
+MOTION_SETTLE_S = float(os.getenv("MOTION_SETTLE_S", "0.2"))
 
 
 def _ensure_float_array(values: Iterable[float], length: int) -> np.ndarray:
