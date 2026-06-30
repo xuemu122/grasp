@@ -404,7 +404,12 @@ class Nova5DRPBridge:
             "robot_pcd": robot_pcd,
         }
         action = self.model.get_action(obs)
-        return action[0].detach().cpu().numpy()
+        action = action.detach().cpu().numpy()
+        if action.ndim == 3:
+            return action[0, 0]
+        if action.ndim == 2:
+            return action[0]
+        return action
 
 
 class Nova5X11Visualizer:

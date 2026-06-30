@@ -36,6 +36,19 @@ python drp/drp_inference.py
 
 https://github.com/user-attachments/assets/1074ddb1-2c5c-4470-bf86-3023c83b84ea
 
+## Nova5 / Jetson Test
+
+For the Nova5 bridge test on this workspace, use the X11/OpenCV preview script:
+
+```bash
+python drp/nova5_drp_test.py --vis --no-camera
+```
+
+Notes:
+- `--vis` opens a local X11 window, which works with MobaXterm X11 forwarding.
+- The bundled `pointnet2_ops` has a PyTorch fallback when the CUDA extension is not usable on the current device.
+- If the camera is disconnected, the script now continues in no-camera mode instead of exiting.
+
 ## Citation
 If you find this codebase useful in your research, please cite:
 ```bibtex

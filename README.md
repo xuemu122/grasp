@@ -39,6 +39,10 @@ python3 move_robot.py cancel
 cd /home/nvidia/grasp/识别
 ./run.sh --conf 0.05 --no-ocr
 
+# DRP / Nova5 预览（MobaXterm X11）
+cd /home/nvidia/grasp
+python3 drp/nova5_drp_test.py --vis --no-camera
+
 # 数据集抽帧，默认保存 10 张
 cd /home/nvidia/grasp/识别
 ./capture_frames.py -o dataset_captures
@@ -56,6 +60,7 @@ cd /home/nvidia/grasp/识别
 - 抓取主程序会按当前层记录位姿的世界 Z 再过滤一次候选，默认容差 `LAYER_Z_TOLERANCE_M=0.16`，防止误抓上一层/下一层。
 - 侧面抓取点会保持在物体底部上方至少 6cm；如果物体高度不够，会自动切换为上面抓取。
 - 当前灵巧手侧面抓默认使用瓶子抓取手势；上端抓取仍使用上端手势。如需侧面抓也回到原手势，可用 `HAND_GRASP_MODE=auto` 启动。
+- `drp/nova5_drp_test.py` 默认走本地 X11/OpenCV 预览；在当前 Jetson 上 `pointnet2_ops` CUDA 扩展不可用时会自动降级到纯 PyTorch 实现。
 - 机械臂 `MovL`/`MovJ` 会把代码里的 `speed` 参数下发为 DOBOT `v=1..100`；动作节奏可用 `MOTION_SETTLE_S`、`GRASP_SETTLE_S`、`HAND_CLOSE_WAIT_S`、`ROBOT_POLL_S` 微调，放置回程安全高度可用 `PLACE_RETURN_CLEARANCE_MM` 调整。
 - 抓取主程序里 `b` 可切换底盘放置流程：开启后会调用 `move_robot.py place`，但不再强制在放置前自动收起机械臂。
 - 抓取主程序识别阈值默认 `DETECT_CONF_THRESHOLD=0.3`；独立识别调试程序会打印 YOLO 原始候选数量，方便排查新模型无框问题。
