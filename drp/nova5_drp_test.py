@@ -9,16 +9,18 @@ pads Nova5's 6-DoF joints to 7 DoF for a first connection test.
 from __future__ import annotations
 
 import argparse
+import threading
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
-import cv2
 import numpy as np
+import viser
 import torch
 import trimesh
+from viser.extras import ViserUrdf
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRP_ROOT = REPO_ROOT / "drp"
@@ -67,6 +69,15 @@ def _pad_nova5_to_7(joints_rad: np.ndarray) -> np.ndarray:
 
 def _clip_to_limits(values_deg: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
     return np.clip(values_deg, lower, upper)
+
+
+def _pad_scene_points(scene_pcd: np.ndarray, target_n: int) -> np.ndarray:
+    if scene_pcd.shape[0] >= target_n:
+        return scene_pcd[:target_n]
+    if scene_pcd.shape[0] == 0:
+        return np.zeros((target_n, 3), dtype=np.float32)
+    idx = np.random.choice(scene_pcd.shape[0], target_n - scene_pcd.shape[0], replace=True)
+    return np.concatenate([scene_pcd, scene_pcd[idx]], axis=0)
 
 
 def _rewrite_urdf_mesh_paths(src: Path) -> Path:
@@ -270,6 +281,68 @@ class Nova5DRPBridge:
         return action[0].detach().cpu().numpy()
 
 
+class Nova5ViserBridge:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._vis_urdf = _rewrite_urdf_mesh_paths(NOVA5_URDF)
+        self.server = viser.ViserServer()
+        self.server.scene.add_frame("/WorldAxes", show_axes=True, axes_length=0.15, axes_radius=0.01, visible=True)
+        self.server.scene.add_frame("/robot", show_axes=False)
+        self.server.scene.add_grid("/grid", width=8, height=8, position=(0.0, 0.0, 0.0), shadow_opacity=0.1)
+        self._urdf_vis = ViserUrdf(
+            self.server,
+            urdf_or_path=self._vis_urdf,
+            root_node_name="/robot",
+            load_meshes=True,
+            load_collision_meshes=False,
+        )
+        self.joint_names = self._urdf_vis.get_actuated_joint_names()
+        self._name_to_idx = {name: i for i, name in enumerate(self.joint_names)}
+        self._q = np.zeros(len(self.joint_names), dtype=float)
+        self._robot_pcd_handle = self.server.scene.add_point_cloud(
+            name="/robot_pcd",
+            points=np.zeros((0, 3), dtype=np.float32),
+            colors=(0, 80, 255),
+            point_size=0.004,
+            visible=True,
+        )
+        self._scene_pcd_handle = self.server.scene.add_point_cloud(
+            name="/scene_pcd",
+            points=np.zeros((0, 3), dtype=np.float32),
+            colors=(60, 170, 80),
+            point_size=0.005,
+            visible=True,
+        )
+        self._set_nova5_neutral()
+
+    def _set_nova5_neutral(self):
+        q = np.deg2rad(NOVA5_HOME_DEG)
+        self.set_joint_positions(q)
+
+    def set_joint_positions(self, q_rad_6: np.ndarray):
+        q = np.asarray(q_rad_6, dtype=float).reshape(6)
+        cfg = self._q.copy()
+        for i, value in enumerate(q, start=1):
+            idx = self._name_to_idx.get(f"joint{i}")
+            if idx is None:
+                continue
+            cfg[idx] = value
+        self._q[:] = cfg
+        self._urdf_vis.update_cfg(self._q)
+
+    def update(self, current_q_deg: np.ndarray, robot_pcd: np.ndarray, scene_pcd: np.ndarray):
+        with self._lock:
+            self.set_joint_positions(np.deg2rad(current_q_deg[:6]))
+            self._robot_pcd_handle.points = np.asarray(robot_pcd, dtype=np.float32)
+            self._scene_pcd_handle.points = np.asarray(scene_pcd, dtype=np.float32)
+
+    def close(self):
+        try:
+            self.server.stop()
+        except Exception:
+            pass
+
+
 def _parse_floats(values: Optional[list[str]], expected: int) -> Optional[np.ndarray]:
     if values is None:
         return None
@@ -309,6 +382,7 @@ def main():
     parser.add_argument("--device-id", type=int, default=0, help="camera device id")
     parser.add_argument("--depth-stride", type=int, default=12, help="pixel sampling stride for depth point cloud")
     parser.add_argument("--scene-max-points", type=int, default=2048, help="max scene points passed to DRP")
+    parser.add_argument("--vis", action="store_true", help="enable viser visualization")
     parser.add_argument("--execute", action="store_true", help="send one clipped MovJ step to Nova5")
     parser.add_argument("--max-step-deg", type=float, default=3.0, help="limit each joint step when executing")
     parser.add_argument("--goal-joints-deg", nargs=6, help="explicit 6 joint goal in degrees")
@@ -321,6 +395,7 @@ def main():
     arm = DobotArm()
     camera = None
     bridge = None
+    vis = None
     hand_eye = HandEyeTransformer()
 
     try:
@@ -357,7 +432,12 @@ def main():
             robot_pcd_points=1024,
         )
 
-        next_q_rad_7 = bridge.next_action(current_rad_7, goal_rad_7, scene_pcd)
+        if args.vis:
+            vis = Nova5ViserBridge()
+
+        robot_pcd = bridge.sampler.sample(current_rad_7[:6], num_points=1024)[0].detach().cpu().numpy()
+        scene_pcd_vis = _pad_scene_points(scene_pcd, 2048)
+        next_q_rad_7 = bridge.next_action(current_rad_7, goal_rad_7, scene_pcd_vis)
         next_q_deg_7 = np.rad2deg(next_q_rad_7[:6])
         next_q_deg_7 = _clip_to_limits(
             next_q_deg_7,
@@ -370,6 +450,9 @@ def main():
         print("[DRP] next(deg):   ", np.round(next_q_deg_7, 3).tolist())
         print(f"[DRP] scene_pcd={scene_pcd.shape[0]} points")
 
+        if vis is not None:
+            vis.update(current_deg, robot_pcd, scene_pcd_vis)
+
         if args.execute:
             step = np.clip(next_q_deg_7 - current_deg, -args.max_step_deg, args.max_step_deg)
             target_deg = current_deg + step
@@ -378,6 +461,9 @@ def main():
             arm.movj(target_deg.tolist(), speed=20, cp=0)
         else:
             print("[DRP] dry-run only, no robot motion sent")
+
+        if args.vis:
+            input("[DRP] 已打开 viser，回车退出...")
 
     finally:
         try:
@@ -392,6 +478,11 @@ def main():
         try:
             if bridge is not None:
                 bridge.sampler.close()
+        except Exception:
+            pass
+        try:
+            if vis is not None:
+                vis.close()
         except Exception:
             pass
 
