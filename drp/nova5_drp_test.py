@@ -9,18 +9,17 @@ pads Nova5's 6-DoF joints to 7 DoF for a first connection test.
 from __future__ import annotations
 
 import argparse
-import threading
+import os
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
+import cv2
 import numpy as np
-import viser
 import torch
 import trimesh
-from viser.extras import ViserUrdf
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRP_ROOT = REPO_ROOT / "drp"
@@ -78,6 +77,132 @@ def _pad_scene_points(scene_pcd: np.ndarray, target_n: int) -> np.ndarray:
         return np.zeros((target_n, 3), dtype=np.float32)
     idx = np.random.choice(scene_pcd.shape[0], target_n - scene_pcd.shape[0], replace=True)
     return np.concatenate([scene_pcd, scene_pcd[idx]], axis=0)
+
+
+def _depth_to_vis(depth_img: np.ndarray) -> np.ndarray:
+    depth = np.asarray(depth_img)
+    if depth.ndim != 2:
+        raise ValueError(f"expected a single-channel depth image, got {depth.shape}")
+    depth = depth.astype(np.float32, copy=False)
+    valid = np.isfinite(depth) & (depth > 0)
+    if not np.any(valid):
+        return np.zeros((*depth.shape, 3), dtype=np.uint8)
+    lo = np.percentile(depth[valid], 5)
+    hi = np.percentile(depth[valid], 95)
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        hi = lo + 1.0
+    norm = np.clip((depth - lo) / (hi - lo), 0.0, 1.0)
+    norm = (norm * 255.0).astype(np.uint8)
+    return cv2.applyColorMap(norm, cv2.COLORMAP_TURBO)
+
+
+def _make_pointcloud_view(
+    robot_pcd: np.ndarray,
+    scene_pcd: np.ndarray,
+    size: tuple[int, int] = (720, 720),
+) -> np.ndarray:
+    h, w = size
+    canvas = np.zeros((h, w, 3), dtype=np.uint8)
+    canvas[:] = (18, 18, 18)
+
+    # Fixed workspace bounds in meters. We show the X-Z plane because it makes
+    # the shelf height and reach easy to inspect during X11 preview.
+    x_min, x_max = -0.9, 0.9
+    z_min, z_max = -0.1, 1.5
+    margin = 36
+    plot_w = w - 2 * margin
+    plot_h = h - 2 * margin
+
+    def _to_px(points: np.ndarray) -> np.ndarray:
+        if points.size == 0:
+            return np.zeros((0, 2), dtype=np.int32)
+        pts = np.asarray(points, dtype=np.float32)
+        x = np.clip((pts[:, 0] - x_min) / max(x_max - x_min, 1e-6), 0.0, 1.0)
+        z = np.clip((pts[:, 2] - z_min) / max(z_max - z_min, 1e-6), 0.0, 1.0)
+        px = margin + (x * plot_w).astype(np.int32)
+        py = h - margin - (z * plot_h).astype(np.int32)
+        return np.stack([px, py], axis=1)
+
+    # Frame and guide lines.
+    cv2.rectangle(canvas, (margin, margin), (w - margin, h - margin), (80, 80, 80), 1)
+    for frac in (0.25, 0.5, 0.75):
+        x = margin + int(plot_w * frac)
+        z = margin + int(plot_h * frac)
+        cv2.line(canvas, (x, margin), (x, h - margin), (45, 45, 45), 1)
+        cv2.line(canvas, (margin, z), (w - margin, z), (45, 45, 45), 1)
+
+    cv2.putText(canvas, "X-Z point cloud", (margin, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (220, 220, 220), 2)
+    cv2.putText(canvas, "X", (w - 22, h - margin + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1)
+    cv2.putText(canvas, "Z", (10, margin + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1)
+
+    scene_px = _to_px(scene_pcd)
+    robot_px = _to_px(robot_pcd)
+
+    for x, y in scene_px:
+        if margin <= x < w - margin and margin <= y < h - margin:
+            cv2.circle(canvas, (int(x), int(y)), 1, (60, 200, 70), -1)
+    for x, y in robot_px:
+        if margin <= x < w - margin and margin <= y < h - margin:
+            cv2.circle(canvas, (int(x), int(y)), 1, (230, 120, 40), -1)
+
+    cv2.putText(
+        canvas,
+        f"scene={scene_pcd.shape[0]}  robot={robot_pcd.shape[0]}",
+        (margin, h - 12),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (210, 210, 210),
+        1,
+    )
+    return canvas
+
+
+def _make_status_panel(
+    current_deg: np.ndarray,
+    goal_deg: np.ndarray,
+    next_deg: np.ndarray,
+    scene_n: int,
+    execute: bool,
+    camera_on: bool,
+    model_id: str,
+    size: tuple[int, int] = (720, 360),
+) -> np.ndarray:
+    h, w = size
+    canvas = np.zeros((h, w, 3), dtype=np.uint8)
+    canvas[:] = (24, 24, 24)
+
+    def put(line: str, y: int, color=(230, 230, 230), scale=0.58):
+        cv2.putText(canvas, line, (16, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
+
+    put("Nova5 + DRP preview", 34, (255, 255, 255), 0.8)
+    put(f"model: {model_id}", 64, (180, 180, 180), 0.52)
+    put(f"camera: {'on' if camera_on else 'off'}   execute: {'on' if execute else 'off'}", 90, (180, 220, 255), 0.56)
+    put(f"scene points: {scene_n}", 124)
+    put(f"current deg: {np.round(current_deg, 2).tolist()}", 162)
+    put(f"goal deg:    {np.round(goal_deg, 2).tolist()}", 198)
+    put(f"next deg:    {np.round(next_deg, 2).tolist()}", 236, (120, 220, 120))
+    put("window: X11 / MobaXterm", 292, (120, 180, 255), 0.56)
+    return canvas
+
+
+def _stack_preview(color_img: Optional[np.ndarray], depth_img: Optional[np.ndarray], pointcloud_img: np.ndarray, status_img: np.ndarray) -> np.ndarray:
+    def _fit(img: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
+        if img is None:
+            return np.zeros((target_h, target_w, 3), dtype=np.uint8)
+        out = img
+        if out.ndim == 2:
+            out = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+        if out.shape[2] == 4:
+            out = cv2.cvtColor(out, cv2.COLOR_BGRA2BGR)
+        return cv2.resize(out, (target_w, target_h), interpolation=cv2.INTER_AREA)
+
+    top_left = _fit(color_img, 360, 640)
+    bottom_left = _fit(_depth_to_vis(depth_img) if depth_img is not None else None, 360, 640)
+    right_top = _fit(pointcloud_img, 360, 720)
+    right_bottom = _fit(status_img, 360, 720)
+    left = np.vstack([top_left, bottom_left])
+    right = np.vstack([right_top, right_bottom])
+    return np.hstack([left, right])
 
 
 def _rewrite_urdf_mesh_paths(src: Path) -> Path:
@@ -281,66 +406,55 @@ class Nova5DRPBridge:
         return action[0].detach().cpu().numpy()
 
 
-class Nova5ViserBridge:
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._vis_urdf = _rewrite_urdf_mesh_paths(NOVA5_URDF)
-        self.server = viser.ViserServer()
-        self.server.scene.add_frame("/WorldAxes", show_axes=True, axes_length=0.15, axes_radius=0.01, visible=True)
-        self.server.scene.add_frame("/robot", show_axes=False)
-        self.server.scene.add_grid("/grid", width=8, height=8, position=(0.0, 0.0, 0.0), shadow_opacity=0.1)
-        self._urdf_vis = ViserUrdf(
-            self.server,
-            urdf_or_path=self._vis_urdf,
-            root_node_name="/robot",
-            load_meshes=True,
-            load_collision_meshes=False,
-        )
-        self.joint_names = self._urdf_vis.get_actuated_joint_names()
-        self._name_to_idx = {name: i for i, name in enumerate(self.joint_names)}
-        self._q = np.zeros(len(self.joint_names), dtype=float)
-        self._robot_pcd_handle = self.server.scene.add_point_cloud(
-            name="/robot_pcd",
-            points=np.zeros((0, 3), dtype=np.float32),
-            colors=(0, 80, 255),
-            point_size=0.004,
-            visible=True,
-        )
-        self._scene_pcd_handle = self.server.scene.add_point_cloud(
-            name="/scene_pcd",
-            points=np.zeros((0, 3), dtype=np.float32),
-            colors=(60, 170, 80),
-            point_size=0.005,
-            visible=True,
-        )
-        self._set_nova5_neutral()
+class Nova5X11Visualizer:
+    def __init__(self, window_name: str = "Nova5 DRP Preview"):
+        self.window_name = window_name
+        self.enabled = bool(os.environ.get("DISPLAY"))
+        if not self.enabled:
+            print("[VIS] DISPLAY is empty, X11 window will not open.")
+            return
+        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.window_name, 1440, 720)
 
-    def _set_nova5_neutral(self):
-        q = np.deg2rad(NOVA5_HOME_DEG)
-        self.set_joint_positions(q)
+    def show(
+        self,
+        color_img: Optional[np.ndarray],
+        depth_img: Optional[np.ndarray],
+        robot_pcd: np.ndarray,
+        scene_pcd: np.ndarray,
+        current_deg: np.ndarray,
+        goal_deg: np.ndarray,
+        next_deg: np.ndarray,
+        scene_n: int,
+        execute: bool,
+        camera_on: bool,
+        model_id: str,
+    ):
+        if not self.enabled:
+            return
+        pc_view = _make_pointcloud_view(robot_pcd, scene_pcd)
+        status = _make_status_panel(
+            current_deg=current_deg,
+            goal_deg=goal_deg,
+            next_deg=next_deg,
+            scene_n=scene_n,
+            execute=execute,
+            camera_on=camera_on,
+            model_id=model_id,
+        )
+        preview = _stack_preview(color_img, depth_img, pc_view, status)
+        cv2.imshow(self.window_name, preview)
+        cv2.waitKey(1)
 
-    def set_joint_positions(self, q_rad_6: np.ndarray):
-        q = np.asarray(q_rad_6, dtype=float).reshape(6)
-        cfg = self._q.copy()
-        for i, value in enumerate(q, start=1):
-            idx = self._name_to_idx.get(f"joint{i}")
-            if idx is None:
-                continue
-            cfg[idx] = value
-        self._q[:] = cfg
-        self._urdf_vis.update_cfg(self._q)
-
-    def update(self, current_q_deg: np.ndarray, robot_pcd: np.ndarray, scene_pcd: np.ndarray):
-        with self._lock:
-            self.set_joint_positions(np.deg2rad(current_q_deg[:6]))
-            self._robot_pcd_handle.points = np.asarray(robot_pcd, dtype=np.float32)
-            self._scene_pcd_handle.points = np.asarray(scene_pcd, dtype=np.float32)
+    def wait(self):
+        if not self.enabled:
+            return
+        cv2.waitKey(0)
 
     def close(self):
-        try:
-            self.server.stop()
-        except Exception:
-            pass
+        if not self.enabled:
+            return
+        cv2.destroyWindow(self.window_name)
 
 
 def _parse_floats(values: Optional[list[str]], expected: int) -> Optional[np.ndarray]:
@@ -352,18 +466,15 @@ def _parse_floats(values: Optional[list[str]], expected: int) -> Optional[np.nda
 
 
 def _load_scene_pcd(
-    camera: Optional[RealSenseCamera],
+    depth_img: Optional[np.ndarray],
+    depth_scale: float,
     flange_pose_mm: Iterable[float],
     hand_eye: HandEyeTransformer,
     stride: int,
     max_points: int,
 ) -> np.ndarray:
-    if camera is None:
-        return np.zeros((0, 3), dtype=np.float32)
-    color_img, depth_img = camera.read()
     if depth_img is None:
         return np.zeros((0, 3), dtype=np.float32)
-    depth_scale = getattr(camera, "_depth_scale", None) or 0.001
     return _pixel_to_robot_points(
         depth_img=depth_img,
         depth_scale=depth_scale,
@@ -382,7 +493,7 @@ def main():
     parser.add_argument("--device-id", type=int, default=0, help="camera device id")
     parser.add_argument("--depth-stride", type=int, default=12, help="pixel sampling stride for depth point cloud")
     parser.add_argument("--scene-max-points", type=int, default=2048, help="max scene points passed to DRP")
-    parser.add_argument("--vis", action="store_true", help="enable viser visualization")
+    parser.add_argument("--vis", action="store_true", help="enable X11/OpenCV visualization")
     parser.add_argument("--execute", action="store_true", help="send one clipped MovJ step to Nova5")
     parser.add_argument("--max-step-deg", type=float, default=3.0, help="limit each joint step when executing")
     parser.add_argument("--goal-joints-deg", nargs=6, help="explicit 6 joint goal in degrees")
@@ -411,17 +522,27 @@ def main():
             goal_rad_6 = np.deg2rad(goal_deg_6)
         goal_rad_7 = _pad_nova5_to_7(goal_rad_6)
 
+        color_img = None
+        depth_img = None
         if not args.no_camera:
-            camera = RealSenseCamera(width=640, height=480, fps=30, device_id=args.device_id)
-            flange_pose = arm.get_pose()
-            hand_eye.set_flange(flange_pose)
-            scene_pcd = _load_scene_pcd(
-                camera=camera,
-                flange_pose_mm=flange_pose,
-                hand_eye=hand_eye,
-                stride=args.depth_stride,
-                max_points=args.scene_max_points,
-            )
+            try:
+                camera = RealSenseCamera(width=640, height=480, fps=30, device_id=args.device_id)
+                flange_pose = arm.get_pose()
+                hand_eye.set_flange(flange_pose)
+                color_img, depth_img = camera.read()
+                depth_scale = getattr(camera, "_depth_scale", None) or 0.001
+                scene_pcd = _load_scene_pcd(
+                    depth_img=depth_img,
+                    depth_scale=depth_scale,
+                    flange_pose_mm=flange_pose,
+                    hand_eye=hand_eye,
+                    stride=args.depth_stride,
+                    max_points=args.scene_max_points,
+                )
+            except Exception as e:
+                print(f"[相机] 初始化失败，继续无相机模式: {e}")
+                camera = None
+                scene_pcd = np.zeros((0, 3), dtype=np.float32)
         else:
             scene_pcd = np.zeros((0, 3), dtype=np.float32)
 
@@ -433,7 +554,7 @@ def main():
         )
 
         if args.vis:
-            vis = Nova5ViserBridge()
+            vis = Nova5X11Visualizer()
 
         robot_pcd = bridge.sampler.sample(current_rad_7[:6], num_points=1024)[0].detach().cpu().numpy()
         scene_pcd_vis = _pad_scene_points(scene_pcd, 2048)
@@ -451,7 +572,19 @@ def main():
         print(f"[DRP] scene_pcd={scene_pcd.shape[0]} points")
 
         if vis is not None:
-            vis.update(current_deg, robot_pcd, scene_pcd_vis)
+            vis.show(
+                color_img=color_img,
+                depth_img=depth_img,
+                robot_pcd=robot_pcd,
+                scene_pcd=scene_pcd_vis,
+                current_deg=current_deg,
+                goal_deg=goal_deg_6,
+                next_deg=next_q_deg_7,
+                scene_n=scene_pcd.shape[0],
+                execute=args.execute,
+                camera_on=not args.no_camera,
+                model_id=args.model_id,
+            )
 
         if args.execute:
             step = np.clip(next_q_deg_7 - current_deg, -args.max_step_deg, args.max_step_deg)
@@ -463,7 +596,8 @@ def main():
             print("[DRP] dry-run only, no robot motion sent")
 
         if args.vis:
-            input("[DRP] 已打开 viser，回车退出...")
+            print("[DRP] X11 窗口已打开，按任意键关闭")
+            vis.wait()
 
     finally:
         try:
