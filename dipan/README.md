@@ -76,6 +76,8 @@ DETECT_CONF_THRESHOLD=0.3 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAI
 - `DEPTH_GUARD_SELF_MASK_RADIUS_M`：自手部剔除半径，默认约 `0.0725` m；如果红点仍贴在手指上可略调大，如果误删近处层板可调小。
 - `DEPTH_GUARD_SELF_MASK_LENGTH_M`：自手部剔除长度，默认 `0.25` m；通常等于法兰到指尖长度。
 - `DEPTH_GUARD_SELF_MASK_BACKOFF_M`：自手部剔除从法兰向后覆盖的长度，默认 `0.03` m；用于覆盖手掌根部/安装件附近的深度点。
+- `DEPTH_GUARD_DEPTH_ALIGN_ENABLE`：相机深度一致性过滤开关，默认开启；碰撞点除了要靠近手部胶囊，还要和路径最近点在相机深度方向上对齐，用于过滤透视造成的近邻误判。
+- `DEPTH_GUARD_DEPTH_ALIGN_TOLERANCE_M`：相机深度一致性容差，默认 `0.035` m；如果层板确实有距离但仍被红点拦截可略调小/保持，若真实障碍漏检则调大或关闭深度对齐。
 - `DEPTH_GUARD_BYPASS_ENABLE`：对齐路径自动绕行开关，默认开启；直达被深度护栏挡住时会尝试上抬/侧绕中间点。
 - `DEPTH_GUARD_BYPASS_LIFTS_MM`：绕行上抬候选，默认 `60,100,140` mm。
 - `DEPTH_GUARD_BYPASS_SIDE_MM`：绕行侧向候选，默认 `60,-60` mm。

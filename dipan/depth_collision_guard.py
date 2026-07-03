@@ -110,15 +110,35 @@ def depth_to_robot_obstacles(
     return base_pts
 
 
-def _point_segment_distances(points: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+def _point_segment_distances_and_closest(points: np.ndarray, a: np.ndarray, b: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     ab = b - a
     denom = float(np.dot(ab, ab))
     if denom <= 1e-12:
-        return np.linalg.norm(points - a[None, :], axis=1)
+        closest = np.repeat(a[None, :], points.shape[0], axis=0)
+        return np.linalg.norm(points - closest, axis=1), closest
     t = ((points - a[None, :]) @ ab) / denom
     t = np.clip(t, 0.0, 1.0)
     closest = a[None, :] + t[:, None] * ab[None, :]
-    return np.linalg.norm(points - closest, axis=1)
+    return np.linalg.norm(points - closest, axis=1), closest
+
+
+def _point_segment_distances(points: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    distances, _ = _point_segment_distances_and_closest(points, a, b)
+    return distances
+
+
+def _camera_depth_aligned(
+    points: np.ndarray,
+    closest: np.ndarray,
+    camera_depth_axis_m: Optional[Sequence[float]],
+    tolerance_m: Optional[float],
+) -> np.ndarray:
+    if camera_depth_axis_m is None or tolerance_m is None or tolerance_m <= 0:
+        return np.ones((points.shape[0],), dtype=bool)
+    axis = np.asarray(camera_depth_axis_m, dtype=np.float32)
+    axis = axis / max(float(np.linalg.norm(axis)), 1e-9)
+    depth_delta = np.abs((points - closest) @ axis)
+    return depth_delta <= float(tolerance_m)
 
 
 def check_hand_path(
@@ -129,6 +149,8 @@ def check_hand_path(
     hand_length_m: float,
     hand_radius_m: float,
     samples: int = 8,
+    camera_depth_axis_m: Optional[Sequence[float]] = None,
+    camera_depth_tolerance_m: Optional[float] = None,
 ) -> DepthGuardResult:
     points = np.asarray(obstacle_points_m, dtype=np.float32)
     if points.size == 0:
@@ -144,11 +166,13 @@ def check_hand_path(
     for alpha in np.linspace(0.0, 1.0, max(2, int(samples))):
         flange = (1.0 - alpha) * start + alpha * end
         fingertip = flange + float(hand_length_m) * hand_dir
-        d = _point_segment_distances(points, flange, fingertip)
+        d, closest = _point_segment_distances_and_closest(points, flange, fingertip)
         if d.size:
-            local_min = float(np.min(d))
-            min_dist = min(min_dist, local_min)
-            hit_count += int(np.count_nonzero(d < hand_radius_m))
+            depth_ok = _camera_depth_aligned(points, closest, camera_depth_axis_m, camera_depth_tolerance_m)
+            if np.any(depth_ok):
+                local_min = float(np.min(d[depth_ok]))
+                min_dist = min(min_dist, local_min)
+                hit_count += int(np.count_nonzero((d < hand_radius_m) & depth_ok))
 
     return DepthGuardResult(hit_count == 0, min_dist, hit_count, int(points.shape[0]))
 
@@ -161,6 +185,8 @@ def hand_path_hit_mask(
     hand_length_m: float,
     hand_radius_m: float,
     samples: int = 8,
+    camera_depth_axis_m: Optional[Sequence[float]] = None,
+    camera_depth_tolerance_m: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     points = np.asarray(obstacle_points_m, dtype=np.float32)
     if points.size == 0:
@@ -175,6 +201,8 @@ def hand_path_hit_mask(
     for alpha in np.linspace(0.0, 1.0, max(2, int(samples))):
         flange = (1.0 - alpha) * start + alpha * end
         fingertip = flange + float(hand_length_m) * hand_dir
-        d = _point_segment_distances(points, flange, fingertip).astype(np.float32)
-        min_dist = np.minimum(min_dist, d)
+        d, closest = _point_segment_distances_and_closest(points, flange, fingertip)
+        d = d.astype(np.float32)
+        depth_ok = _camera_depth_aligned(points, closest, camera_depth_axis_m, camera_depth_tolerance_m)
+        min_dist[depth_ok] = np.minimum(min_dist[depth_ok], d[depth_ok])
     return min_dist < float(hand_radius_m), min_dist

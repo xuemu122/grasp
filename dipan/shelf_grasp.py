@@ -101,6 +101,8 @@ DEPTH_GUARD_SELF_MASK_ENABLE = os.getenv("DEPTH_GUARD_SELF_MASK_ENABLE", "1").lo
 DEPTH_GUARD_SELF_MASK_RADIUS_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_RADIUS_M", str(DEPTH_GUARD_HAND_RADIUS_M + 0.02)))
 DEPTH_GUARD_SELF_MASK_LENGTH_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_LENGTH_M", str(HAND_LENGTH)))
 DEPTH_GUARD_SELF_MASK_BACKOFF_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_BACKOFF_M", "0.03"))
+DEPTH_GUARD_DEPTH_ALIGN_ENABLE = os.getenv("DEPTH_GUARD_DEPTH_ALIGN_ENABLE", "1").lower() in ("1", "true", "yes", "on")
+DEPTH_GUARD_DEPTH_ALIGN_TOLERANCE_M = float(os.getenv("DEPTH_GUARD_DEPTH_ALIGN_TOLERANCE_M", "0.035"))
 DEPTH_GUARD_BYPASS_ENABLE = os.getenv("DEPTH_GUARD_BYPASS_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 DEPTH_GUARD_BYPASS_LIFTS_MM = _parse_float_list_env("DEPTH_GUARD_BYPASS_LIFTS_MM", (60, 100, 140))
 DEPTH_GUARD_BYPASS_SIDE_MM = _parse_float_list_env("DEPTH_GUARD_BYPASS_SIDE_MM", (60, -60))
@@ -144,6 +146,7 @@ def _depth_guard_path_ok(
     target_xyz_mm,
     hand_dir_m,
     hand_length_m=HAND_LENGTH,
+    camera_depth_axis_m=None,
     quiet=False,
 ) -> bool:
     if not DEPTH_GUARD_ENABLE:
@@ -161,6 +164,8 @@ def _depth_guard_path_ok(
         hand_length_m,
         DEPTH_GUARD_HAND_RADIUS_M,
         samples=DEPTH_GUARD_PATH_SAMPLES,
+        camera_depth_axis_m=camera_depth_axis_m if DEPTH_GUARD_DEPTH_ALIGN_ENABLE else None,
+        camera_depth_tolerance_m=DEPTH_GUARD_DEPTH_ALIGN_TOLERANCE_M if DEPTH_GUARD_DEPTH_ALIGN_ENABLE else None,
     )
     min_dist_mm = result.min_distance_m * 1000.0 if np.isfinite(result.min_distance_m) else float("inf")
     if not quiet:
@@ -169,6 +174,11 @@ def _depth_guard_path_ok(
             f"命中 {result.hit_count}/{result.checked_points}, "
             f"半径 {DEPTH_GUARD_HAND_RADIUS_M*1000:.0f}mm, "
             f"长度 {hand_length_m*1000:.0f}mm"
+            + (
+                f", 深度对齐±{DEPTH_GUARD_DEPTH_ALIGN_TOLERANCE_M*1000:.0f}mm"
+                if DEPTH_GUARD_DEPTH_ALIGN_ENABLE and camera_depth_axis_m is not None
+                else ""
+            )
         )
     if not result.ok:
         if not quiet:
@@ -191,7 +201,7 @@ def _depth_guard_check(label, obstacle_points_m, arm: "DobotArm", target_xyz_mm,
     return _depth_guard_path_ok(label, obstacle_points_m, cur_pose[:3], target_xyz_mm, hand_dir_m, hand_length_m=hand_length_m)
 
 
-def _path_is_depth_clear(label, obstacle_points_m, waypoints_mm, hand_dir_m, hand_length_m=HAND_LENGTH) -> bool:
+def _path_is_depth_clear(label, obstacle_points_m, waypoints_mm, hand_dir_m, hand_length_m=HAND_LENGTH, camera_depth_axis_m=None) -> bool:
     for idx in range(len(waypoints_mm) - 1):
         if not _depth_guard_path_ok(
             f"{label} 绕行段{idx + 1}",
@@ -200,6 +210,7 @@ def _path_is_depth_clear(label, obstacle_points_m, waypoints_mm, hand_dir_m, han
             waypoints_mm[idx + 1],
             hand_dir_m,
             hand_length_m=hand_length_m,
+            camera_depth_axis_m=camera_depth_axis_m,
             quiet=True,
         ):
             return False
@@ -228,6 +239,17 @@ def _robot_points_to_pixels(points_m, transformer, flange_pose_mm, image_shape):
     return pixels, valid
 
 
+def _camera_depth_axis_m(transformer, flange_pose_mm):
+    if transformer is None or flange_pose_mm is None:
+        return None
+    pose = tuple(float(x) for x in flange_pose_mm)
+    T_base_flange = np.eye(4, dtype=np.float32)
+    T_base_flange[:3, :3] = transformer._rpy_to_rot(pose[3], pose[4], pose[5]).astype(np.float32)
+    T_base_cam = T_base_flange @ transformer.T_flange_to_cam.astype(np.float32)
+    axis = T_base_cam[:3, 2]
+    return axis / max(float(np.linalg.norm(axis)), 1e-9)
+
+
 def _save_depth_guard_viz(
     label,
     image,
@@ -241,6 +263,7 @@ def _save_depth_guard_viz(
     hand_length_m,
     transformer,
     observation_flange_pose,
+    camera_depth_axis_m=None,
 ):
     if image is None or obstacle_points_m is None or obstacle_pixels is None:
         return None
@@ -260,6 +283,8 @@ def _save_depth_guard_viz(
         hand_length_m,
         DEPTH_GUARD_HAND_RADIUS_M,
         samples=DEPTH_GUARD_PATH_SAMPLES,
+        camera_depth_axis_m=camera_depth_axis_m if DEPTH_GUARD_DEPTH_ALIGN_ENABLE else None,
+        camera_depth_tolerance_m=DEPTH_GUARD_DEPTH_ALIGN_TOLERANCE_M if DEPTH_GUARD_DEPTH_ALIGN_ENABLE else None,
     )
     hit_pixels = pixels[hit_mask] if len(pixels) == len(hit_mask) else np.zeros((0, 2), dtype=np.int32)
     for u, v in hit_pixels:
@@ -299,7 +324,8 @@ def _save_depth_guard_viz(
             cv2.line(viz, p0, p1, (255, 255, 0), 1)
             cv2.circle(viz, p0, 2, (255, 255, 0), -1)
 
-    min_mm = float(np.min(min_dist) * 1000.0) if len(min_dist) else float("inf")
+    finite_min = min_dist[np.isfinite(min_dist)] if len(min_dist) else np.zeros((0,), dtype=np.float32)
+    min_mm = float(np.min(finite_min) * 1000.0) if len(finite_min) else float("inf")
     cv2.putText(
         viz,
         f"{label} hit={int(np.count_nonzero(hit_mask))} min={min_mm:.0f}mm r={DEPTH_GUARD_HAND_RADIUS_M*1000:.0f} len={hand_length_m*1000:.0f}",
@@ -332,6 +358,7 @@ def _movel_with_depth_guard(
     exclude_bboxes=None,
     transformer=None,
     observation_flange_pose=None,
+    camera_depth_axis_m=None,
 ) -> bool:
     target = np.array(target_xyz_mm, dtype=np.float32)
     try:
@@ -341,7 +368,15 @@ def _movel_with_depth_guard(
         return False
     start = np.array(cur_pose[:3], dtype=np.float32)
 
-    direct_ok = _depth_guard_path_ok(label, obstacle_points_m, start, target, hand_dir_m, hand_length_m=hand_length_m)
+    direct_ok = _depth_guard_path_ok(
+        label,
+        obstacle_points_m,
+        start,
+        target,
+        hand_dir_m,
+        hand_length_m=hand_length_m,
+        camera_depth_axis_m=camera_depth_axis_m,
+    )
     if direct_ok:
         if arm.movel(float(target[0]), float(target[1]), float(target[2]), speed=speed, allow_low_z=allow_low_z):
             return True
@@ -360,6 +395,7 @@ def _movel_with_depth_guard(
             hand_length_m,
             transformer,
             observation_flange_pose,
+            camera_depth_axis_m,
         )
 
     if not (DEPTH_GUARD_BYPASS_ENABLE and allow_bypass):
@@ -386,7 +422,14 @@ def _movel_with_depth_guard(
 
     for desc, path in candidates:
         waypoints = [start] + path
-        if not _path_is_depth_clear(label, obstacle_points_m, waypoints, hand_dir_m, hand_length_m=hand_length_m):
+        if not _path_is_depth_clear(
+            label,
+            obstacle_points_m,
+            waypoints,
+            hand_dir_m,
+            hand_length_m=hand_length_m,
+            camera_depth_axis_m=camera_depth_axis_m,
+        ):
             continue
         print(f"  [深度绕行] {label}: 采用 {desc}, {len(path)} 个中间/目标点")
         for point in path:
@@ -1580,6 +1623,7 @@ def main():
             depth_obstacles_m = np.zeros((0, 3), dtype=np.float32)
             depth_obstacles_px = np.zeros((0, 2), dtype=np.int32)
             depth_observation_flange_pose = tuple(flange_pose)
+            depth_guard_camera_depth_axis = _camera_depth_axis_m(transformer, depth_observation_flange_pose)
             depth_guard_exclude_bboxes = [d.bbox for d in detections if getattr(d, "bbox", None) is not None]
             if DEPTH_GUARD_ENABLE:
                 depth_obstacles_m, depth_obstacles_px = depth_to_robot_obstacles(
@@ -1604,7 +1648,9 @@ def main():
                     f"(stride={DEPTH_GUARD_STRIDE}, max_depth={DEPTH_GUARD_MAX_DEPTH_M:.2f}m, "
                     f"排除框={len(depth_guard_exclude_bboxes)}, 外扩={DEPTH_GUARD_EXCLUDE_MARGIN_PX}px, "
                     f"自手部={'on' if DEPTH_GUARD_SELF_MASK_ENABLE else 'off'} "
-                    f"r={DEPTH_GUARD_SELF_MASK_RADIUS_M*1000:.0f}mm)"
+                    f"r={DEPTH_GUARD_SELF_MASK_RADIUS_M*1000:.0f}mm, "
+                    f"深度对齐={'on' if DEPTH_GUARD_DEPTH_ALIGN_ENABLE else 'off'} "
+                    f"±{DEPTH_GUARD_DEPTH_ALIGN_TOLERANCE_M*1000:.0f}mm)"
                 )
 
             # ========================================================
@@ -1696,6 +1742,7 @@ def main():
                          exclude_bboxes=depth_guard_exclude_bboxes,
                          transformer=transformer,
                          observation_flange_pose=depth_observation_flange_pose,
+                         camera_depth_axis_m=depth_guard_camera_depth_axis,
                      ):
                          continue
                      time.sleep(MOTION_SETTLE_S)
@@ -1783,6 +1830,7 @@ def main():
                 exclude_bboxes=depth_guard_exclude_bboxes,
                 transformer=transformer,
                 observation_flange_pose=depth_observation_flange_pose,
+                camera_depth_axis_m=depth_guard_camera_depth_axis,
             ):
                 print("  [中止] 对齐位运动失败/报警, 本次不闭手")
                 if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
@@ -1809,6 +1857,7 @@ def main():
                 exclude_bboxes=depth_guard_exclude_bboxes,
                 transformer=transformer,
                 observation_flange_pose=depth_observation_flange_pose,
+                camera_depth_axis_m=depth_guard_camera_depth_axis,
             ):
                 print("  [中止] 深度护栏拒绝探入路径, 本次不闭手")
                 if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
