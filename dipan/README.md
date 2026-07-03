@@ -12,6 +12,7 @@
 | `hand_eye.py` | 手眼坐标转换：像素/深度到机器人基座坐标，含远距透视补偿 |
 | `grasp_planner.py` | 抓取目标选择和抓取点规划：ROI 过滤、深度分层、右侧优先、侧抓/上抓判定 |
 | `depth_collision_guard.py` | 深度护栏：把当前深度图投到机器人坐标系，发动作前检查灵巧手路径是否扫到障碍 |
+| `self_collision_guard.py` | Nova5 自碰撞护栏：读取 URDF/SRDF，用胶囊近似在 MovL/MovJ 前检查自身连杆碰撞 |
 | `hand_eye_calib.py` | ArUco 手眼标定，生成 `calib_eye_in_hand.json` |
 | `move_robot.py` | 底盘 TCP 控制，移动到药架/充电点/取消任务，并返回底盘电量 |
 | `shelf_layers.json` | 货架层观察位姿，程序内 `l` 菜单维护 |
@@ -64,6 +65,11 @@ DETECT_CONF_THRESHOLD=0.3 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAI
 - `LAYER_Z_TOLERANCE_M`：当前层世界 Z 过滤容差，默认 `0.16` m；如果误识别上一层会被剔除，现场层高/标定偏差大时可调大。
 - `MAX_GRASP_DEPTH_M`：最大抓取深度，默认 `0.38` m；超过此深度的物品不抓取，避免机械臂伸太深导致货架层板碰撞相机。如果货架很深但确认安全可调大，如 `MAX_GRASP_DEPTH_M=0.45`。
 - `TARGET_PRODUCT_QUERY`：目标商品/类别关键词，默认不指定；可匹配任意模型类别或检测身份字段，包括 `product_name`、`medicine_name`、`class_name`、`category`、`package_type`、`product_id`、`class_id`、`ocr_text`。
+- `SELF_COLLISION_ENABLE`：Nova5 自碰撞护栏开关，默认开启；基于 URDF/SRDF 做 FK，并用保守胶囊近似检查 MovL/MovJ 的关节路径。
+- `SELF_COLLISION_MARGIN_M`：自碰撞安全余量，默认 `0.015` m；误拦可调小，担心擦碰可调大。
+- `SELF_COLLISION_PATH_SAMPLES`：自碰撞路径采样次数，默认 `8`；关节运动跨度大时可调大。
+- `SELF_COLLISION_REQUIRE_IK`：MovL 无法求近邻逆解时是否中止，默认关闭；开启后更保守，但 IK 返回异常会导致 MovL 被拒绝。
+- `SELF_COLLISION_VERBOSE`：自碰撞护栏通过时是否打印最近余量，默认关闭。
 - `DEPTH_GUARD_ENABLE`：深度护栏开关，默认开启；会排除当前画面中所有检测框，把其余深度点当成货架/障碍，检查对齐和探入路径。
 - `DEPTH_GUARD_CLEARANCE_M`：深度护栏额外安全余量，默认 `0.005` m；默认手部半径按 `HAND_W_Y/2 + 余量` 计算。
 - `DEPTH_GUARD_HAND_RADIUS_M`：灵巧手安全半径，默认约 `0.0525` m；等于 95mm 手宽的一半再加 5mm 余量。误拦截可调小到 `0.0475`，仍擦碰可调大到 `0.06`。

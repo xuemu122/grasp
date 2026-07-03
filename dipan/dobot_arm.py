@@ -7,6 +7,8 @@ import socket
 import time
 from typing import Optional, Tuple
 
+from self_collision_guard import Nova5SelfCollisionGuard, describe_self_collision
+
 
 DOBOT_IP = os.getenv("DOBOT_IP", "192.168.5.1")
 DOBOT_PORT = 29999
@@ -14,6 +16,11 @@ HAND_WEIGHT = 0.6
 HAND_COG_Z = 0.12
 HOME_JOINTS_DEG = [-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]
 ROBOT_POLL_S = float(os.getenv("ROBOT_POLL_S", "0.2"))
+SELF_COLLISION_ENABLE = os.getenv("SELF_COLLISION_ENABLE", "1").lower() in ("1", "true", "yes", "on")
+SELF_COLLISION_MARGIN_M = float(os.getenv("SELF_COLLISION_MARGIN_M", "0.015"))
+SELF_COLLISION_PATH_SAMPLES = int(os.getenv("SELF_COLLISION_PATH_SAMPLES", "8"))
+SELF_COLLISION_REQUIRE_IK = os.getenv("SELF_COLLISION_REQUIRE_IK", "0").lower() in ("1", "true", "yes", "on")
+SELF_COLLISION_VERBOSE = os.getenv("SELF_COLLISION_VERBOSE", "0").lower() in ("1", "true", "yes", "on")
 
 
 def _clamp_speed_pct(speed) -> int:
@@ -41,6 +48,16 @@ class DobotArm:
         self.port = port
         self.sock = None
         self._last_pose = None
+        self.self_collision_guard = None
+        if SELF_COLLISION_ENABLE:
+            try:
+                self.self_collision_guard = Nova5SelfCollisionGuard(margin_m=SELF_COLLISION_MARGIN_M)
+                print(
+                    f"[自碰撞] Nova5 URDF 护栏已启用 "
+                    f"(margin={SELF_COLLISION_MARGIN_M*1000:.0f}mm, samples={SELF_COLLISION_PATH_SAMPLES})"
+                )
+            except Exception as e:
+                print(f"[自碰撞][警告] 初始化失败, 本次关闭自碰撞护栏: {e}")
 
     def connect(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -168,6 +185,35 @@ class DobotArm:
     def get_error_id(self) -> str:
         return self.send("GetErrorID()")
 
+    def _check_self_collision_joints(self, target_joints, label: str = "目标关节") -> bool:
+        if self.self_collision_guard is None:
+            return True
+        try:
+            current = self.get_joints()
+            result = self.self_collision_guard.check_path(current, target_joints, samples=SELF_COLLISION_PATH_SAMPLES)
+        except Exception as e:
+            print(f"  [自碰撞][警告] {label}: 检查失败, 放行: {e}")
+            return True
+        if result.ok:
+            if SELF_COLLISION_VERBOSE:
+                print(f"  [自碰撞] {label}: {describe_self_collision(result)}")
+            return True
+        print(f"  [自碰撞][中止] {label}: {describe_self_collision(result)}")
+        return False
+
+    def _check_self_collision_pose(self, pose, label: str = "目标位姿") -> bool:
+        if self.self_collision_guard is None:
+            return True
+        target_joints = self.inverse_kin_near(pose)
+        if target_joints is None:
+            msg = f"  [自碰撞][警告] {label}: 未能求近邻逆解, 无法做自碰撞检查"
+            if SELF_COLLISION_REQUIRE_IK:
+                print(msg + ", 中止")
+                return False
+            print(msg + ", 放行")
+            return True
+        return self._check_self_collision_joints(target_joints, label=label)
+
     def clear_alarm(self):
         print("[DOBOT] 清除报警并重新使能...")
         self.send("ClearError()")
@@ -191,6 +237,9 @@ class DobotArm:
                 print(f"  [低位放行] Z={z_mm:.0f}mm (第4层/下方工作区)")
             if z_mm > 1100 or z_mm < -300:
                 print(f"  [警告] Z={z_mm:.0f}mm 可能超出工作范围, 请注意!")
+            target_pose = (float(x_mm), float(y_mm), float(z_mm), float(rx), float(ry), float(rz))
+            if not self._check_self_collision_pose(target_pose, label="MovL"):
+                return False
             cmd = f"MovL(pose={{{x_mm:.1f},{y_mm:.1f},{z_mm:.1f},{rx:.1f},{ry:.1f},{rz:.1f}}},v={speed_pct},cp={cp_pct})"
             print(f"  >>> {cmd}")
             resp = self.send(cmd)
@@ -246,6 +295,8 @@ class DobotArm:
         p = pose
         speed_pct = _clamp_speed_pct(speed)
         cp_pct = _clamp_cp(cp)
+        if not self._check_self_collision_pose(p, label="MovJ(pose)"):
+            return False
         cmd = f"MovJ(pose={{{p[0]:.1f},{p[1]:.1f},{p[2]:.1f},{p[3]:.1f},{p[4]:.1f},{p[5]:.1f}}},v={speed_pct},cp={cp_pct})"
         print(f"  >>> {cmd}")
         resp = self.send(cmd)
@@ -261,6 +312,8 @@ class DobotArm:
         j = joints_deg
         speed_pct = _clamp_speed_pct(speed)
         cp_pct = _clamp_cp(cp)
+        if not self._check_self_collision_joints(j, label="MovJ"):
+            return False
         cmd = f"MovJ(joint={{{j[0]:.1f},{j[1]:.1f},{j[2]:.1f},{j[3]:.1f},{j[4]:.1f},{j[5]:.1f}}},v={speed_pct},cp={cp_pct})"
         print(f"  >>> {cmd}")
         resp = self.send(cmd)
