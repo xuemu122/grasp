@@ -12,7 +12,7 @@ from aero_open_sdk.aero_hand import AeroHand
 class AeroGripper:
     OPEN = [80, 0, 0, 0, 0, 0, 0]
     GRASP = [80, 70, 52, 70, 58, 59, 53]
-    GRASP_TOP = [80, 70, 23, 71, 55, 58, 67]
+    GRASP_TOP = [100, 63, 7, 71, 68, 50, 62]
     GRASP_BOTTLE = [100, 92, 75, 76, 75, 67, 69]
 
     def __init__(self, port=None):
