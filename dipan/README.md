@@ -18,7 +18,6 @@
 | `shelf_layers.json` | 货架层观察位姿，程序内 `l` 菜单维护 |
 | `place_point.json` | 放置点位姿，程序内 `p` 菜单维护 |
 | `place_transition.json` | 放置过渡点位姿，程序内 `p` 菜单维护 |
-| `place_arc_via.json` | 放置弧线中点，程序内 `p` 菜单维护 |
 | `stow_pose.json` | 收起姿态，程序内 `u` 菜单维护 |
 | `capture_one.py` | 单帧 RGB-D 采集工具 |
 | `test_dobot.py` | DOBOT 连接测试 |
@@ -37,22 +36,21 @@ DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 识别阈值和动作节奏可用环境变量现场微调：
 
 ```bash
-DETECT_CONF_THRESHOLD=0.3 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAIT_S=2.5 ROBOT_POLL_S=0.15 PLACE_TRANSITION_CP=60 PLACE_RETURN_CLEARANCE_MM=140 PLACE_RETURN_MAX_Z_MM=820 \
+DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAIT_S=2.5 ROBOT_POLL_S=0.15 PLACE_RETURN_CLEARANCE_MM=140 PLACE_RETURN_MAX_Z_MM=820 \
   DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 ```
 
 含义：
 
-- `DETECT_CONF_THRESHOLD`：抓取主程序 YOLO 显示/输出阈值，默认 `0.3`。
-- `WATER_CONF_THRESHOLD`：饮料/矿泉水类专用阈值，默认 `0.12`；只放宽 `drink` 类，避免所有类别一起降阈值造成误检。
+- `DETECT_CONF_THRESHOLD`：抓取主程序 YOLO 显示/输出阈值，默认 `0.7`。
+- `WATER_CONF_THRESHOLD`：饮料/矿泉水类专用阈值，默认 `0.52`；只放宽 `drink` 类，避免所有类别一起降阈值造成误检。
 - `DETECTION_STABILITY_IOU`：抓取前多帧检测融合的同目标 IoU 阈值，默认 `0.35`；矿泉水识别闪烁时会按多帧稳定候选融合。
 - `MOTION_SETTLE_S`：普通运动完成后的短缓冲，默认 `0.2` 秒。
 - `GRASP_SETTLE_S`：抓取前进、闭手前、后退后的缓冲，默认 `0.4` 秒。
 - `HAND_CLOSE_WAIT_S`：灵巧手闭合后等待物体稳定的时间，默认 `3.0` 秒。
 - `ROBOT_POLL_S`：等待 DOBOT 运动完成时的状态轮询间隔，默认 `0.2` 秒。
 - `PLACE_TRANSITION_CP`：放置路径经过过渡点时的平滑过渡比例，默认 `60`；调大更顺滑，但会更明显地绕过中间点。
-- `PLACE_TRANSITION_R`：放置路径平滑过渡半径，默认 `30` mm；开启平滑过渡时会优先用于 `MovL`。
-- `PLACE_USE_ARC`：放置时使用 `Arc` 经由放置过渡点到放置点，默认关闭。
+- `PLACE_SMOOTH_TRANSITION`：放置段是否启用 `MovL cp` 平滑过渡，默认关闭。
 - `PLACE_RETURN_CLEARANCE_MM`：放置后回层时先向上抬高的安全量，默认 `140` mm；如果回第 2 层仍擦碰，可以继续调大。
 - `PLACE_RETURN_MAX_Z_MM`：放置后回层抬高的默认上限，默认 `820` mm；用于避免在靠外放置点抬得过高触发机械臂报警。
 - `PERSPECTIVE_COMP_ENABLE`：开启远距透视补偿，默认开启；只压纵向，不收左右。
@@ -63,7 +61,7 @@ DETECT_CONF_THRESHOLD=0.3 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAI
 - `SIDE_GRASP_MIN_HEIGHT_M`：侧面抓取点离物体底部的最小高度，默认 `0.06` m；物体高度不够时自动改为上面抓。
 - `SIDE_GRASP_MAX_HEIGHT_M`：侧面抓取点离物体底部的最大高度，默认 `0.11` m；防止抓手位置过高导致相机与前一层层板碰撞。
 - `LAYER_Z_TOLERANCE_M`：当前层世界 Z 过滤容差，默认 `0.16` m；如果误识别上一层会被剔除，现场层高/标定偏差大时可调大。
-- `MAX_GRASP_DEPTH_M`：最大抓取深度，默认 `0.38` m；超过此深度的物品不抓取，避免机械臂伸太深导致货架层板碰撞相机。如果货架很深但确认安全可调大，如 `MAX_GRASP_DEPTH_M=0.45`。
+- `MAX_GRASP_DEPTH_M`：最大抓取深度，默认 `0.52` m；超过此深度的物品不抓取，避免机械臂伸太深导致货架层板碰撞相机。货架更浅时可调小。
 - `TARGET_PRODUCT_QUERY`：目标商品/类别关键词，默认不指定；可匹配任意模型类别或检测身份字段，包括 `product_name`、`medicine_name`、`class_name`、`category`、`package_type`、`product_id`、`class_id`、`ocr_text`。
 - `SELF_COLLISION_ENABLE`：Nova5 自碰撞护栏开关，默认开启；基于 URDF/SRDF 做 FK，并用保守胶囊近似检查 MovL/MovJ 的关节路径。
 - `SELF_COLLISION_MARGIN_M`：自碰撞安全余量，默认 `0.015` m；误拦可调小，担心擦碰可调大。
@@ -93,7 +91,7 @@ DETECT_CONF_THRESHOLD=0.3 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAI
 
 深度护栏拦截动作时会自动保存调试图到 `/tmp/depth_guard_*.jpg`：灰点为参与判断的深度障碍点，红点为命中碰撞半径的点，绿框为检测排除框/当前目标框，青线为手部检查线。
 
-代码里的 `speed` 参数会随 `MovL`/`MovJ` 下发为 DOBOT `v=1..100` 百分比速度；超过 100 的值会自动夹到 100。放置段可选 `Arc` 或 `MovL` 平滑曲线；回层会先原地抬高，再高位回层。
+代码里的 `speed` 参数会随 `MovL`/`MovJ` 下发为 DOBOT `v=1..100` 百分比速度；超过 100 的值会自动夹到 100。放置段可选 `MovL cp` 平滑过渡；回层会先原地抬高，再高位回层。
 
 启动后程序会：
 
@@ -106,6 +104,8 @@ DETECT_CONF_THRESHOLD=0.3 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAI
 
 ```text
 Enter  抓取
+c      设置目标商品/类别/id
+?      查看模型类别列表
 l      货架层管理
 p      放置点管理
 u      收起姿态管理
@@ -133,7 +133,7 @@ q         返回
 
 进入 `p` 菜单后，把机械臂拖到放置位置，输入 `s` 保存。放置点保存在 `place_point.json`。
 
-如果最终放置点距离较远，可以再拖动机械臂到中间安全位置，输入 `ts` 保存放置过渡点。若想让放置段走弧线，再输入 `as` 保存放置弧线中点。
+如果最终放置点距离较远，可以再拖动机械臂到中间安全位置，输入 `ts` 保存放置过渡点。
 
 常用操作：
 
@@ -144,8 +144,6 @@ d   删除放置点
 ts  记录当前法兰位姿为放置过渡点
 tg  移动到放置过渡点
 td  删除放置过渡点
-as  记录当前法兰位姿为放置弧线中点
-ad  删除放置弧线中点
 q   返回
 ```
 
@@ -157,7 +155,7 @@ q   返回
 当前层/中转层 → 关节运动到放置过渡点 → 最终放置点 → 张手 → 原地抬高 → 回层
 ```
 
-如果开启 `PLACE_USE_ARC=1`，放置段会改为“当前层经由放置过渡点到放置点”的弧线插补；否则可用 `PLACE_TRANSITION_R` 让放置段走圆滑曲线。
+如果开启 `PLACE_SMOOTH_TRANSITION=1`，最终移动到放置点时会使用 `PLACE_TRANSITION_CP` 作为 `MovL cp` 平滑过渡比例。
 
 如果菜单里显示过渡点 `[无joints]`，建议拖动机械臂到该过渡点后重新输入 `ts` 记录一次。大范围换姿态时程序会优先使用记录关节角 `MovJ`，避免 `MovL` 直线插补导致腕部翻转和机械臂自碰撞。
 
