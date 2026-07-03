@@ -151,6 +151,8 @@ def check_hand_path(
     samples: int = 8,
     camera_depth_axis_m: Optional[Sequence[float]] = None,
     camera_depth_tolerance_m: Optional[float] = None,
+    axis_min_m: Optional[float] = None,
+    axis_max_m: Optional[float] = None,
 ) -> DepthGuardResult:
     points = np.asarray(obstacle_points_m, dtype=np.float32)
     if points.size == 0:
@@ -169,6 +171,12 @@ def check_hand_path(
         d, closest = _point_segment_distances_and_closest(points, flange, fingertip)
         if d.size:
             depth_ok = _camera_depth_aligned(points, closest, camera_depth_axis_m, camera_depth_tolerance_m)
+            if axis_min_m is not None or axis_max_m is not None:
+                axial = (points - flange[None, :]) @ hand_dir
+                if axis_min_m is not None:
+                    depth_ok &= axial >= float(axis_min_m)
+                if axis_max_m is not None:
+                    depth_ok &= axial <= float(axis_max_m)
             if np.any(depth_ok):
                 local_min = float(np.min(d[depth_ok]))
                 min_dist = min(min_dist, local_min)
@@ -187,6 +195,8 @@ def hand_path_hit_mask(
     samples: int = 8,
     camera_depth_axis_m: Optional[Sequence[float]] = None,
     camera_depth_tolerance_m: Optional[float] = None,
+    axis_min_m: Optional[float] = None,
+    axis_max_m: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     points = np.asarray(obstacle_points_m, dtype=np.float32)
     if points.size == 0:
@@ -204,5 +214,11 @@ def hand_path_hit_mask(
         d, closest = _point_segment_distances_and_closest(points, flange, fingertip)
         d = d.astype(np.float32)
         depth_ok = _camera_depth_aligned(points, closest, camera_depth_axis_m, camera_depth_tolerance_m)
+        if axis_min_m is not None or axis_max_m is not None:
+            axial = (points - flange[None, :]) @ hand_dir
+            if axis_min_m is not None:
+                depth_ok &= axial >= float(axis_min_m)
+            if axis_max_m is not None:
+                depth_ok &= axial <= float(axis_max_m)
         min_dist[depth_ok] = np.minimum(min_dist[depth_ok], d[depth_ok])
     return min_dist < float(hand_radius_m), min_dist
