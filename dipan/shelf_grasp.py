@@ -10,6 +10,7 @@ import os
 import time
 import json
 import subprocess
+import re
 import cv2
 import numpy as np
 from typing import Optional
@@ -87,6 +88,7 @@ DRINK_CLASS_IDS = set(range(70, 78)) | set(range(80, 87))
 # 当前识别目标以瓶子为主, 默认使用瓶子抓取手势；原侧抓/上抓手势仍保留。
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "bottle").lower()
 DETECTION_STABILITY_IOU = float(os.getenv("DETECTION_STABILITY_IOU", "0.35"))
+TARGET_PRODUCT_QUERY = os.getenv("TARGET_PRODUCT_QUERY", os.getenv("TARGET_NAME", "")).strip()
 DEPTH_GUARD_ENABLE = os.getenv("DEPTH_GUARD_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 DEPTH_GUARD_STRIDE = int(os.getenv("DEPTH_GUARD_STRIDE", "8"))
 DEPTH_GUARD_CLEARANCE_M = float(os.getenv("DEPTH_GUARD_CLEARANCE_M", "0.005"))
@@ -1034,6 +1036,113 @@ def _toggle_chassis_place():
         print("  流程: 先回第2层 → 到收起姿态 → 调用 move_robot.py place → 等底盘到达 → 机械臂放置")
 
 
+TARGET_ALIAS_GROUPS = (
+    ("褪黑素", "melatonin", "ths"),
+    ("雪碧", "sprite", "xuebi", "xue bi"),
+)
+
+
+def _normalize_target_text(value) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", "", str(value).strip().lower())
+
+
+def _target_query_tokens(query: str):
+    parts = re.split(r"[,，;；]+", query or "")
+    tokens = {_normalize_target_text(part) for part in parts if _normalize_target_text(part)}
+    for group in TARGET_ALIAS_GROUPS:
+        normalized_group = {_normalize_target_text(item) for item in group}
+        if tokens & normalized_group:
+            tokens |= normalized_group
+    return tokens
+
+
+def _detection_identity_values(det):
+    values = [
+        getattr(det, "product_name", None),
+        getattr(det, "medicine_name", None),
+        getattr(det, "class_name", None),
+        getattr(det, "category", None),
+        getattr(det, "package_type", None),
+        getattr(det, "product_id", None),
+        getattr(det, "ocr_text", None),
+        getattr(det, "class_id", None),
+    ]
+    class_id = getattr(det, "class_id", None)
+    if class_id is not None:
+        values.extend((f"id:{class_id}", f"class:{class_id}", f"class_id:{class_id}"))
+    return [v for v in values if v not in (None, "")]
+
+
+def _detection_label(det):
+    name = (
+        getattr(det, "product_name", None)
+        or getattr(det, "medicine_name", None)
+        or getattr(det, "class_name", None)
+        or "?"
+    )
+    class_id = getattr(det, "class_id", "?")
+    conf = getattr(det, "confidence", 0.0) or 0.0
+    return f"{name}(id={class_id}, conf={conf:.2f})"
+
+
+def _filter_detections_by_target_query(detections, query: str):
+    tokens = _target_query_tokens(query)
+    if not tokens:
+        return list(detections)
+
+    matched = []
+    for det in detections:
+        haystack = [_normalize_target_text(v) for v in _detection_identity_values(det)]
+        if any(token in value or value in token for token in tokens for value in haystack if value):
+            matched.append(det)
+    return matched
+
+
+def _print_target_filter_result(query: str, detections, matched):
+    if not query:
+        return
+    if matched:
+        details = " | ".join(_detection_label(det) for det in matched[:8])
+        print(f"  [目标过滤] {query!r}: 命中 {len(matched)}/{len(detections)} 个候选: {details}")
+        return
+    candidates = " | ".join(_detection_label(det) for det in detections[:8])
+    print(f"  [目标过滤][停止] {query!r}: 没有匹配候选")
+    if candidates:
+        print(f"  [目标过滤] 当前候选: {candidates}")
+
+
+def _is_clear_target_query(value: str) -> bool:
+    return _normalize_target_text(value) in ("", "*", "all", "any", "none", "clear", "全部", "所有", "无", "清空")
+
+
+def _print_model_classes(locator, filter_text: str = ""):
+    names = getattr(getattr(locator, "model", None), "names", {}) or {}
+    if not names:
+        print("  [类别] 当前模型没有暴露类别列表")
+        return
+    tokens = _target_query_tokens(filter_text)
+    items = sorted(names.items(), key=lambda item: int(item[0]) if str(item[0]).isdigit() else str(item[0]))
+    if tokens:
+        items = [
+            (class_id, name) for class_id, name in items
+            if any(token in _normalize_target_text(name) or token in _normalize_target_text(class_id) for token in tokens)
+        ]
+    if not items:
+        print(f"  [类别] 没有匹配 {filter_text!r} 的模型类别")
+        return
+    print(f"  [类别] 可选模型类别 {len(items)} 个" + (f" (过滤: {filter_text})" if filter_text else ""))
+    line = []
+    for class_id, name in items:
+        line.append(f"{class_id}:{name}")
+        if len(line) >= 4:
+            print("    " + " | ".join(line))
+            line = []
+    if line:
+        print("    " + " | ".join(line))
+
+
 def _bbox_iou(a, b) -> float:
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
@@ -1112,7 +1221,9 @@ def main():
     print("  货架边缘抓取系统")
     print(f"  灵巧手: {HAND_LENGTH*100:.0f}cm  {HAND_W_Y*100:.1f}cm×{HAND_W_X*100:.1f}cm  {HAND_WEIGHT}kg")
     print(f"  手势模式: {HAND_GRASP_MODE}")
+    print(f"  目标商品: {TARGET_PRODUCT_QUERY or '未指定'}")
     print("=" * 60)
+    target_query = TARGET_PRODUCT_QUERY
 
     # ── 1. 初始化相机 + YOLO ──
     print("\n[1/4] 初始化相机 + YOLO ...")
@@ -1173,22 +1284,44 @@ def main():
     print("  - 输入 p   ← 放置点管理 (记录/移动/删除)")
     print("  - 输入 u   ← 收起姿态管理 (记录/移动/删除)")
     print("  - 输入 b   ← 切换底盘放置流程")
+    print("  - 输入 c   ← 设置目标商品/类别/id")
+    print("  - 输入 ?   ← 查看全部模型类别")
     print("  - 输入 v   ← 实时画面预览 (YOLO 检测)")
     print("  - 输入 j   ← 手动点动 (wasd/e/r 微调法兰)")
+    print("  - 也可直接输入目标名抓取；输入 all/clear 清空目标")
     print("  - 输入 q   ← 退出")
     print("=" * 60)
 
     try:
         while True:
             chassis_state = "开" if USE_CHASSIS_PLACE else "关"
+            target_state = target_query or "任意"
             if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
                 _, layer_name = _shelf_layer_poses[_current_layer_idx]
-                prompt = f"\n[第{_current_layer_idx}层 {layer_name}] 按 Enter 抓取 | l 层管理 | p 放置点 | u 收起 | b 底盘:{chassis_state} | v 预览 | j 点动 | q 退出 > "
+                prompt = f"\n[第{_current_layer_idx}层 {layer_name} | 目标:{target_state}] 按 Enter 抓取 | c 目标 | ? 类别 | l 层管理 | p 放置点 | u 收起 | b 底盘:{chassis_state} | v 预览 | j 点动 | q 退出 > "
             else:
-                prompt = f"\n[HOME] 按 Enter 抓取 | l 层管理 | p 放置点 | u 收起 | b 底盘:{chassis_state} | v 预览 | j 点动 | q 退出 > "
+                prompt = f"\n[HOME | 目标:{target_state}] 按 Enter 抓取 | c 目标 | ? 类别 | l 层管理 | p 放置点 | u 收起 | b 底盘:{chassis_state} | v 预览 | j 点动 | q 退出 > "
             cmd = input(prompt).strip()
             if cmd.lower() == "q":
                 break
+
+            if cmd in ("?", "？") or cmd.lower() in ("classes", "class", "list"):
+                _print_model_classes(locator)
+                continue
+
+            if cmd.lower() == "c" or cmd.lower().startswith("c "):
+                raw = cmd[1:].strip() if len(cmd) > 1 else input("  目标商品/类别/id (空/all/clear=任意, ?=列类别): ").strip()
+                if raw in ("?", "？") or raw.lower().startswith(("? ", "？ ")):
+                    _print_model_classes(locator, raw[1:].strip())
+                    continue
+                target_query = "" if _is_clear_target_query(raw) else raw
+                print(f"  [目标] 已设置为: {target_query or '任意'}")
+                continue
+
+            if cmd and _is_clear_target_query(cmd):
+                target_query = ""
+                print("  [目标] 已清空, 将按原策略抓取任意候选")
+                continue
 
             if cmd.lower() == "j":
                 step = 20  # mm
@@ -1285,6 +1418,10 @@ def main():
                 print("预览结束")
                 continue
 
+            if cmd:
+                target_query = cmd
+                print(f"  [目标] 本次/后续按关键词抓取: {target_query}")
+
             # ── 获取当前法兰位姿 ──
             flange_pose = arm.get_pose()
             print(f"当前法兰: ({flange_pose[0]:.0f}, {flange_pose[1]:.0f}, {flange_pose[2]:.0f})mm "
@@ -1357,8 +1494,12 @@ def main():
             current_layer_z_m = None
             if _current_layer_idx in _shelf_layer_poses:
                 current_layer_z_m = _shelf_layer_poses[_current_layer_idx][0][2] / 1000.0
+            target_detections = _filter_detections_by_target_query(detections, target_query)
+            _print_target_filter_result(target_query, detections, target_detections)
+            if target_query and not target_detections:
+                continue
             target, edge = pick_target_box(
-                detections,
+                target_detections,
                 transformer=transformer,
                 flange_pose=flange_pose,
                 layer_z_m=current_layer_z_m,

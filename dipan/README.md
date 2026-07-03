@@ -63,6 +63,7 @@ DETECT_CONF_THRESHOLD=0.3 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAI
 - `SIDE_GRASP_MAX_HEIGHT_M`：侧面抓取点离物体底部的最大高度，默认 `0.11` m；防止抓手位置过高导致相机与前一层层板碰撞。
 - `LAYER_Z_TOLERANCE_M`：当前层世界 Z 过滤容差，默认 `0.16` m；如果误识别上一层会被剔除，现场层高/标定偏差大时可调大。
 - `MAX_GRASP_DEPTH_M`：最大抓取深度，默认 `0.38` m；超过此深度的物品不抓取，避免机械臂伸太深导致货架层板碰撞相机。如果货架很深但确认安全可调大，如 `MAX_GRASP_DEPTH_M=0.45`。
+- `TARGET_PRODUCT_QUERY`：目标商品/类别关键词，默认不指定；可匹配任意模型类别或检测身份字段，包括 `product_name`、`medicine_name`、`class_name`、`category`、`package_type`、`product_id`、`class_id`、`ocr_text`。
 - `DEPTH_GUARD_ENABLE`：深度护栏开关，默认开启；会排除当前画面中所有检测框，把其余深度点当成货架/障碍，检查对齐和探入路径。
 - `DEPTH_GUARD_CLEARANCE_M`：深度护栏额外安全余量，默认 `0.005` m；默认手部半径按 `HAND_W_Y/2 + 余量` 计算。
 - `DEPTH_GUARD_HAND_RADIUS_M`：灵巧手安全半径，默认约 `0.0525` m；等于 95mm 手宽的一半再加 5mm 余量。误拦截可调小到 `0.0475`，仍擦碰可调大到 `0.06`。
@@ -187,7 +188,16 @@ HAND_GRASP_MODE=bottle
 HAND_GRASP_MODE=auto DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 ```
 
-目标选择在 `pick_target_box()` 内完成。当前规则：
+目标选择支持两层规则：先按目标关键词过滤，再由 `pick_target_box()` 做几何选择。主菜单里输入 `?` 可查看当前模型的全部 `class_id:class_name`；输入 `c` 可以设置任意目标商品/类别/id；也可以直接输入目标名开始抓取，例如 `雪碧`、`褪黑素`、`sprite`、`ths`、`class_id:63`。输入 `all` 或 `clear` 会清空目标，恢复任意候选抓取。
+
+也可以启动时指定：
+
+```bash
+TARGET_PRODUCT_QUERY=雪碧 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
+TARGET_PRODUCT_QUERY=褪黑素 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
+```
+
+目标过滤命中后，`pick_target_box()` 当前规则：
 
 - 先按画面纵向 ROI 过滤上下层物品，默认只保留 `y=85~430` 的候选。
 - 再按当前层记录位姿的世界 Z 过滤上下层，默认容差 `±16cm`。
