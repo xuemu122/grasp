@@ -32,9 +32,12 @@ def depth_to_robot_obstacles(
     max_depth_m: float = 1.20,
     exclude_bbox: Optional[Tuple[float, float, float, float]] = None,
     exclude_margin_px: int = 24,
+    return_pixels: bool = False,
 ) -> np.ndarray:
     if depth_img is None:
-        return np.zeros((0, 3), dtype=np.float32)
+        points = np.zeros((0, 3), dtype=np.float32)
+        pixels = np.zeros((0, 2), dtype=np.int32)
+        return (points, pixels) if return_pixels else points
 
     h, w = depth_img.shape[:2]
     ys = np.arange(0, h, max(1, int(stride)), dtype=np.int32)
@@ -55,7 +58,9 @@ def depth_to_robot_obstacles(
         valid &= ~in_target
 
     if not np.any(valid):
-        return np.zeros((0, 3), dtype=np.float32)
+        points = np.zeros((0, 3), dtype=np.float32)
+        pixels = np.zeros((0, 2), dtype=np.int32)
+        return (points, pixels) if return_pixels else points
 
     u = grid_x[valid].astype(np.float32)
     v = grid_y[valid].astype(np.float32)
@@ -70,7 +75,11 @@ def depth_to_robot_obstacles(
     T_base_flange[:3, 3] = np.array(pose[:3], dtype=np.float32) / 1000.0
     T = T_base_flange @ transformer.T_flange_to_cam.astype(np.float32)
     base_pts = (T @ cam_pts.T).T[:, :3]
-    return base_pts.astype(np.float32, copy=False)
+    base_pts = base_pts.astype(np.float32, copy=False)
+    if return_pixels:
+        pixels = np.stack([u.astype(np.int32), v.astype(np.int32)], axis=1)
+        return base_pts, pixels
+    return base_pts
 
 
 def _point_segment_distances(points: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -114,3 +123,30 @@ def check_hand_path(
             hit_count += int(np.count_nonzero(d < hand_radius_m))
 
     return DepthGuardResult(hit_count == 0, min_dist, hit_count, int(points.shape[0]))
+
+
+def hand_path_hit_mask(
+    obstacle_points_m: np.ndarray,
+    flange_start_m: Sequence[float],
+    flange_end_m: Sequence[float],
+    hand_dir_m: Sequence[float],
+    hand_length_m: float,
+    hand_radius_m: float,
+    samples: int = 8,
+) -> Tuple[np.ndarray, np.ndarray]:
+    points = np.asarray(obstacle_points_m, dtype=np.float32)
+    if points.size == 0:
+        return np.zeros((0,), dtype=bool), np.zeros((0,), dtype=np.float32)
+
+    start = np.asarray(flange_start_m, dtype=np.float32)
+    end = np.asarray(flange_end_m, dtype=np.float32)
+    hand_dir = np.asarray(hand_dir_m, dtype=np.float32)
+    hand_dir = hand_dir / max(float(np.linalg.norm(hand_dir)), 1e-9)
+
+    min_dist = np.full((points.shape[0],), np.inf, dtype=np.float32)
+    for alpha in np.linspace(0.0, 1.0, max(2, int(samples))):
+        flange = (1.0 - alpha) * start + alpha * end
+        fingertip = flange + float(hand_length_m) * hand_dir
+        d = _point_segment_distances(points, flange, fingertip).astype(np.float32)
+        min_dist = np.minimum(min_dist, d)
+    return min_dist < float(hand_radius_m), min_dist

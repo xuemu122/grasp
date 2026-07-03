@@ -29,7 +29,7 @@ from grasp_planner import (
     plan_edge_grasp,
 )
 from hand_eye import FX, FY, HandEyeTransformer
-from depth_collision_guard import depth_to_robot_obstacles, check_hand_path
+from depth_collision_guard import depth_to_robot_obstacles, check_hand_path, hand_path_hit_mask
 
 
 def _parse_float_list_env(name, default):
@@ -200,6 +200,108 @@ def _path_is_depth_clear(label, obstacle_points_m, waypoints_mm, hand_dir_m, han
     return True
 
 
+def _robot_points_to_pixels(points_m, transformer, flange_pose_mm, image_shape):
+    if points_m is None or len(points_m) == 0 or flange_pose_mm is None:
+        return np.zeros((0, 2), dtype=np.int32), np.zeros((0,), dtype=bool)
+    pose = tuple(float(x) for x in flange_pose_mm)
+    T_base_flange = np.eye(4, dtype=np.float32)
+    T_base_flange[:3, :3] = transformer._rpy_to_rot(pose[3], pose[4], pose[5]).astype(np.float32)
+    T_base_flange[:3, 3] = np.array(pose[:3], dtype=np.float32) / 1000.0
+    T_base_cam = T_base_flange @ transformer.T_flange_to_cam.astype(np.float32)
+    T_cam_base = np.linalg.inv(T_base_cam)
+
+    pts = np.asarray(points_m, dtype=np.float32)
+    pts_h = np.concatenate([pts, np.ones((pts.shape[0], 1), dtype=np.float32)], axis=1)
+    cam = (T_cam_base @ pts_h.T).T[:, :3]
+    z = cam[:, 2]
+    u = cam[:, 0] * float(transformer.fx) / np.maximum(z, 1e-6) + float(transformer.cx)
+    v = cam[:, 1] * float(transformer.fy) / np.maximum(z, 1e-6) + float(transformer.cy)
+    h, w = image_shape[:2]
+    valid = (z > 0.02) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+    pixels = np.stack([u, v], axis=1).astype(np.int32)
+    return pixels, valid
+
+
+def _save_depth_guard_viz(
+    label,
+    image,
+    obstacle_points_m,
+    obstacle_pixels,
+    target_bbox,
+    start_xyz_mm,
+    target_xyz_mm,
+    hand_dir_m,
+    hand_length_m,
+    transformer,
+    observation_flange_pose,
+):
+    if image is None or obstacle_points_m is None or obstacle_pixels is None:
+        return None
+    viz = image.copy()
+    pixels = np.asarray(obstacle_pixels, dtype=np.int32)
+
+    if len(pixels):
+        for u, v in pixels:
+            if 0 <= u < viz.shape[1] and 0 <= v < viz.shape[0]:
+                cv2.circle(viz, (int(u), int(v)), 1, (150, 150, 150), -1)
+
+    hit_mask, min_dist = hand_path_hit_mask(
+        obstacle_points_m,
+        np.array(start_xyz_mm, dtype=np.float32) / 1000.0,
+        np.array(target_xyz_mm, dtype=np.float32) / 1000.0,
+        hand_dir_m,
+        hand_length_m,
+        DEPTH_GUARD_HAND_RADIUS_M,
+        samples=DEPTH_GUARD_PATH_SAMPLES,
+    )
+    hit_pixels = pixels[hit_mask] if len(pixels) == len(hit_mask) else np.zeros((0, 2), dtype=np.int32)
+    for u, v in hit_pixels:
+        if 0 <= u < viz.shape[1] and 0 <= v < viz.shape[0]:
+            cv2.circle(viz, (int(u), int(v)), 3, (0, 0, 255), -1)
+
+    if target_bbox is not None:
+        x1, y1, x2, y2 = [int(v) for v in target_bbox]
+        cv2.rectangle(viz, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+    start = np.array(start_xyz_mm, dtype=np.float32) / 1000.0
+    end = np.array(target_xyz_mm, dtype=np.float32) / 1000.0
+    hand_dir = np.asarray(hand_dir_m, dtype=np.float32)
+    hand_dir = hand_dir / max(float(np.linalg.norm(hand_dir)), 1e-9)
+    path_points = []
+    for alpha in np.linspace(0.0, 1.0, max(2, DEPTH_GUARD_PATH_SAMPLES)):
+        root = (1.0 - alpha) * start + alpha * end
+        tip = root + float(hand_length_m) * hand_dir
+        path_points.extend([root, tip])
+    path_pixels, path_valid = _robot_points_to_pixels(
+        np.asarray(path_points, dtype=np.float32),
+        transformer,
+        observation_flange_pose,
+        viz.shape,
+    )
+    for i in range(0, len(path_pixels), 2):
+        if i + 1 < len(path_pixels) and path_valid[i] and path_valid[i + 1]:
+            p0 = tuple(int(x) for x in path_pixels[i])
+            p1 = tuple(int(x) for x in path_pixels[i + 1])
+            cv2.line(viz, p0, p1, (255, 255, 0), 1)
+            cv2.circle(viz, p0, 2, (255, 255, 0), -1)
+
+    min_mm = float(np.min(min_dist) * 1000.0) if len(min_dist) else float("inf")
+    cv2.putText(
+        viz,
+        f"{label} hit={int(np.count_nonzero(hit_mask))} min={min_mm:.0f}mm r={DEPTH_GUARD_HAND_RADIUS_M*1000:.0f} len={hand_length_m*1000:.0f}",
+        (12, 24),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (0, 0, 255) if np.any(hit_mask) else (0, 255, 0),
+        2,
+    )
+    safe_label = "".join(ch if ch.isalnum() else "_" for ch in str(label))
+    path = f"/tmp/depth_guard_{safe_label}.jpg"
+    cv2.imwrite(path, viz)
+    print(f"  [深度护栏] 可视化已保存: {path} (灰=障碍点, 红=命中点, 绿=目标框, 青=手部检查线)")
+    return path
+
+
 def _movel_with_depth_guard(
     arm: "DobotArm",
     label,
@@ -210,23 +312,43 @@ def _movel_with_depth_guard(
     allow_low_z=False,
     allow_bypass=True,
     hand_length_m=HAND_LENGTH,
+    viz_image=None,
+    obstacle_pixels=None,
+    target_bbox=None,
+    transformer=None,
+    observation_flange_pose=None,
 ) -> bool:
     target = np.array(target_xyz_mm, dtype=np.float32)
-    if _depth_guard_check(label, obstacle_points_m, arm, target, hand_dir_m, hand_length_m=hand_length_m):
+    try:
+        cur_pose = arm.get_pose()
+    except Exception as e:
+        print(f"  [深度护栏][中止] {label}: 无法读取当前位姿: {e}")
+        return False
+    start = np.array(cur_pose[:3], dtype=np.float32)
+
+    direct_ok = _depth_guard_path_ok(label, obstacle_points_m, start, target, hand_dir_m, hand_length_m=hand_length_m)
+    if direct_ok:
         if arm.movel(float(target[0]), float(target[1]), float(target[2]), speed=speed, allow_low_z=allow_low_z):
             return True
         print(f"  [深度绕行] {label}: 直达 MovL 失败, 尝试中间点绕行")
+    else:
+        _save_depth_guard_viz(
+            label,
+            viz_image,
+            obstacle_points_m,
+            obstacle_pixels,
+            target_bbox,
+            start,
+            target,
+            hand_dir_m,
+            hand_length_m,
+            transformer,
+            observation_flange_pose,
+        )
 
     if not (DEPTH_GUARD_BYPASS_ENABLE and allow_bypass):
         print(f"  [深度护栏][中止] {label} 无可用绕行, 不发动作")
         return False
-
-    try:
-        cur_pose = arm.get_pose()
-    except Exception as e:
-        print(f"  [深度绕行][中止] {label}: 无法读取当前位姿: {e}")
-        return False
-    start = np.array(cur_pose[:3], dtype=np.float32)
 
     candidates = []
     for lift_mm in DEPTH_GUARD_BYPASS_LIFTS_MM:
@@ -1301,16 +1423,19 @@ def main():
             gx, gy, gz  = float(grasp_pt[0]*1000),    float(grasp_pt[1]*1000),    float(grasp_pt[2]*1000)
 
             depth_obstacles_m = np.zeros((0, 3), dtype=np.float32)
+            depth_obstacles_px = np.zeros((0, 2), dtype=np.int32)
+            depth_observation_flange_pose = tuple(flange_pose)
             if DEPTH_GUARD_ENABLE:
-                depth_obstacles_m = depth_to_robot_obstacles(
+                depth_obstacles_m, depth_obstacles_px = depth_to_robot_obstacles(
                     best_depth,
                     camera,
                     transformer,
-                    flange_pose,
+                    depth_observation_flange_pose,
                     stride=DEPTH_GUARD_STRIDE,
                     max_depth_m=DEPTH_GUARD_MAX_DEPTH_M,
                     exclude_bbox=target.bbox,
                     exclude_margin_px=DEPTH_GUARD_EXCLUDE_MARGIN_PX,
+                    return_pixels=True,
                 )
                 print(
                     f"  [深度护栏] 障碍点={len(depth_obstacles_m)} "
@@ -1401,6 +1526,11 @@ def main():
                          allow_low_z=_current_layer_allows_low_z(),
                          allow_bypass=True,
                          hand_length_m=DEPTH_GUARD_APPROACH_LENGTH_M,
+                         viz_image=best_img,
+                         obstacle_pixels=depth_obstacles_px,
+                         target_bbox=target.bbox,
+                         transformer=transformer,
+                         observation_flange_pose=depth_observation_flange_pose,
                      ):
                          continue
                      time.sleep(MOTION_SETTLE_S)
@@ -1482,6 +1612,11 @@ def main():
                 allow_low_z=allow_low_z,
                 allow_bypass=True,
                 hand_length_m=DEPTH_GUARD_APPROACH_LENGTH_M,
+                viz_image=best_img,
+                obstacle_pixels=depth_obstacles_px,
+                target_bbox=target.bbox,
+                transformer=transformer,
+                observation_flange_pose=depth_observation_flange_pose,
             ):
                 print("  [中止] 对齐位运动失败/报警, 本次不闭手")
                 if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
@@ -1502,6 +1637,11 @@ def main():
                 allow_low_z=allow_low_z,
                 allow_bypass=False,
                 hand_length_m=HAND_LENGTH,
+                viz_image=best_img,
+                obstacle_pixels=depth_obstacles_px,
+                target_bbox=target.bbox,
+                transformer=transformer,
+                observation_flange_pose=depth_observation_flange_pose,
             ):
                 print("  [中止] 深度护栏拒绝探入路径, 本次不闭手")
                 if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:

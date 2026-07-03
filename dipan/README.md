@@ -75,6 +75,8 @@ DETECT_CONF_THRESHOLD=0.3 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAI
 - `DEPTH_GUARD_BYPASS_LIFTS_MM`：绕行上抬候选，默认 `60,100,140` mm。
 - `DEPTH_GUARD_BYPASS_SIDE_MM`：绕行侧向候选，默认 `60,-60` mm。
 
+深度护栏拦截动作时会自动保存调试图到 `/tmp/depth_guard_*.jpg`：灰点为参与判断的深度障碍点，红点为命中碰撞半径的点，绿框为当前目标框，青线为手部检查线。
+
 代码里的 `speed` 参数会随 `MovL`/`MovJ` 下发为 DOBOT `v=1..100` 百分比速度；超过 100 的值会自动夹到 100。放置段可选 `Arc` 或 `MovL` 平滑曲线；回层会先原地抬高，再高位回层。
 
 启动后程序会：
