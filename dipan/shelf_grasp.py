@@ -91,6 +91,7 @@ DEPTH_GUARD_ENABLE = os.getenv("DEPTH_GUARD_ENABLE", "1").lower() in ("1", "true
 DEPTH_GUARD_STRIDE = int(os.getenv("DEPTH_GUARD_STRIDE", "8"))
 DEPTH_GUARD_CLEARANCE_M = float(os.getenv("DEPTH_GUARD_CLEARANCE_M", "0.005"))
 DEPTH_GUARD_HAND_RADIUS_M = float(os.getenv("DEPTH_GUARD_HAND_RADIUS_M", str(HAND_W_Y * 0.5 + DEPTH_GUARD_CLEARANCE_M)))
+DEPTH_GUARD_APPROACH_LENGTH_M = float(os.getenv("DEPTH_GUARD_APPROACH_LENGTH_M", "0.08"))
 DEPTH_GUARD_PATH_SAMPLES = int(os.getenv("DEPTH_GUARD_PATH_SAMPLES", "8"))
 DEPTH_GUARD_MAX_DEPTH_M = float(os.getenv("DEPTH_GUARD_MAX_DEPTH_M", "1.20"))
 DEPTH_GUARD_EXCLUDE_MARGIN_PX = int(os.getenv("DEPTH_GUARD_EXCLUDE_MARGIN_PX", "56"))
@@ -130,7 +131,15 @@ def _current_layer_allows_low_z() -> bool:
     return _layer_allows_low_z(_current_layer_idx)
 
 
-def _depth_guard_path_ok(label, obstacle_points_m, start_xyz_mm, target_xyz_mm, hand_dir_m, quiet=False) -> bool:
+def _depth_guard_path_ok(
+    label,
+    obstacle_points_m,
+    start_xyz_mm,
+    target_xyz_mm,
+    hand_dir_m,
+    hand_length_m=HAND_LENGTH,
+    quiet=False,
+) -> bool:
     if not DEPTH_GUARD_ENABLE:
         return True
     if obstacle_points_m is None or len(obstacle_points_m) == 0:
@@ -143,7 +152,7 @@ def _depth_guard_path_ok(label, obstacle_points_m, start_xyz_mm, target_xyz_mm, 
         np.array(start_xyz_mm, dtype=np.float32) / 1000.0,
         np.array(target_xyz_mm, dtype=np.float32) / 1000.0,
         hand_dir_m,
-        HAND_LENGTH,
+        hand_length_m,
         DEPTH_GUARD_HAND_RADIUS_M,
         samples=DEPTH_GUARD_PATH_SAMPLES,
     )
@@ -152,7 +161,8 @@ def _depth_guard_path_ok(label, obstacle_points_m, start_xyz_mm, target_xyz_mm, 
         print(
             f"  [深度护栏] {label}: 最近 {min_dist_mm:.0f}mm, "
             f"命中 {result.hit_count}/{result.checked_points}, "
-            f"半径 {DEPTH_GUARD_HAND_RADIUS_M*1000:.0f}mm"
+            f"半径 {DEPTH_GUARD_HAND_RADIUS_M*1000:.0f}mm, "
+            f"长度 {hand_length_m*1000:.0f}mm"
         )
     if not result.ok:
         if not quiet:
@@ -160,7 +170,7 @@ def _depth_guard_path_ok(label, obstacle_points_m, start_xyz_mm, target_xyz_mm, 
     return result.ok
 
 
-def _depth_guard_check(label, obstacle_points_m, arm: "DobotArm", target_xyz_mm, hand_dir_m) -> bool:
+def _depth_guard_check(label, obstacle_points_m, arm: "DobotArm", target_xyz_mm, hand_dir_m, hand_length_m=HAND_LENGTH) -> bool:
     """Check whether the planned hand sweep is clear before sending motion."""
     if not DEPTH_GUARD_ENABLE:
         return True
@@ -172,10 +182,10 @@ def _depth_guard_check(label, obstacle_points_m, arm: "DobotArm", target_xyz_mm,
     except Exception as e:
         print(f"  [深度护栏][中止] {label}: 无法读取当前位姿: {e}")
         return False
-    return _depth_guard_path_ok(label, obstacle_points_m, cur_pose[:3], target_xyz_mm, hand_dir_m)
+    return _depth_guard_path_ok(label, obstacle_points_m, cur_pose[:3], target_xyz_mm, hand_dir_m, hand_length_m=hand_length_m)
 
 
-def _path_is_depth_clear(label, obstacle_points_m, waypoints_mm, hand_dir_m) -> bool:
+def _path_is_depth_clear(label, obstacle_points_m, waypoints_mm, hand_dir_m, hand_length_m=HAND_LENGTH) -> bool:
     for idx in range(len(waypoints_mm) - 1):
         if not _depth_guard_path_ok(
             f"{label} 绕行段{idx + 1}",
@@ -183,6 +193,7 @@ def _path_is_depth_clear(label, obstacle_points_m, waypoints_mm, hand_dir_m) -> 
             waypoints_mm[idx],
             waypoints_mm[idx + 1],
             hand_dir_m,
+            hand_length_m=hand_length_m,
             quiet=True,
         ):
             return False
@@ -198,9 +209,10 @@ def _movel_with_depth_guard(
     speed=100,
     allow_low_z=False,
     allow_bypass=True,
+    hand_length_m=HAND_LENGTH,
 ) -> bool:
     target = np.array(target_xyz_mm, dtype=np.float32)
-    if _depth_guard_check(label, obstacle_points_m, arm, target, hand_dir_m):
+    if _depth_guard_check(label, obstacle_points_m, arm, target, hand_dir_m, hand_length_m=hand_length_m):
         if arm.movel(float(target[0]), float(target[1]), float(target[2]), speed=speed, allow_low_z=allow_low_z):
             return True
         print(f"  [深度绕行] {label}: 直达 MovL 失败, 尝试中间点绕行")
@@ -236,7 +248,7 @@ def _movel_with_depth_guard(
 
     for desc, path in candidates:
         waypoints = [start] + path
-        if not _path_is_depth_clear(label, obstacle_points_m, waypoints, hand_dir_m):
+        if not _path_is_depth_clear(label, obstacle_points_m, waypoints, hand_dir_m, hand_length_m=hand_length_m):
             continue
         print(f"  [深度绕行] {label}: 采用 {desc}, {len(path)} 个中间/目标点")
         for point in path:
@@ -1385,6 +1397,7 @@ def main():
                          speed=100,
                          allow_low_z=_current_layer_allows_low_z(),
                          allow_bypass=True,
+                         hand_length_m=DEPTH_GUARD_APPROACH_LENGTH_M,
                      ):
                          continue
                      time.sleep(MOTION_SETTLE_S)
@@ -1465,6 +1478,7 @@ def main():
                 speed=approach_speed,
                 allow_low_z=allow_low_z,
                 allow_bypass=True,
+                hand_length_m=DEPTH_GUARD_APPROACH_LENGTH_M,
             ):
                 print("  [中止] 对齐位运动失败/报警, 本次不闭手")
                 if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
@@ -1484,6 +1498,7 @@ def main():
                 speed=grasp_speed,
                 allow_low_z=allow_low_z,
                 allow_bypass=False,
+                hand_length_m=HAND_LENGTH,
             ):
                 print("  [中止] 深度护栏拒绝探入路径, 本次不闭手")
                 if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
