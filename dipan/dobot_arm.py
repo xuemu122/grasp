@@ -21,6 +21,7 @@ SELF_COLLISION_MARGIN_M = float(os.getenv("SELF_COLLISION_MARGIN_M", "0.015"))
 SELF_COLLISION_PATH_SAMPLES = int(os.getenv("SELF_COLLISION_PATH_SAMPLES", "8"))
 SELF_COLLISION_REQUIRE_IK = os.getenv("SELF_COLLISION_REQUIRE_IK", "0").lower() in ("1", "true", "yes", "on")
 SELF_COLLISION_VERBOSE = os.getenv("SELF_COLLISION_VERBOSE", "0").lower() in ("1", "true", "yes", "on")
+DOBOT_IK_VERBOSE = os.getenv("DOBOT_IK_VERBOSE", "0").lower() in ("1", "true", "yes", "on")
 
 
 def _clamp_speed_pct(speed) -> int:
@@ -185,12 +186,11 @@ class DobotArm:
     def get_error_id(self) -> str:
         return self.send("GetErrorID()")
 
-    def _check_self_collision_joints(self, target_joints, label: str = "目标关节") -> bool:
+    def _check_self_collision_path(self, current_joints, target_joints, label: str = "目标关节") -> bool:
         if self.self_collision_guard is None:
             return True
         try:
-            current = self.get_joints()
-            result = self.self_collision_guard.check_path(current, target_joints, samples=SELF_COLLISION_PATH_SAMPLES)
+            result = self.self_collision_guard.check_path(current_joints, target_joints, samples=SELF_COLLISION_PATH_SAMPLES)
         except Exception as e:
             print(f"  [自碰撞][警告] {label}: 检查失败, 放行: {e}")
             return True
@@ -201,10 +201,25 @@ class DobotArm:
         print(f"  [自碰撞][中止] {label}: {describe_self_collision(result)}")
         return False
 
+    def _check_self_collision_joints(self, target_joints, label: str = "目标关节") -> bool:
+        if self.self_collision_guard is None:
+            return True
+        try:
+            current = self.get_joints()
+        except Exception as e:
+            print(f"  [自碰撞][警告] {label}: 无法读取当前关节角, 放行: {e}")
+            return True
+        return self._check_self_collision_path(current, target_joints, label=label)
+
     def _check_self_collision_pose(self, pose, label: str = "目标位姿") -> bool:
         if self.self_collision_guard is None:
             return True
-        target_joints = self.inverse_kin_near(pose)
+        try:
+            current = self.get_joints()
+        except Exception as e:
+            print(f"  [自碰撞][警告] {label}: 无法读取当前关节角, 放行: {e}")
+            return True
+        target_joints = self.inverse_kin_near(pose, near=current)
         if target_joints is None:
             msg = f"  [自碰撞][警告] {label}: 未能求近邻逆解, 无法做自碰撞检查"
             if SELF_COLLISION_REQUIRE_IK:
@@ -212,7 +227,7 @@ class DobotArm:
                 return False
             print(msg + ", 放行")
             return True
-        return self._check_self_collision_joints(target_joints, label=label)
+        return self._check_self_collision_path(current, target_joints, label=label)
 
     def clear_alarm(self):
         print("[DOBOT] 清除报警并重新使能...")
@@ -268,17 +283,22 @@ class DobotArm:
         print("  [安全过渡] 未能求近邻逆解, 回退 pose MovJ")
         return self.movj_pose(pose, speed=speed, cp=cp, wait=wait)
 
-    def inverse_kin_near(self, pose):
+    def inverse_kin_near(self, pose, near=None, verbose=None):
         try:
-            near = self.get_joints()
+            if near is None:
+                near = self.get_joints()
+            if verbose is None:
+                verbose = DOBOT_IK_VERBOSE
             p = pose
             cmd = (
                 f"InverseKin({p[0]:.1f},{p[1]:.1f},{p[2]:.1f},{p[3]:.1f},{p[4]:.1f},{p[5]:.1f},"
                 f"useJointNear=1,jointNear={{{near[0]:.1f},{near[1]:.1f},{near[2]:.1f},{near[3]:.1f},{near[4]:.1f},{near[5]:.1f}}})"
             )
-            print(f"  >>> {cmd}")
+            if verbose:
+                print(f"  >>> {cmd}")
             resp = self.send(cmd)
-            print(f"  <<< {resp}")
+            if verbose:
+                print(f"  <<< {resp}")
             if resp.startswith("-"):
                 return None
             match = re.match(r"^-?\d+,\{([^{}]+)\},InverseKin", resp)

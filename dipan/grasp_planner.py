@@ -13,6 +13,7 @@ SIDE_GRASP_MAX_HEIGHT_M = float(os.getenv("SIDE_GRASP_MAX_HEIGHT_M", "0.11"))  #
 LAYER_Z_FILTER_ENABLE = os.getenv("LAYER_Z_FILTER_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 LAYER_Z_TOLERANCE_M = float(os.getenv("LAYER_Z_TOLERANCE_M", "0.16"))
 MAX_GRASP_DEPTH_M = float(os.getenv("MAX_GRASP_DEPTH_M", "0.52"))  # 超过此深度的物品不抓取，避免碰撞
+ALLOW_NO_DEPTH_GRASP = os.getenv("ALLOW_NO_DEPTH_GRASP", "0").lower() in ("1", "true", "yes", "on")
 
 
 def axis_aligned_approach_m(current_xyz_m, grasp_xyz_m, forward_dir, min_backoff_m):
@@ -97,10 +98,12 @@ def pick_target_box(detections, transformer=None, flange_pose=None, layer_z_m=No
         )
     valid = [d for d in valid if d.depth_m <= MAX_GRASP_DEPTH_M]
     if not valid:
-        valid = sorted(roi_filtered, key=lambda d: ((d.bbox[0] + d.bbox[2]) / 2), reverse=True)
-        if valid:
-            print("  无有效深度, 回退选 ROI 内最右侧候选")
-            return valid[0], "right"
+        if ALLOW_NO_DEPTH_GRASP:
+            valid = sorted(roi_filtered, key=lambda d: ((d.bbox[0] + d.bbox[2]) / 2), reverse=True)
+            if valid:
+                print("  [警告] 无有效深度, 已按 ALLOW_NO_DEPTH_GRASP=1 回退选 ROI 内最右侧候选")
+                return valid[0], "right"
+        print("  [停止] ROI 内没有可信深度候选, 本次不抓取")
         return None, None
 
     valid.sort(key=lambda d: d.depth_m)

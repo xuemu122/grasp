@@ -10,7 +10,6 @@ import os
 import time
 import json
 import subprocess
-import re
 import cv2
 import numpy as np
 from typing import Optional
@@ -18,7 +17,7 @@ from typing import Optional
 # ── 识别模块 ──
 sys.path.insert(0, "/home/nvidia/grasp/识别")
 from orbbec_detect import MedicineLocatorSystem, RealSenseCamera
-from orbbec_detect import DetectionResult, _assess_lighting
+from orbbec_detect import _assess_lighting
 
 from aero_gripper import AeroGripper
 from dobot_arm import DobotArm, _clamp_cp
@@ -31,6 +30,16 @@ from grasp_planner import (
 )
 from hand_eye import FX, FY, HandEyeTransformer
 from depth_collision_guard import depth_to_robot_obstacles, check_hand_path, hand_path_hit_mask
+from target_selection import (
+    bbox_iou as _bbox_iou,
+    filter_detections_by_target_query as _filter_detections_by_target_query,
+    fuse_detection_tracks as _fuse_detection_tracks,
+    is_clear_target_query as _is_clear_target_query,
+    print_model_classes as _print_model_classes,
+    print_target_filter_result as _print_target_filter_result,
+    refine_target_depth_on_frame,
+    unique_bboxes as _unique_bboxes,
+)
 
 
 def _parse_float_list_env(name, default):
@@ -89,6 +98,8 @@ DRINK_CLASS_IDS = set(range(70, 78)) | set(range(80, 87))
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "bottle").lower()
 DETECTION_STABILITY_IOU = float(os.getenv("DETECTION_STABILITY_IOU", "0.35"))
 TARGET_PRODUCT_QUERY = os.getenv("TARGET_PRODUCT_QUERY", os.getenv("TARGET_NAME", "")).strip()
+TARGET_DEPTH_REFINE_RADIUS_PX = int(os.getenv("TARGET_DEPTH_REFINE_RADIUS_PX", "10"))
+TARGET_DEPTH_REFINE_MAX_DELTA_M = float(os.getenv("TARGET_DEPTH_REFINE_MAX_DELTA_M", "0.08"))
 DEPTH_GUARD_ENABLE = os.getenv("DEPTH_GUARD_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 DEPTH_GUARD_STRIDE = int(os.getenv("DEPTH_GUARD_STRIDE", "8"))
 DEPTH_GUARD_CLEARANCE_M = float(os.getenv("DEPTH_GUARD_CLEARANCE_M", "0.005"))
@@ -1114,186 +1125,6 @@ def _toggle_chassis_place():
         print("  流程: 先回第2层 → 到收起姿态 → 调用 move_robot.py place → 等底盘到达 → 机械臂放置")
 
 
-TARGET_ALIAS_GROUPS = (
-    ("褪黑素", "melatonin", "ths"),
-    ("雪碧", "sprite", "xuebi", "xue bi"),
-)
-
-
-def _normalize_target_text(value) -> str:
-    if value is None:
-        return ""
-    return re.sub(r"\s+", "", str(value).strip().lower())
-
-
-def _target_query_tokens(query: str):
-    parts = re.split(r"[,，;；]+", query or "")
-    tokens = {_normalize_target_text(part) for part in parts if _normalize_target_text(part)}
-    for group in TARGET_ALIAS_GROUPS:
-        normalized_group = {_normalize_target_text(item) for item in group}
-        if tokens & normalized_group:
-            tokens |= normalized_group
-    return tokens
-
-
-def _detection_identity_values(det):
-    values = [
-        getattr(det, "product_name", None),
-        getattr(det, "medicine_name", None),
-        getattr(det, "class_name", None),
-        getattr(det, "category", None),
-        getattr(det, "package_type", None),
-        getattr(det, "product_id", None),
-        getattr(det, "ocr_text", None),
-        getattr(det, "class_id", None),
-    ]
-    class_id = getattr(det, "class_id", None)
-    if class_id is not None:
-        values.extend((f"id:{class_id}", f"class:{class_id}", f"class_id:{class_id}"))
-    return [v for v in values if v not in (None, "")]
-
-
-def _detection_label(det):
-    name = (
-        getattr(det, "product_name", None)
-        or getattr(det, "medicine_name", None)
-        or getattr(det, "class_name", None)
-        or "?"
-    )
-    class_id = getattr(det, "class_id", "?")
-    conf = getattr(det, "confidence", 0.0) or 0.0
-    return f"{name}(id={class_id}, conf={conf:.2f})"
-
-
-def _filter_detections_by_target_query(detections, query: str):
-    tokens = _target_query_tokens(query)
-    if not tokens:
-        return list(detections)
-
-    matched = []
-    for det in detections:
-        haystack = [_normalize_target_text(v) for v in _detection_identity_values(det)]
-        if any(token in value or value in token for token in tokens for value in haystack if value):
-            matched.append(det)
-    return matched
-
-
-def _print_target_filter_result(query: str, detections, matched):
-    if not query:
-        return
-    if matched:
-        details = " | ".join(_detection_label(det) for det in matched[:8])
-        print(f"  [目标过滤] {query!r}: 命中 {len(matched)}/{len(detections)} 个候选: {details}")
-        return
-    candidates = " | ".join(_detection_label(det) for det in detections[:8])
-    print(f"  [目标过滤][停止] {query!r}: 没有匹配候选")
-    if candidates:
-        print(f"  [目标过滤] 当前候选: {candidates}")
-
-
-def _is_clear_target_query(value: str) -> bool:
-    return _normalize_target_text(value) in ("", "*", "all", "any", "none", "clear", "全部", "所有", "无", "清空")
-
-
-def _print_model_classes(locator, filter_text: str = ""):
-    names = getattr(getattr(locator, "model", None), "names", {}) or {}
-    if not names:
-        print("  [类别] 当前模型没有暴露类别列表")
-        return
-    tokens = _target_query_tokens(filter_text)
-    items = sorted(names.items(), key=lambda item: int(item[0]) if str(item[0]).isdigit() else str(item[0]))
-    if tokens:
-        items = [
-            (class_id, name) for class_id, name in items
-            if any(token in _normalize_target_text(name) or token in _normalize_target_text(class_id) for token in tokens)
-        ]
-    if not items:
-        print(f"  [类别] 没有匹配 {filter_text!r} 的模型类别")
-        return
-    print(f"  [类别] 可选模型类别 {len(items)} 个" + (f" (过滤: {filter_text})" if filter_text else ""))
-    line = []
-    for class_id, name in items:
-        line.append(f"{class_id}:{name}")
-        if len(line) >= 4:
-            print("    " + " | ".join(line))
-            line = []
-    if line:
-        print("    " + " | ".join(line))
-
-
-def _bbox_iou(a, b) -> float:
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
-    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
-    inter = iw * ih
-    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
-    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
-    union = area_a + area_b - inter
-    return inter / union if union > 0 else 0.0
-
-
-def _fuse_detection_tracks(frame_detections, iou_threshold=0.35):
-    tracks = []
-    for frame_idx, detections in enumerate(frame_detections):
-        for det in detections:
-            matched = None
-            best_iou = 0.0
-            for track in tracks:
-                if track["class_id"] != det.class_id:
-                    continue
-                iou = _bbox_iou(track["bbox"], det.bbox)
-                if iou > best_iou:
-                    best_iou = iou
-                    matched = track
-            if matched is None or best_iou < iou_threshold:
-                tracks.append({
-                    "class_id": det.class_id,
-                    "items": [(frame_idx, det)],
-                    "bbox": det.bbox,
-                })
-                continue
-            matched["items"].append((frame_idx, det))
-            boxes = np.array([item.bbox for _, item in matched["items"]], dtype=float)
-            matched["bbox"] = tuple(np.median(boxes, axis=0).astype(int).tolist())
-
-    fused_with_support = []
-    for track in tracks:
-        items = [item for _, item in track["items"]]
-        boxes = np.array([d.bbox for d in items], dtype=float)
-        bbox = tuple(np.median(boxes, axis=0).astype(int).tolist())
-        conf = float(np.mean([d.confidence for d in items]))
-        depths = [d.depth_m for d in items if d.depth_m is not None]
-        depth_m = float(np.median(depths)) if depths else None
-        best = max(items, key=lambda d: d.confidence)
-        cx = int(round((bbox[0] + bbox[2]) / 2))
-        cy = int(round((bbox[1] + bbox[3]) / 2))
-        fused_det = DetectionResult(
-            class_id=best.class_id,
-            class_name=best.class_name,
-            confidence=conf,
-            bbox=bbox,
-            center_pixel=(cx, cy),
-            depth_m=depth_m,
-            camera_xyz=best.camera_xyz,
-            shelf_pos=best.shelf_pos,
-            product_id=best.product_id,
-            product_name=best.product_name,
-            category=best.category,
-            package_type=best.package_type,
-            medicine_name=best.medicine_name,
-            mapping_source=best.mapping_source,
-            match_confidence=best.match_confidence,
-            match_sources=best.match_sources,
-            ocr_text=best.ocr_text,
-        )
-        fused_with_support.append((len(items), conf, fused_det))
-
-    fused_with_support.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return [item[2] for item in fused_with_support], tracks
-
-
 def main():
     print("=" * 60)
     print("  货架边缘抓取系统")
@@ -1598,6 +1429,14 @@ def main():
                 if 0 <= best_frame_idx < len(captured_frames):
                     best_img, best_depth = captured_frames[best_frame_idx]
                     print(f"  → 使用目标最高置信帧作为抓取参考: frame={best_frame_idx}")
+            target = refine_target_depth_on_frame(
+                target,
+                camera,
+                best_depth,
+                transformer,
+                radius_px=TARGET_DEPTH_REFINE_RADIUS_PX,
+                max_delta_m=TARGET_DEPTH_REFINE_MAX_DELTA_M,
+            )
             print(f"\n=== 选中: {edge}侧盒子 bbox=({target.bbox[0]},{target.bbox[1]})-({target.bbox[2]},{target.bbox[3]}) "
                   f"depth={target.depth_m:.3f}m ===")
 
@@ -1612,7 +1451,8 @@ def main():
             cv2.line(viz, (0, TARGET_ROI_Y_MIN), (viz.shape[1] - 1, TARGET_ROI_Y_MIN), (255, 0, 0), 1)
             cv2.line(viz, (0, TARGET_ROI_Y_MAX), (viz.shape[1] - 1, TARGET_ROI_Y_MAX), (255, 0, 0), 1)
             for d in detections:
-                col = (0, 0, 255) if d is target else (0, 255, 0)
+                is_target_box = d.class_id == target.class_id and _bbox_iou(d.bbox, target.bbox) >= DETECTION_STABILITY_IOU
+                col = (0, 0, 255) if is_target_box else (0, 255, 0)
                 cv2.rectangle(viz, (int(d.bbox[0]), int(d.bbox[1])),
                               (int(d.bbox[2]), int(d.bbox[3])), col, 2)
                 cv2.putText(viz, f"{d.class_name or '?'} {d.depth_m:.2f}m" if d.depth_m else f"{d.class_name or '?'}",
@@ -1659,7 +1499,7 @@ def main():
             depth_obstacles_px = np.zeros((0, 2), dtype=np.int32)
             depth_observation_flange_pose = tuple(flange_pose)
             depth_guard_camera_depth_axis = _camera_depth_axis_m(transformer, depth_observation_flange_pose)
-            depth_guard_exclude_bboxes = [d.bbox for d in detections if getattr(d, "bbox", None) is not None]
+            depth_guard_exclude_bboxes = _unique_bboxes(detections)
             if DEPTH_GUARD_ENABLE:
                 depth_obstacles_m, depth_obstacles_px = depth_to_robot_obstacles(
                     best_depth,
@@ -1668,7 +1508,7 @@ def main():
                     depth_observation_flange_pose,
                     stride=DEPTH_GUARD_STRIDE,
                     max_depth_m=DEPTH_GUARD_MAX_DEPTH_M,
-                    exclude_bbox=target.bbox,
+                    exclude_bbox=None,
                     exclude_bboxes=depth_guard_exclude_bboxes,
                     exclude_margin_px=DEPTH_GUARD_EXCLUDE_MARGIN_PX,
                     exclude_self_hand=DEPTH_GUARD_SELF_MASK_ENABLE,

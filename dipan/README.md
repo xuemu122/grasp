@@ -11,6 +11,7 @@
 | `aero_gripper.py` | Aero Hand 控制：张开、普通抓、上端抓、瓶子抓 |
 | `hand_eye.py` | 手眼坐标转换：像素/深度到机器人基座坐标，含远距透视补偿 |
 | `grasp_planner.py` | 抓取目标选择和抓取点规划：ROI 过滤、深度分层、右侧优先、侧抓/上抓判定 |
+| `target_selection.py` | 检测结果融合、目标关键词匹配、类别列表显示、目标深度重采样 |
 | `depth_collision_guard.py` | 深度护栏：把当前深度图投到机器人坐标系，发动作前检查灵巧手路径是否扫到障碍 |
 | `self_collision_guard.py` | Nova5 自碰撞护栏：读取 URDF/SRDF，用胶囊近似在 MovL/MovJ 前检查自身连杆碰撞 |
 | `hand_eye_calib.py` | ArUco 手眼标定，生成 `calib_eye_in_hand.json` |
@@ -45,6 +46,8 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `DETECT_CONF_THRESHOLD`：抓取主程序 YOLO 显示/输出阈值，默认 `0.7`。
 - `WATER_CONF_THRESHOLD`：饮料/矿泉水类专用阈值，默认 `0.52`；只放宽 `drink` 类，避免所有类别一起降阈值造成误检。
 - `DETECTION_STABILITY_IOU`：抓取前多帧检测融合的同目标 IoU 阈值，默认 `0.35`；矿泉水识别闪烁时会按多帧稳定候选融合。
+- `TARGET_DEPTH_REFINE_RADIUS_PX`：最终参考帧上重新采样目标中心深度的半径，默认 `10` px；用于让抓取点深度与实际用于抓取的图像帧一致。
+- `TARGET_DEPTH_REFINE_MAX_DELTA_M`：目标深度重采样允许偏离融合深度的最大值，默认 `0.08` m；超过则认为可能采到背景并跳过校正。
 - `MOTION_SETTLE_S`：普通运动完成后的短缓冲，默认 `0.2` 秒。
 - `GRASP_SETTLE_S`：抓取前进、闭手前、后退后的缓冲，默认 `0.4` 秒。
 - `HAND_CLOSE_WAIT_S`：灵巧手闭合后等待物体稳定的时间，默认 `3.0` 秒。
@@ -62,12 +65,14 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `SIDE_GRASP_MAX_HEIGHT_M`：侧面抓取点离物体底部的最大高度，默认 `0.11` m；防止抓手位置过高导致相机与前一层层板碰撞。
 - `LAYER_Z_TOLERANCE_M`：当前层世界 Z 过滤容差，默认 `0.16` m；如果误识别上一层会被剔除，现场层高/标定偏差大时可调大。
 - `MAX_GRASP_DEPTH_M`：最大抓取深度，默认 `0.52` m；超过此深度的物品不抓取，避免机械臂伸太深导致货架层板碰撞相机。货架更浅时可调小。
+- `ALLOW_NO_DEPTH_GRASP`：无可信深度时是否仍按最右侧框兜底抓取，默认关闭；只建议离线调试时临时设为 `1`。
 - `TARGET_PRODUCT_QUERY`：目标商品/类别关键词，默认不指定；可匹配任意模型类别或检测身份字段，包括 `product_name`、`medicine_name`、`class_name`、`category`、`package_type`、`product_id`、`class_id`、`ocr_text`。
 - `SELF_COLLISION_ENABLE`：Nova5 自碰撞护栏开关，默认开启；基于 URDF/SRDF 做 FK，并用保守胶囊近似检查 MovL/MovJ 的关节路径。
 - `SELF_COLLISION_MARGIN_M`：自碰撞安全余量，默认 `0.015` m；误拦可调小，担心擦碰可调大。
 - `SELF_COLLISION_PATH_SAMPLES`：自碰撞路径采样次数，默认 `8`；关节运动跨度大时可调大。
 - `SELF_COLLISION_REQUIRE_IK`：MovL 无法求近邻逆解时是否中止，默认关闭；开启后更保守，但 IK 返回异常会导致 MovL 被拒绝。
 - `SELF_COLLISION_VERBOSE`：自碰撞护栏通过时是否打印最近余量，默认关闭。
+- `DOBOT_IK_VERBOSE`：是否打印自碰撞检查用的 `InverseKin` 请求/响应，默认关闭；排查 IK 失败时可开启。
 - `DEPTH_GUARD_ENABLE`：深度护栏开关，默认开启；会排除当前画面中所有检测框，把其余深度点当成货架/障碍，检查对齐和探入路径。
 - `DEPTH_GUARD_CLEARANCE_M`：深度护栏额外安全余量，默认 `0.005` m；默认手部半径按 `HAND_W_Y/2 + 余量` 计算。
 - `DEPTH_GUARD_HAND_RADIUS_M`：灵巧手安全半径，默认约 `0.0525` m；等于 95mm 手宽的一半再加 5mm 余量。误拦截可调小到 `0.0475`，仍擦碰可调大到 `0.06`。
