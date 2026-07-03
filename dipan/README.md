@@ -11,6 +11,7 @@
 | `aero_gripper.py` | Aero Hand 控制：张开、普通抓、上端抓、瓶子抓 |
 | `hand_eye.py` | 手眼坐标转换：像素/深度到机器人基座坐标，含远距透视补偿 |
 | `grasp_planner.py` | 抓取目标选择和抓取点规划：ROI 过滤、深度分层、右侧优先、侧抓/上抓判定 |
+| `depth_collision_guard.py` | 深度护栏：把当前深度图投到机器人坐标系，发动作前检查灵巧手路径是否扫到障碍 |
 | `hand_eye_calib.py` | ArUco 手眼标定，生成 `calib_eye_in_hand.json` |
 | `move_robot.py` | 底盘 TCP 控制，移动到药架/充电点/取消任务，并返回底盘电量 |
 | `shelf_layers.json` | 货架层观察位姿，程序内 `l` 菜单维护 |
@@ -62,6 +63,11 @@ DETECT_CONF_THRESHOLD=0.3 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAI
 - `SIDE_GRASP_MAX_HEIGHT_M`：侧面抓取点离物体底部的最大高度，默认 `0.11` m；防止抓手位置过高导致相机与前一层层板碰撞。
 - `LAYER_Z_TOLERANCE_M`：当前层世界 Z 过滤容差，默认 `0.16` m；如果误识别上一层会被剔除，现场层高/标定偏差大时可调大。
 - `MAX_GRASP_DEPTH_M`：最大抓取深度，默认 `0.38` m；超过此深度的物品不抓取，避免机械臂伸太深导致货架层板碰撞相机。如果货架很深但确认安全可调大，如 `MAX_GRASP_DEPTH_M=0.45`。
+- `DEPTH_GUARD_ENABLE`：深度护栏开关，默认开启；会排除目标框，把其余深度点当成货架/障碍，检查对齐和探入路径。
+- `DEPTH_GUARD_HAND_RADIUS_M`：灵巧手安全半径，默认 `0.105` m；误拦截可调小到 `0.085`，仍擦碰可调大到 `0.13`。
+- `DEPTH_GUARD_STRIDE`：深度点采样步长，默认 `8`；调小更密但更慢，调大更快但可能漏细杆/边缘。
+- `DEPTH_GUARD_PATH_SAMPLES`：路径采样次数，默认 `8`；运动路径长或拐得多时可调大。
+- `DEPTH_GUARD_MAX_DEPTH_M`：纳入障碍点的最大深度，默认 `1.20` m；货架背景太远造成误拦截时可调小。
 
 代码里的 `speed` 参数会随 `MovL`/`MovJ` 下发为 DOBOT `v=1..100` 百分比速度；超过 100 的值会自动夹到 100。放置段可选 `Arc` 或 `MovL` 平滑曲线；回层会先原地抬高，再高位回层。
 

@@ -29,6 +29,7 @@ from grasp_planner import (
     plan_edge_grasp,
 )
 from hand_eye import FX, FY, HandEyeTransformer
+from depth_collision_guard import depth_to_robot_obstacles, check_hand_path
 
 
 # ============================================================
@@ -74,6 +75,11 @@ DRINK_CLASS_IDS = set(range(70, 78)) | set(range(80, 87))
 # 当前识别目标以瓶子为主, 默认使用瓶子抓取手势；原侧抓/上抓手势仍保留。
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "bottle").lower()
 DETECTION_STABILITY_IOU = float(os.getenv("DETECTION_STABILITY_IOU", "0.35"))
+DEPTH_GUARD_ENABLE = os.getenv("DEPTH_GUARD_ENABLE", "1").lower() in ("1", "true", "yes", "on")
+DEPTH_GUARD_STRIDE = int(os.getenv("DEPTH_GUARD_STRIDE", "8"))
+DEPTH_GUARD_HAND_RADIUS_M = float(os.getenv("DEPTH_GUARD_HAND_RADIUS_M", "0.105"))
+DEPTH_GUARD_PATH_SAMPLES = int(os.getenv("DEPTH_GUARD_PATH_SAMPLES", "8"))
+DEPTH_GUARD_MAX_DEPTH_M = float(os.getenv("DEPTH_GUARD_MAX_DEPTH_M", "1.20"))
 
 # 货架层位姿文件 (笛卡尔: x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)
 SHELF_LAYERS_FILE = os.path.join(os.path.dirname(__file__), "shelf_layers.json")
@@ -105,6 +111,39 @@ def _layer_allows_low_z(layer_idx: Optional[int]) -> bool:
 
 def _current_layer_allows_low_z() -> bool:
     return _layer_allows_low_z(_current_layer_idx)
+
+
+def _depth_guard_check(label, obstacle_points_m, arm: "DobotArm", target_xyz_mm, hand_dir_m) -> bool:
+    """Check whether the planned hand sweep is clear before sending motion."""
+    if not DEPTH_GUARD_ENABLE:
+        return True
+    if obstacle_points_m is None or len(obstacle_points_m) == 0:
+        print(f"  [深度护栏] {label}: 无有效障碍点, 放行")
+        return True
+    try:
+        cur_pose = arm.get_pose()
+    except Exception as e:
+        print(f"  [深度护栏][中止] {label}: 无法读取当前位姿: {e}")
+        return False
+
+    result = check_hand_path(
+        obstacle_points_m,
+        np.array(cur_pose[:3], dtype=np.float32) / 1000.0,
+        np.array(target_xyz_mm, dtype=np.float32) / 1000.0,
+        hand_dir_m,
+        HAND_LENGTH,
+        DEPTH_GUARD_HAND_RADIUS_M,
+        samples=DEPTH_GUARD_PATH_SAMPLES,
+    )
+    min_dist_mm = result.min_distance_m * 1000.0 if np.isfinite(result.min_distance_m) else float("inf")
+    print(
+        f"  [深度护栏] {label}: 最近 {min_dist_mm:.0f}mm, "
+        f"命中 {result.hit_count}/{result.checked_points}, "
+        f"半径 {DEPTH_GUARD_HAND_RADIUS_M*1000:.0f}mm"
+    )
+    if not result.ok:
+        print(f"  [深度护栏][中止] {label} 可能碰货架/障碍, 不发动作")
+    return result.ok
 
 
 def load_shelf_layers():
@@ -1145,6 +1184,22 @@ def main():
             ax, ay, az  = float(approach_pt[0]*1000), float(approach_pt[1]*1000), float(approach_pt[2]*1000)
             gx, gy, gz  = float(grasp_pt[0]*1000),    float(grasp_pt[1]*1000),    float(grasp_pt[2]*1000)
 
+            depth_obstacles_m = np.zeros((0, 3), dtype=np.float32)
+            if DEPTH_GUARD_ENABLE:
+                depth_obstacles_m = depth_to_robot_obstacles(
+                    best_depth,
+                    camera,
+                    transformer,
+                    flange_pose,
+                    stride=DEPTH_GUARD_STRIDE,
+                    max_depth_m=DEPTH_GUARD_MAX_DEPTH_M,
+                    exclude_bbox=target.bbox,
+                )
+                print(
+                    f"  [深度护栏] 障碍点={len(depth_obstacles_m)} "
+                    f"(stride={DEPTH_GUARD_STRIDE}, max_depth={DEPTH_GUARD_MAX_DEPTH_M:.2f}m, 已排除目标框)"
+                )
+
             # ========================================================
             # 调试交互: 微调 / 预览 / 执行  (offset 均为 mm)
             # ========================================================
@@ -1215,6 +1270,14 @@ def main():
                      continue
                  elif choice == "p":
                      print(f"\n  预览对齐位: 移动到 ({ax+offset_x:.0f}, {ay+offset_y:.0f}, {az+offset_z:.0f})mm")
+                     if not _depth_guard_check(
+                         "预览对齐路径",
+                         depth_obstacles_m,
+                         arm,
+                         (ax + offset_x, ay + offset_y, az + offset_z),
+                         fz_dir,
+                     ):
+                         continue
                      arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=100,
                                allow_low_z=_current_layer_allows_low_z())
                      time.sleep(MOTION_SETTLE_S)
@@ -1286,6 +1349,15 @@ def main():
             grasp_speed = LOW_Z_GRASP_SPEED if allow_low_z else 50
             if allow_low_z:
                 print(f"  第4层低位抓取: 探入 {grasp_advance_m*1000:.0f}mm, 速度 {grasp_speed}")
+            if not _depth_guard_check(
+                "对齐路径",
+                depth_obstacles_m,
+                arm,
+                (ax + offset_x, ay + offset_y, az + offset_z),
+                fz_dir,
+            ):
+                print("  [中止] 深度护栏拒绝对齐路径, 本次不抓取")
+                continue
             if not arm.movel(ax + offset_x, ay + offset_y, az + offset_z, speed=approach_speed,
                              allow_low_z=allow_low_z):
                 print("  [中止] 对齐位运动失败/报警, 本次不闭手")
@@ -1297,6 +1369,19 @@ def main():
             time.sleep(GRASP_SETTLE_S)
 
             # 3. 前进抓取 (沿手指方向探入 GRASP_ADVANCE_M)
+            if not _depth_guard_check(
+                "探入路径",
+                depth_obstacles_m,
+                arm,
+                (gx + offset_x, gy + offset_y, gz + offset_z),
+                fz_dir,
+            ):
+                print("  [中止] 深度护栏拒绝探入路径, 本次不闭手")
+                if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
+                    go_to_layer(arm, _current_layer_idx)
+                else:
+                    arm.go_home()
+                continue
             if not arm.movel(gx + offset_x, gy + offset_y, gz + offset_z, speed=grasp_speed,
                              allow_low_z=allow_low_z):
                 print("  [中止] 抓取位运动失败/报警, 本次不闭手")
