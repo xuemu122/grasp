@@ -71,6 +71,10 @@ DETECT_CONF_THRESHOLD=0.3 MOTION_SETTLE_S=0.15 GRASP_SETTLE_S=0.3 HAND_CLOSE_WAI
 - `DEPTH_GUARD_PATH_SAMPLES`：路径采样次数，默认 `8`；运动路径长或拐得多时可调大。
 - `DEPTH_GUARD_MAX_DEPTH_M`：纳入障碍点的最大深度，默认 `1.20` m；货架背景太远造成误拦截时可调小。
 - `DEPTH_GUARD_EXCLUDE_MARGIN_PX`：检测框外扩排除范围，默认 `32` px；如果货物边缘被误当货架可继续调大。
+- `DEPTH_GUARD_SELF_MASK_ENABLE`：自手部深度点剔除开关，默认开启；用于过滤深度相机看到的当前灵巧手/手指，避免把自己的手当障碍。
+- `DEPTH_GUARD_SELF_MASK_RADIUS_M`：自手部剔除半径，默认约 `0.0725` m；如果红点仍贴在手指上可略调大，如果误删近处层板可调小。
+- `DEPTH_GUARD_SELF_MASK_LENGTH_M`：自手部剔除长度，默认 `0.25` m；通常等于法兰到指尖长度。
+- `DEPTH_GUARD_SELF_MASK_BACKOFF_M`：自手部剔除从法兰向后覆盖的长度，默认 `0.03` m；用于覆盖手掌根部/安装件附近的深度点。
 - `DEPTH_GUARD_BYPASS_ENABLE`：对齐路径自动绕行开关，默认开启；直达被深度护栏挡住时会尝试上抬/侧绕中间点。
 - `DEPTH_GUARD_BYPASS_LIFTS_MM`：绕行上抬候选，默认 `60,100,140` mm。
 - `DEPTH_GUARD_BYPASS_SIDE_MM`：绕行侧向候选，默认 `60,-60` mm。

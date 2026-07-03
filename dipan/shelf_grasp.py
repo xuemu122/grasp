@@ -95,6 +95,10 @@ DEPTH_GUARD_APPROACH_LENGTH_M = float(os.getenv("DEPTH_GUARD_APPROACH_LENGTH_M",
 DEPTH_GUARD_PATH_SAMPLES = int(os.getenv("DEPTH_GUARD_PATH_SAMPLES", "8"))
 DEPTH_GUARD_MAX_DEPTH_M = float(os.getenv("DEPTH_GUARD_MAX_DEPTH_M", "1.20"))
 DEPTH_GUARD_EXCLUDE_MARGIN_PX = int(os.getenv("DEPTH_GUARD_EXCLUDE_MARGIN_PX", "32"))
+DEPTH_GUARD_SELF_MASK_ENABLE = os.getenv("DEPTH_GUARD_SELF_MASK_ENABLE", "1").lower() in ("1", "true", "yes", "on")
+DEPTH_GUARD_SELF_MASK_RADIUS_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_RADIUS_M", str(DEPTH_GUARD_HAND_RADIUS_M + 0.02)))
+DEPTH_GUARD_SELF_MASK_LENGTH_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_LENGTH_M", str(HAND_LENGTH)))
+DEPTH_GUARD_SELF_MASK_BACKOFF_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_BACKOFF_M", "0.03"))
 DEPTH_GUARD_BYPASS_ENABLE = os.getenv("DEPTH_GUARD_BYPASS_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 DEPTH_GUARD_BYPASS_LIFTS_MM = _parse_float_list_env("DEPTH_GUARD_BYPASS_LIFTS_MM", (60, 100, 140))
 DEPTH_GUARD_BYPASS_SIDE_MM = _parse_float_list_env("DEPTH_GUARD_BYPASS_SIDE_MM", (60, -60))
@@ -1447,12 +1451,19 @@ def main():
                     exclude_bbox=target.bbox,
                     exclude_bboxes=depth_guard_exclude_bboxes,
                     exclude_margin_px=DEPTH_GUARD_EXCLUDE_MARGIN_PX,
+                    exclude_self_hand=DEPTH_GUARD_SELF_MASK_ENABLE,
+                    self_hand_dir_m=fz_dir,
+                    self_hand_length_m=DEPTH_GUARD_SELF_MASK_LENGTH_M,
+                    self_hand_radius_m=DEPTH_GUARD_SELF_MASK_RADIUS_M,
+                    self_hand_backoff_m=DEPTH_GUARD_SELF_MASK_BACKOFF_M,
                     return_pixels=True,
                 )
                 print(
                     f"  [深度护栏] 障碍点={len(depth_obstacles_m)} "
                     f"(stride={DEPTH_GUARD_STRIDE}, max_depth={DEPTH_GUARD_MAX_DEPTH_M:.2f}m, "
-                    f"排除框={len(depth_guard_exclude_bboxes)}, 外扩={DEPTH_GUARD_EXCLUDE_MARGIN_PX}px)"
+                    f"排除框={len(depth_guard_exclude_bboxes)}, 外扩={DEPTH_GUARD_EXCLUDE_MARGIN_PX}px, "
+                    f"自手部={'on' if DEPTH_GUARD_SELF_MASK_ENABLE else 'off'} "
+                    f"r={DEPTH_GUARD_SELF_MASK_RADIUS_M*1000:.0f}mm)"
                 )
 
             # ========================================================

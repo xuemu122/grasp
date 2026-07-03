@@ -33,6 +33,11 @@ def depth_to_robot_obstacles(
     exclude_bbox: Optional[Tuple[float, float, float, float]] = None,
     exclude_bboxes: Optional[Sequence[Tuple[float, float, float, float]]] = None,
     exclude_margin_px: int = 24,
+    exclude_self_hand: bool = False,
+    self_hand_dir_m: Optional[Sequence[float]] = None,
+    self_hand_length_m: float = 0.25,
+    self_hand_radius_m: float = 0.07,
+    self_hand_backoff_m: float = 0.03,
     return_pixels: bool = False,
 ) -> np.ndarray:
     if depth_img is None:
@@ -87,8 +92,20 @@ def depth_to_robot_obstacles(
     T = T_base_flange @ transformer.T_flange_to_cam.astype(np.float32)
     base_pts = (T @ cam_pts.T).T[:, :3]
     base_pts = base_pts.astype(np.float32, copy=False)
+    pixels = np.stack([u.astype(np.int32), v.astype(np.int32)], axis=1)
+
+    if exclude_self_hand and self_hand_dir_m is not None and base_pts.size:
+        hand_dir = np.asarray(self_hand_dir_m, dtype=np.float32)
+        hand_dir = hand_dir / max(float(np.linalg.norm(hand_dir)), 1e-9)
+        flange_xyz = np.asarray(pose[:3], dtype=np.float32) / 1000.0
+        hand_start = flange_xyz - float(self_hand_backoff_m) * hand_dir
+        hand_end = flange_xyz + float(self_hand_length_m) * hand_dir
+        self_dist = _point_segment_distances(base_pts, hand_start, hand_end)
+        keep = self_dist > float(self_hand_radius_m)
+        base_pts = base_pts[keep]
+        pixels = pixels[keep]
+
     if return_pixels:
-        pixels = np.stack([u.astype(np.int32), v.astype(np.int32)], axis=1)
         return base_pts, pixels
     return base_pts
 
