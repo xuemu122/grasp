@@ -31,6 +31,7 @@ def depth_to_robot_obstacles(
     min_depth_m: float = 0.08,
     max_depth_m: float = 1.20,
     exclude_bbox: Optional[Tuple[float, float, float, float]] = None,
+    exclude_bboxes: Optional[Sequence[Tuple[float, float, float, float]]] = None,
     exclude_margin_px: int = 24,
     return_pixels: bool = False,
 ) -> np.ndarray:
@@ -48,14 +49,24 @@ def depth_to_robot_obstacles(
     depth_m = depth_img[grid_y, grid_x].astype(np.float32) * float(depth_scale)
     valid = (depth_m >= min_depth_m) & (depth_m <= max_depth_m)
 
+    boxes = []
     if exclude_bbox is not None:
-        x1, y1, x2, y2 = exclude_bbox
-        x1 = max(0, int(x1) - exclude_margin_px)
-        y1 = max(0, int(y1) - exclude_margin_px)
-        x2 = min(w - 1, int(x2) + exclude_margin_px)
-        y2 = min(h - 1, int(y2) + exclude_margin_px)
-        in_target = (grid_x >= x1) & (grid_x <= x2) & (grid_y >= y1) & (grid_y <= y2)
-        valid &= ~in_target
+        boxes.append(exclude_bbox)
+    if exclude_bboxes is not None:
+        boxes.extend(b for b in exclude_bboxes if b is not None)
+    if boxes:
+        in_excluded = np.zeros_like(valid, dtype=bool)
+        margin = max(0, int(exclude_margin_px))
+        for bbox in boxes:
+            x1, y1, x2, y2 = bbox
+            x1 = max(0, int(x1) - margin)
+            y1 = max(0, int(y1) - margin)
+            x2 = min(w - 1, int(x2) + margin)
+            y2 = min(h - 1, int(y2) + margin)
+            if x2 < x1 or y2 < y1:
+                continue
+            in_excluded |= (grid_x >= x1) & (grid_x <= x2) & (grid_y >= y1) & (grid_y <= y2)
+        valid &= ~in_excluded
 
     if not np.any(valid):
         points = np.zeros((0, 3), dtype=np.float32)

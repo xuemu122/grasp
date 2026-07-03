@@ -94,7 +94,7 @@ DEPTH_GUARD_HAND_RADIUS_M = float(os.getenv("DEPTH_GUARD_HAND_RADIUS_M", str(HAN
 DEPTH_GUARD_APPROACH_LENGTH_M = float(os.getenv("DEPTH_GUARD_APPROACH_LENGTH_M", "0.08"))
 DEPTH_GUARD_PATH_SAMPLES = int(os.getenv("DEPTH_GUARD_PATH_SAMPLES", "8"))
 DEPTH_GUARD_MAX_DEPTH_M = float(os.getenv("DEPTH_GUARD_MAX_DEPTH_M", "1.20"))
-DEPTH_GUARD_EXCLUDE_MARGIN_PX = int(os.getenv("DEPTH_GUARD_EXCLUDE_MARGIN_PX", "56"))
+DEPTH_GUARD_EXCLUDE_MARGIN_PX = int(os.getenv("DEPTH_GUARD_EXCLUDE_MARGIN_PX", "32"))
 DEPTH_GUARD_BYPASS_ENABLE = os.getenv("DEPTH_GUARD_BYPASS_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 DEPTH_GUARD_BYPASS_LIFTS_MM = _parse_float_list_env("DEPTH_GUARD_BYPASS_LIFTS_MM", (60, 100, 140))
 DEPTH_GUARD_BYPASS_SIDE_MM = _parse_float_list_env("DEPTH_GUARD_BYPASS_SIDE_MM", (60, -60))
@@ -228,6 +228,7 @@ def _save_depth_guard_viz(
     obstacle_points_m,
     obstacle_pixels,
     target_bbox,
+    exclude_bboxes,
     start_xyz_mm,
     target_xyz_mm,
     hand_dir_m,
@@ -258,6 +259,13 @@ def _save_depth_guard_viz(
     for u, v in hit_pixels:
         if 0 <= u < viz.shape[1] and 0 <= v < viz.shape[0]:
             cv2.circle(viz, (int(u), int(v)), 3, (0, 0, 255), -1)
+
+    if exclude_bboxes:
+        for bbox in exclude_bboxes:
+            if bbox is None:
+                continue
+            x1, y1, x2, y2 = [int(v) for v in bbox]
+            cv2.rectangle(viz, (x1, y1), (x2, y2), (0, 180, 0), 1)
 
     if target_bbox is not None:
         x1, y1, x2, y2 = [int(v) for v in target_bbox]
@@ -298,7 +306,7 @@ def _save_depth_guard_viz(
     safe_label = "".join(ch if ch.isalnum() else "_" for ch in str(label))
     path = f"/tmp/depth_guard_{safe_label}.jpg"
     cv2.imwrite(path, viz)
-    print(f"  [深度护栏] 可视化已保存: {path} (灰=障碍点, 红=命中点, 绿=目标框, 青=手部检查线)")
+    print(f"  [深度护栏] 可视化已保存: {path} (灰=障碍点, 红=命中点, 绿=排除框/目标框, 青=手部检查线)")
     return path
 
 
@@ -315,6 +323,7 @@ def _movel_with_depth_guard(
     viz_image=None,
     obstacle_pixels=None,
     target_bbox=None,
+    exclude_bboxes=None,
     transformer=None,
     observation_flange_pose=None,
 ) -> bool:
@@ -338,6 +347,7 @@ def _movel_with_depth_guard(
             obstacle_points_m,
             obstacle_pixels,
             target_bbox,
+            exclude_bboxes,
             start,
             target,
             hand_dir_m,
@@ -1425,6 +1435,7 @@ def main():
             depth_obstacles_m = np.zeros((0, 3), dtype=np.float32)
             depth_obstacles_px = np.zeros((0, 2), dtype=np.int32)
             depth_observation_flange_pose = tuple(flange_pose)
+            depth_guard_exclude_bboxes = [d.bbox for d in detections if getattr(d, "bbox", None) is not None]
             if DEPTH_GUARD_ENABLE:
                 depth_obstacles_m, depth_obstacles_px = depth_to_robot_obstacles(
                     best_depth,
@@ -1434,13 +1445,14 @@ def main():
                     stride=DEPTH_GUARD_STRIDE,
                     max_depth_m=DEPTH_GUARD_MAX_DEPTH_M,
                     exclude_bbox=target.bbox,
+                    exclude_bboxes=depth_guard_exclude_bboxes,
                     exclude_margin_px=DEPTH_GUARD_EXCLUDE_MARGIN_PX,
                     return_pixels=True,
                 )
                 print(
                     f"  [深度护栏] 障碍点={len(depth_obstacles_m)} "
                     f"(stride={DEPTH_GUARD_STRIDE}, max_depth={DEPTH_GUARD_MAX_DEPTH_M:.2f}m, "
-                    f"目标外扩={DEPTH_GUARD_EXCLUDE_MARGIN_PX}px)"
+                    f"排除框={len(depth_guard_exclude_bboxes)}, 外扩={DEPTH_GUARD_EXCLUDE_MARGIN_PX}px)"
                 )
 
             # ========================================================
@@ -1529,6 +1541,7 @@ def main():
                          viz_image=best_img,
                          obstacle_pixels=depth_obstacles_px,
                          target_bbox=target.bbox,
+                         exclude_bboxes=depth_guard_exclude_bboxes,
                          transformer=transformer,
                          observation_flange_pose=depth_observation_flange_pose,
                      ):
@@ -1615,6 +1628,7 @@ def main():
                 viz_image=best_img,
                 obstacle_pixels=depth_obstacles_px,
                 target_bbox=target.bbox,
+                exclude_bboxes=depth_guard_exclude_bboxes,
                 transformer=transformer,
                 observation_flange_pose=depth_observation_flange_pose,
             ):
@@ -1640,6 +1654,7 @@ def main():
                 viz_image=best_img,
                 obstacle_pixels=depth_obstacles_px,
                 target_bbox=target.bbox,
+                exclude_bboxes=depth_guard_exclude_bboxes,
                 transformer=transformer,
                 observation_flange_pose=depth_observation_flange_pose,
             ):
