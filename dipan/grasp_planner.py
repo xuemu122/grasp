@@ -16,15 +16,11 @@ MAX_GRASP_DEPTH_M = float(os.getenv("MAX_GRASP_DEPTH_M", "0.52"))  # 超过此�
 
 
 def axis_aligned_approach_m(current_xyz_m, grasp_xyz_m, forward_dir, min_backoff_m):
-    """保持当前前后距离, 先移动到抓取点对应的上下左右对齐位。"""
-    current = np.array(current_xyz_m, dtype=float)
+    """Move to a controlled backoff pose on the grasp axis."""
     grasp = np.array(grasp_xyz_m, dtype=float)
     axis = np.array(forward_dir, dtype=float)
     axis = axis / max(np.linalg.norm(axis), 1e-9)
-    forward_offset = float(np.dot(current - grasp, axis))
-    if forward_offset > -min_backoff_m:
-        forward_offset = -min_backoff_m
-    return grasp + forward_offset * axis
+    return grasp - abs(float(min_backoff_m)) * axis
 
 
 def _det_center_robot_z(det, transformer, flange_pose):

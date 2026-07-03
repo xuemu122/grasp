@@ -1287,7 +1287,7 @@ def main():
             # 抓取: 沿手指方向前进一小段探入
             grasp_pt = flange_pt + grasp_advance_m * fz_dir
 
-            # 对齐: 保持当前前后距离, 先移动到抓取点对应的上下左右位置。
+            # 对齐: 固定退到抓取点后方, 避免从观察位保留过长探入距离。
             approach_pt = axis_aligned_approach_m(
                 np.array(flange_pose[:3]) / 1000.0,
                 grasp_pt,
@@ -1330,7 +1330,10 @@ def main():
                  print(f"  模式: {grip_label} ({grip_mode})")
                  print(f"  当前参数: offset=({grasp_offset_m[0]*1000:.0f},{grasp_offset_m[1]*1000:.0f},{grasp_offset_m[2]*1000:.0f})mm")
                  print(f"  固化建议: {'SIDE' if is_side_grasp else 'TOP'}_GRASP_OFFSET_M=({tuned_offset_m[0]:+.3f}, {tuned_offset_m[1]:+.3f}, {tuned_offset_m[2]:+.3f})")
-                 print(f"  探入距离: {grasp_advance_m*1000:.0f}mm" + (" (第4层低位)" if low_z_grasp else ""))
+                 approach_to_grasp_mm = np.linalg.norm(
+                     np.array([gx + offset_x - (ax + offset_x), gy + offset_y - (ay + offset_y), gz + offset_z - (az + offset_z)])
+                 )
+                 print(f"  对齐→抓取直线: {approach_to_grasp_mm:.0f}mm, 过抓前进: {grasp_advance_m*1000:.0f}mm" + (" (第4层低位)" if low_z_grasp else ""))
                  print(f"  指尖世界: ({wx*1000:.0f}, {wy*1000:.0f}, {wz*1000:.0f})mm")
                  print(f"  法兰(对齐): X={ax+offset_x:+.0f}({offset_x:+5.0f})  "
                        f"Y={ay+offset_y:+.0f}({offset_y:+5.0f})  "
