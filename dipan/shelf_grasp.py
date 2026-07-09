@@ -98,6 +98,7 @@ DRINK_CLASS_IDS = set(range(70, 78)) | set(range(80, 87))
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "bottle").lower()
 DETECTION_STABILITY_IOU = float(os.getenv("DETECTION_STABILITY_IOU", "0.35"))
 TARGET_PRODUCT_QUERY = os.getenv("TARGET_PRODUCT_QUERY", os.getenv("TARGET_NAME", "")).strip()
+SHELF_GRASP_AUTO_ONCE = os.getenv("SHELF_GRASP_AUTO_ONCE", "0").lower() in ("1", "true", "yes", "on")
 TARGET_DEPTH_REFINE_RADIUS_PX = int(os.getenv("TARGET_DEPTH_REFINE_RADIUS_PX", "10"))
 TARGET_DEPTH_REFINE_MAX_DELTA_M = float(os.getenv("TARGET_DEPTH_REFINE_MAX_DELTA_M", "0.08"))
 DEPTH_GUARD_ENABLE = os.getenv("DEPTH_GUARD_ENABLE", "1").lower() in ("1", "true", "yes", "on")
@@ -821,7 +822,7 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
     if _place_point_pose is None:
         if hand_ok:
             hand.open()
-        return
+        return True
 
     if current_layer_idx == 4:
         transfer_layers = [3, 1]
@@ -835,28 +836,28 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
         print(f"\n[Transfer] 第{current_layer_idx}层抓取后先回当前层观察位 ...")
         if not go_to_layer(arm, current_layer_idx):
             print("  [停止] 回当前层失败, 停在当前位置, 不继续放置流程")
-            return
+            return False
         print(f"\n[Transfer] 直接上撤: {' → '.join(f'第{i}层' for i in transfer_layers)}, 再前往放置点 ...")
         for layer_idx in transfer_layers:
             if layer_idx not in _shelf_layer_poses:
                 print(f"  [停止] 第{layer_idx}层未记录, 停在当前位置, 不继续放置流程")
-                return
+                return False
             if not go_to_layer(arm, layer_idx):
                 print(f"  [停止] 回第{layer_idx}层中转失败, 停在当前位置, 不继续放置流程")
-                return
+                return False
 
     if USE_CHASSIS_PLACE:
         if not go_to_stow_pose(arm):
             print("  [停止] 底盘移动前未能到达收起姿态, 不调用底盘")
-            return
+            return False
         if not move_chassis_to_place():
             print("  [停止] 底盘未能前往放置固定点, 不继续机械臂放置")
-            return
+            return False
 
     print(f"\n[Place] 前往放置点 ({_place_point_pose[1]}) ...")
     if not go_to_place_point(arm):
         print("  [停止] 前往放置点失败, 停在当前位置, 不继续回层")
-        return
+        return False
     if hand_ok:
         hand.open()
     time.sleep(MOTION_SETTLE_S)
@@ -866,7 +867,7 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
         print(f"\n[Transfer] 放置后回第{home_transfer_idx}层中转 ...")
         if not go_to_layer_smooth_from_place(arm, home_transfer_idx):
             print(f"  [停止] 放置后回第{home_transfer_idx}层失败, 停在当前位置")
-            return
+            return False
 
     if current_layer_idx in _shelf_layer_poses:
         print(f"\n[Home] 回到第{current_layer_idx}层 ({_shelf_layer_poses[current_layer_idx][1]}) ...")
@@ -876,10 +877,11 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
             ok = go_to_layer_smooth_from_place(arm, current_layer_idx)
         if not ok:
             print("  [停止] 回当前层失败, 停在当前位置")
-            return
+            return False
     else:
         print("\n[Home] 回到 HOME ...")
         arm.go_home()
+    return True
 
 
 # ============================================================
@@ -1131,6 +1133,8 @@ def main():
     print(f"  灵巧手: {HAND_LENGTH*100:.0f}cm  {HAND_W_Y*100:.1f}cm×{HAND_W_X*100:.1f}cm  {HAND_WEIGHT}kg")
     print(f"  手势模式: {HAND_GRASP_MODE}")
     print(f"  目标商品: {TARGET_PRODUCT_QUERY or '未指定'}")
+    if SHELF_GRASP_AUTO_ONCE:
+        print("  前端自动模式: 单次抓取后自动退出")
     print("=" * 60)
     target_query = TARGET_PRODUCT_QUERY
 
@@ -1202,15 +1206,24 @@ def main():
     print("=" * 60)
 
     try:
+        auto_attempt_pending = SHELF_GRASP_AUTO_ONCE
+        auto_attempt_succeeded = False
         while True:
+            if SHELF_GRASP_AUTO_ONCE and not auto_attempt_pending:
+                break
             chassis_state = "开" if USE_CHASSIS_PLACE else "关"
             target_state = target_query or "任意"
-            if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
-                _, layer_name = _shelf_layer_poses[_current_layer_idx]
-                prompt = f"\n[第{_current_layer_idx}层 {layer_name} | 目标:{target_state}] 按 Enter 抓取 | c 目标 | ? 类别 | l 层管理 | p 放置点 | u 收起 | b 底盘:{chassis_state} | v 预览 | j 点动 | q 退出 > "
+            if SHELF_GRASP_AUTO_ONCE:
+                cmd = ""
+                auto_attempt_pending = False
+                print(f"\n[前端自动模式] 目标:{target_state}, 开始单次抓取")
             else:
-                prompt = f"\n[HOME | 目标:{target_state}] 按 Enter 抓取 | c 目标 | ? 类别 | l 层管理 | p 放置点 | u 收起 | b 底盘:{chassis_state} | v 预览 | j 点动 | q 退出 > "
-            cmd = input(prompt).strip()
+                if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
+                    _, layer_name = _shelf_layer_poses[_current_layer_idx]
+                    prompt = f"\n[第{_current_layer_idx}层 {layer_name} | 目标:{target_state}] 按 Enter 抓取 | c 目标 | ? 类别 | l 层管理 | p 放置点 | u 收起 | b 底盘:{chassis_state} | v 预览 | j 点动 | q 退出 > "
+                else:
+                    prompt = f"\n[HOME | 目标:{target_state}] 按 Enter 抓取 | c 目标 | ? 类别 | l 层管理 | p 放置点 | u 收起 | b 底盘:{chassis_state} | v 预览 | j 点动 | q 退出 > "
+                cmd = input(prompt).strip()
             if cmd.lower() == "q":
                 break
 
@@ -1560,7 +1573,11 @@ def main():
                  print(f"    f     ← 手动输入偏移 (格式: x,y,z mm)")
                  print(f"    F5    ← 重新拍照 (复位偏移)")
                  print(f"    Q     ← 跳过/退出")
-                 choice = input("  > ").strip()
+                 if SHELF_GRASP_AUTO_ONCE:
+                     choice = ""
+                     print("  [前端自动模式] 自动确认目标位姿")
+                 else:
+                     choice = input("  > ").strip()
 
                  if choice == "":
                      break  # 执行
@@ -1771,10 +1788,18 @@ def main():
                 arm.go_home()
 
             # 6. 放置并回到当前层观察位
-            finish_pick_cycle(arm, hand, _current_layer_idx)
+            if not finish_pick_cycle(arm, hand, _current_layer_idx):
+                print("  [停止] 放置/回层失败, 本次抓取未完成")
+                continue
             time.sleep(MOTION_SETTLE_S)
+            auto_attempt_succeeded = True
 
             print("抓取完成! 按 Enter 继续 / q 退出")
+            if SHELF_GRASP_AUTO_ONCE:
+                break
+
+        if SHELF_GRASP_AUTO_ONCE and not auto_attempt_succeeded:
+            raise RuntimeError("前端自动模式单次抓取未完成")
 
     except KeyboardInterrupt:
         pass

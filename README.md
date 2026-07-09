@@ -14,6 +14,7 @@ DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 ```text
 grasp/
 ├── dipan/           当前机械臂抓取主程序、手眼标定、底盘控制
+├── qianduan/        点单前端和 Node WebSocket/REST 服务
 ├── 识别/            YOLO/RGB-D 识别、候选诊断、数据采集工具
 ├── aero-hand-open/  当前 Aero Hand SDK
 ├── dobot_ws/        DOBOT Nova5 ROS2/URDF/MoveIt 资源
@@ -47,6 +48,23 @@ TARGET_PRODUCT_QUERY=class_id:63 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 ```
 
 主程序里也可以输入 `?` 查看模型类别，输入 `c` 设置目标。
+
+前端点单服务：
+
+```bash
+cd /home/nvidia/grasp/qianduan
+node init_db.js
+npm start
+```
+
+默认是模拟抓取，浏览器打开 `http://localhost:3000`。如果要把订单接到真实机械臂抓取：
+
+```bash
+cd /home/nvidia/grasp/qianduan
+ROBOT_GRASP_MODE=real DOBOT_IP=192.168.5.1 npm start
+```
+
+前端每个商品会通过 `TARGET_PRODUCT_QUERY` 调用一次 `dipan/shelf_grasp.py` 的单次自动抓取模式；真实模式下请先确认机械臂、相机、货架层和放置点已经按主程序调好。
 
 手眼标定：
 

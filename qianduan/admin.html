@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>商品信息管理</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #4F46E5; --primary-hover: #4338CA; --primary-light: #EEF2FF;
+            --success: #10B981; --success-light: #D1FAE5;
+            --danger: #EF4444; --danger-light: #FEE2E2;
+            --warning: #F59E0B; --warning-light: #FEF3C7;
+            --gray-50: #F9FAFB; --gray-100: #F3F4F6; --gray-200: #E5E7EB;
+            --gray-300: #D1D5DB; --gray-400: #9CA3AF; --gray-500: #6B7280;
+            --gray-600: #4B5563; --gray-700: #374151; --gray-800: #1F2937; --gray-900: #111827;
+            --radius: 12px; --shadow: 0 1px 3px rgba(0,0,0,0.08);
+            --shadow-md: 0 4px 6px rgba(0,0,0,0.07);
+            --shadow-lg: 0 10px 25px rgba(0,0,0,0.1);
+        }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif; background: #F0F2F5; min-height: 100vh; color: var(--gray-800); }
+        .header { background: linear-gradient(135deg, var(--primary) 0%, #6366F1 100%); color: white; padding: 16px 28px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 20px rgba(79,70,229,0.3); position: sticky; top: 0; z-index: 100; }
+        .header h1 { font-size: 1.3rem; }
+        .header-links { display: flex; gap: 16px; }
+        .header-links a { color: rgba(255,255,255,0.85); text-decoration: none; padding: 6px 14px; border-radius: 20px; transition: all 0.2s; font-size: 0.9rem; }
+        .header-links a:hover { background: rgba(255,255,255,0.2); color: white; }
+        .container { max-width: 1400px; margin: 24px auto; padding: 0 24px; display: grid; grid-template-columns: 1fr 420px; gap: 24px; align-items: start; }
+        @media (max-width: 1000px) { .container { grid-template-columns: 1fr; } }
+        .card { background: white; border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow-md); }
+        .card-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid var(--gray-100); display: flex; justify-content: space-between; align-items: center; }
+        .card-title .count { font-size: 0.85rem; font-weight: 500; color: var(--gray-400); }
+        .toolbar { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+        .search-box { flex: 1; min-width: 200px; padding: 10px 14px; border: 2px solid var(--gray-200); border-radius: 8px; font-size: 0.9rem; outline: none; transition: border-color 0.2s; }
+        .search-box:focus { border-color: var(--primary); }
+        .select-box { padding: 10px 14px; border: 2px solid var(--gray-200); border-radius: 8px; font-size: 0.9rem; outline: none; background: white; cursor: pointer; min-width: 130px; }
+        .select-box:focus { border-color: var(--primary); }
+        .btn { padding: 10px 20px; border: none; border-radius: 8px; font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover { background: var(--primary-hover); transform: translateY(-1px); box-shadow: var(--shadow-md); }
+        .btn-success { background: var(--success); color: white; }
+        .btn-success:hover { background: #059669; }
+        .btn-danger { background: transparent; color: var(--danger); border: 2px solid var(--danger); }
+        .btn-danger:hover { background: var(--danger-light); }
+        .btn-sm { padding: 5px 12px; font-size: 0.8rem; }
+        .table-wrapper { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+        thead { background: var(--gray-50); position: sticky; top: 0; }
+        th { padding: 12px 10px; text-align: left; font-weight: 600; color: var(--gray-600); border-bottom: 2px solid var(--gray-200); white-space: nowrap; }
+        td { padding: 10px; border-bottom: 1px solid var(--gray-100); }
+        tr:hover { background: var(--gray-50); }
+        .status-badge { padding: 3px 10px; border-radius: 12px; font-size: 0.78rem; font-weight: 600; display: inline-block; }
+        .status-badge.on { background: var(--success-light); color: #065F46; }
+        .status-badge.off { background: #FEE2E2; color: #991B1B; }
+        .actions { display: flex; gap: 6px; }
+        .form-group { margin-bottom: 14px; }
+        .form-group label { display: block; font-size: 0.85rem; font-weight: 600; color: var(--gray-600); margin-bottom: 4px; }
+        .form-group label .required { color: var(--danger); }
+        .form-input, .form-select { width: 100%; padding: 10px 12px; border: 2px solid var(--gray-200); border-radius: 8px; font-size: 0.9rem; outline: none; transition: border-color 0.2s; font-family: inherit; }
+        .form-input:focus, .form-select:focus { border-color: var(--primary); }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+        .emoji-picker { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+        .emoji-opt { font-size: 1.5rem; cursor: pointer; padding: 4px 8px; border-radius: 6px; border: 2px solid transparent; transition: all 0.15s; }
+        .emoji-opt:hover { background: var(--gray-100); }
+        .emoji-opt.selected { border-color: var(--primary); background: var(--primary-light); }
+        .toast { position: fixed; top: 20px; right: 20px; padding: 14px 24px; border-radius: 10px; color: white; font-weight: 600; z-index: 9999; animation: slideDown 0.3s ease; box-shadow: var(--shadow-lg); }
+        .toast.success { background: var(--success); }
+        .toast.error { background: var(--danger); }
+        @keyframes slideDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: 2000; display: flex; align-items: center; justify-content: center; }
+        .modal { background: white; border-radius: var(--radius); padding: 28px; width: 90%; max-width: 520px; max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.2); animation: scaleIn 0.25s ease; }
+        @keyframes scaleIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }
+        .modal h3 { margin-bottom: 16px; font-size: 1.1rem; }
+        .modal-actions { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; }
+        .empty-state { text-align: center; padding: 40px; color: var(--gray-400); }
+        .empty-state .icon { font-size: 3rem; display: block; margin-bottom: 10px; }
+        .loading { text-align: center; padding: 40px; color: var(--gray-400); }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <h1>📦 商品信息管理系统</h1>
+        <div class="header-links">
+            <a href="/">🏠 点餐页面</a>
+            <a href="/admin.html">📋 商品管理</a>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- 左侧：商品列表 -->
+        <div class="card">
+            <div class="card-title">
+                <span>商品列表 <span class="count" id="totalCount">0 件</span></span>
+                <button class="btn btn-primary" onclick="openAddModal()">+ 新增商品</button>
+            </div>
+            <div class="toolbar">
+                <input type="text" class="search-box" placeholder="🔍 搜索商品名称..." id="searchInput" oninput="loadProducts()">
+                <select class="select-box" id="categoryFilter" onchange="loadProducts()">
+                    <option value="">全部分类</option>
+                </select>
+            </div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>图标</th>
+                            <th>商品名称</th>
+                            <th>规格</th>
+                            <th>包装</th>
+                            <th>品类</th>
+                            <th>生产商</th>
+                            <th>位置</th>
+                            <th>坐标</th>
+                            <th>价格</th>
+                            <th>状态</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="productTableBody">
+                        <tr><td colspan="11" class="loading">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 右侧：表单 -->
+        <div class="card" id="formCard">
+            <div class="card-title" id="formTitle">➕ 新增商品</div>
+            <form id="productForm" onsubmit="return saveProduct(event)">
+                <input type="hidden" id="editId" value="">
+                <div class="form-group">
+                    <label><span class="required">*</span> 商品名称</label>
+                    <input type="text" class="form-input" id="formName" required placeholder="如：雪碧">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>规格</label>
+                        <input type="text" class="form-input" id="formSpec" placeholder="如：330ml/罐">
+                    </div>
+                    <div class="form-group">
+                        <label>包装形式</label>
+                        <select class="form-select" id="formPackaging">
+                            <option value="">请选择</option>
+                            <option value="罐装">罐装</option>
+                            <option value="瓶装">瓶装</option>
+                            <option value="袋装">袋装</option>
+                            <option value="盒装">盒装</option>
+                            <option value="杯装">杯装</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>品类</label>
+                        <select class="form-select" id="formCategory">
+                            <option value="">请选择</option>
+                            <option value="碳酸饮料">碳酸饮料</option>
+                            <option value="矿泉水">矿泉水</option>
+                            <option value="茶饮料">茶饮料</option>
+                            <option value="乳饮料">乳饮料</option>
+                            <option value="运动饮料">运动饮料</option>
+                            <option value="膨化零食">膨化零食</option>
+                            <option value="糕点面包">糕点面包</option>
+                            <option value="饼干">饼干</option>
+                            <option value="糖果">糖果</option>
+                            <option value="方便食品">方便食品</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>生产商</label>
+                        <input type="text" class="form-input" id="formManufacturer" placeholder="如：可口可乐公司">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>图标 Emoji</label>
+                    <div class="emoji-picker" id="emojiPicker"></div>
+                    <input type="hidden" id="formEmoji" value="📦">
+                </div>
+                <div class="form-group">
+                    <label>货架位置</label>
+                    <input type="text" class="form-input" id="formLocation" placeholder="如：饮料区A1货架">
+                </div>
+                <div class="form-row-3">
+                    <div class="form-group">
+                        <label>X坐标</label>
+                        <input type="number" class="form-input" id="formShelfX" value="0">
+                    </div>
+                    <div class="form-group">
+                        <label>Y坐标</label>
+                        <input type="number" class="form-input" id="formShelfY" value="0">
+                    </div>
+                    <div class="form-group">
+                        <label>Z坐标</label>
+                        <input type="number" class="form-input" id="formShelfZ" value="50">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>价格 (¥)</label>
+                        <input type="number" step="0.01" class="form-input" id="formPrice" value="0">
+                    </div>
+                    <div class="form-group">
+                        <label>库存</label>
+                        <input type="number" class="form-input" id="formStock" value="100">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>正面照片URL</label>
+                        <input type="text" class="form-input" id="formPhotoFront" placeholder="图片链接">
+                    </div>
+                    <div class="form-group">
+                        <label>反面照片URL</label>
+                        <input type="text" class="form-input" id="formPhotoBack" placeholder="图片链接">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>状态</label>
+                    <select class="form-select" id="formStatus">
+                        <option value="1">✅ 在售</option>
+                        <option value="0">❌ 下架</option>
+                    </select>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-danger" onclick="resetForm()" id="btnCancel" style="display:none;">取消编辑</button>
+                    <button type="submit" class="btn btn-primary" id="btnSubmit">💾 保存商品</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="toastContainer"></div>
+
+    <script>
+        const EMOJI_OPTIONS = ['🥤','💧','🍵','🥛','⚡','🍿','🍞','🍪','🍬','🍜','📦','🧃','🧋','☕','🍺','🥜','🍫','🍩'];
+
+        // ========== 初始化 ==========
+        document.addEventListener('DOMContentLoaded', () => {
+            renderEmojiPicker();
+            loadProducts();
+            loadCategories();
+        });
+
+        function renderEmojiPicker() {
+            const picker = document.getElementById('emojiPicker');
+            picker.innerHTML = EMOJI_OPTIONS.map(e =>
+                `<span class="emoji-opt" onclick="selectEmoji('${e}', this)">${e}</span>`
+            ).join('');
+        }
+
+        function selectEmoji(emoji, el) {
+            document.getElementById('formEmoji').value = emoji;
+            document.querySelectorAll('.emoji-opt').forEach(e => e.classList.remove('selected'));
+            el.classList.add('selected');
+        }
+
+        // ========== 加载商品列表 ==========
+        async function loadProducts() {
+            const search = document.getElementById('searchInput').value.trim();
+            const category = document.getElementById('categoryFilter').value;
+            const params = new URLSearchParams();
+            if (search) params.set('search', search);
+            if (category) params.set('category', category);
+
+            try {
+                const res = await fetch(`/api/products?${params.toString()}`);
+                const json = await res.json();
+                if (json.code !== 0) { showToast('加载失败: ' + json.message, 'error'); return; }
+
+                document.getElementById('totalCount').textContent = json.total + ' 件';
+                const tbody = document.getElementById('productTableBody');
+
+                if (json.data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="11"><div class="empty-state"><span class="icon">📭</span><p>暂无商品数据</p></div></td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = json.data.map(p => `
+                    <tr>
+                        <td style="font-size:1.4rem;">${p.emoji || '📦'}</td>
+                        <td><strong>${esc(p.name)}</strong></td>
+                        <td>${esc(p.spec) || '-'}</td>
+                        <td>${esc(p.packaging) || '-'}</td>
+                        <td>${esc(p.category) || '-'}</td>
+                        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(p.manufacturer)}">${esc(p.manufacturer) || '-'}</td>
+                        <td>${esc(p.location) || '-'}</td>
+                        <td style="font-size:0.8rem;color:var(--gray-500);">(${p.shelf_x}, ${p.shelf_y}, ${p.shelf_z})</td>
+                        <td style="color:var(--primary);font-weight:700;">¥${p.price}</td>
+                        <td><span class="status-badge ${p.status==1?'on':'off'}">${p.status==1?'在售':'下架'}</span></td>
+                        <td>
+                            <div class="actions">
+                                <button class="btn btn-primary btn-sm" onclick="editProduct(${p.id})">✏️</button>
+                                <button class="btn btn-danger btn-sm" onclick="deleteProduct(${p.id})">🗑</button>
+                            </div>
+                        </td>
+                    </tr>
+                `).join('');
+
+            } catch (e) {
+                showToast('网络错误: ' + e.message, 'error');
+            }
+        }
+
+        async function loadCategories() {
+            try {
+                const res = await fetch('/api/categories');
+                const json = await res.json();
+                if (json.code === 0) {
+                    const sel = document.getElementById('categoryFilter');
+                    json.data.forEach(c => { const opt = document.createElement('option'); opt.value = c; opt.textContent = c; sel.appendChild(opt); });
+                }
+            } catch (e) {}
+        }
+
+        // ========== 新增/编辑 ==========
+        function openAddModal() {
+            resetForm();
+            document.getElementById('formTitle').textContent = '➕ 新增商品';
+            document.getElementById('btnSubmit').textContent = '💾 保存商品';
+            document.getElementById('btnCancel').style.display = 'none';
+        }
+
+        async function editProduct(id) {
+            try {
+                const res = await fetch(`/api/products/${id}`);
+                const json = await res.json();
+                if (json.code !== 0) { showToast('获取失败', 'error'); return; }
+                const p = json.data;
+                document.getElementById('editId').value = p.id;
+                document.getElementById('formName').value = p.name;
+                document.getElementById('formSpec').value = p.spec || '';
+                document.getElementById('formPackaging').value = p.packaging || '';
+                document.getElementById('formCategory').value = p.category || '';
+                document.getElementById('formManufacturer').value = p.manufacturer || '';
+                document.getElementById('formEmoji').value = p.emoji || '📦';
+                document.getElementById('formLocation').value = p.location || '';
+                document.getElementById('formShelfX').value = p.shelf_x || 0;
+                document.getElementById('formShelfY').value = p.shelf_y || 0;
+                document.getElementById('formShelfZ').value = p.shelf_z || 50;
+                document.getElementById('formPrice').value = p.price || 0;
+                document.getElementById('formStock').value = p.stock || 100;
+                document.getElementById('formPhotoFront').value = p.photo_front || '';
+                document.getElementById('formPhotoBack').value = p.photo_back || '';
+                document.getElementById('formStatus').value = p.status ?? 1;
+
+                document.querySelectorAll('.emoji-opt').forEach(e => {
+                    e.classList.toggle('selected', e.textContent === (p.emoji || '📦'));
+                });
+
+                document.getElementById('formTitle').textContent = '✏️ 编辑商品';
+                document.getElementById('btnSubmit').textContent = '💾 更新商品';
+                document.getElementById('btnCancel').style.display = 'inline-flex';
+                document.getElementById('formCard').scrollIntoView({ behavior: 'smooth' });
+            } catch (e) {
+                showToast('网络错误', 'error');
+            }
+        }
+
+        function resetForm() {
+            document.getElementById('editId').value = '';
+            document.getElementById('productForm').reset();
+            document.getElementById('formEmoji').value = '📦';
+            document.getElementById('formShelfZ').value = 50;
+            document.getElementById('formStock').value = 100;
+            document.getElementById('formStatus').value = 1;
+            document.getElementById('formTitle').textContent = '➕ 新增商品';
+            document.getElementById('btnSubmit').textContent = '💾 保存商品';
+            document.getElementById('btnCancel').style.display = 'none';
+            document.querySelectorAll('.emoji-opt').forEach(e => e.classList.remove('selected'));
+        }
+
+        async function saveProduct(event) {
+            event.preventDefault();
+            const id = document.getElementById('editId').value;
+            const data = {
+                name: document.getElementById('formName').value.trim(),
+                spec: document.getElementById('formSpec').value.trim(),
+                packaging: document.getElementById('formPackaging').value,
+                category: document.getElementById('formCategory').value,
+                manufacturer: document.getElementById('formManufacturer').value.trim(),
+                emoji: document.getElementById('formEmoji').value,
+                location: document.getElementById('formLocation').value.trim(),
+                shelf_x: parseInt(document.getElementById('formShelfX').value) || 0,
+                shelf_y: parseInt(document.getElementById('formShelfY').value) || 0,
+                shelf_z: parseInt(document.getElementById('formShelfZ').value) || 50,
+                price: parseFloat(document.getElementById('formPrice').value) || 0,
+                stock: parseInt(document.getElementById('formStock').value) || 0,
+                photo_front: document.getElementById('formPhotoFront').value.trim(),
+                photo_back: document.getElementById('formPhotoBack').value.trim(),
+                status: parseInt(document.getElementById('formStatus').value),
+            };
+
+            const method = id ? 'PUT' : 'POST';
+            const url = id ? `/api/products/${id}` : '/api/products';
+
+            try {
+                const res = await fetch(url, {
+                    method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                const json = await res.json();
+                if (json.code === 0) {
+                    showToast(id ? '更新成功' : '添加成功', 'success');
+                    resetForm();
+                    loadProducts();
+                    loadCategories();
+                } else {
+                    showToast('操作失败: ' + json.message, 'error');
+                }
+            } catch (e) {
+                showToast('网络错误', 'error');
+            }
+        }
+
+        // ========== 删除 ==========
+        async function deleteProduct(id) {
+            if (!confirm('确定要删除该商品吗？此操作不可撤销。')) return;
+            try {
+                const res = await fetch(`/api/products/${id}`, { method: 'DELETE' });
+                const json = await res.json();
+                if (json.code === 0) {
+                    showToast('删除成功', 'success');
+                    loadProducts();
+                    loadCategories();
+                    if (document.getElementById('editId').value == id) resetForm();
+                } else {
+                    showToast('删除失败: ' + json.message, 'error');
+                }
+            } catch (e) {
+                showToast('网络错误', 'error');
+            }
+        }
+
+        // ========== 工具函数 ==========
+        function esc(str) { const div = document.createElement('div'); div.textContent = str; return div.innerHTML; }
+        function showToast(msg, type) {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = msg;
+            container.appendChild(toast);
+            setTimeout(() => { toast.remove(); }, 3000);
+        }
+    </script>
+</body>
+</html>

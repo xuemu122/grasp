@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>机器人智能点单平台</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- 顶部导航 -->
+    <header class="top-header">
+        <div class="header-inner">
+            <div class="brand">
+                <span class="brand-logo">🤖</span>
+                <div class="brand-text">
+                    <h1>智能点单平台</h1>
+                    <p>机器人自动抓取 · 智能点单</p>
+                </div>
+            </div>
+            <div class="header-search">
+                <input type="text" id="searchInput" placeholder="搜索商品名称 / 规格 / 生产商" autocomplete="off">
+                <button class="btn-search" onclick="handleSearch()">🔍</button>
+            </div>
+            <div class="header-status">
+                <span class="robot-status" id="robotStatus">
+                    <span class="status-dot online"></span> 机器人就绪
+                </span>
+            </div>
+        </div>
+    </header>
+
+    <!-- 主内容区 -->
+    <div class="page-layout">
+        <!-- 左侧：分类导航 -->
+        <aside class="category-sidebar">
+            <h2 class="sidebar-title">商品分类</h2>
+            <nav class="category-list" id="categoryList">
+                <!-- JS 动态生成 -->
+            </nav>
+        </aside>
+
+        <!-- 中间：商品列表 -->
+        <main class="products-area">
+            <div class="products-header">
+                <h2 id="currentCategoryTitle">全部商品</h2>
+                <span class="products-count" id="productsCount">加载中...</span>
+            </div>
+            <div class="products-grid" id="productsGrid">
+                <!-- JS 动态生成 -->
+            </div>
+        </main>
+
+        <!-- 右侧：购物车 -->
+        <aside class="cart-sidebar">
+            <div class="cart-header">
+                <h2>🛒 购物车</h2>
+                <button class="btn-clear-cart" onclick="clearCart()">清空</button>
+            </div>
+            <div class="cart-items" id="cartItems">
+                <div class="cart-empty">
+                    <span class="empty-icon">🛒</span>
+                    <p>购物车是空的</p>
+                    <p class="empty-hint">点击商品添加</p>
+                </div>
+            </div>
+            <div class="cart-footer" id="cartFooter" style="display: none;">
+                <div class="cart-summary">
+                    <div class="summary-row">
+                        <span>商品件数</span>
+                        <span id="cartQty">0</span>
+                    </div>
+                    <div class="summary-row total">
+                        <span>合计</span>
+                        <span class="total-price" id="totalPrice">¥0.00</span>
+                    </div>
+                </div>
+                <button class="btn-submit" id="btnSubmit" onclick="submitOrder()">
+                    开始支付
+                </button>
+            </div>
+        </aside>
+    </div>
+
+    <!-- 动画弹窗 -->
+    <div class="modal-overlay" id="modalOverlay" style="display: none;">
+        <div class="modal-content" id="modalContent">
+            <!-- JS 动态生成 -->
+        </div>
+    </div>
+
+    <!-- 订单完成提示 -->
+    <div class="order-toast" id="orderToast" style="display: none;">
+        <div class="toast-content" id="toastContent"></div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
