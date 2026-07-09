@@ -114,6 +114,20 @@ function filterProducts(products, { search = '', category = '' } = {}) {
         .sort((a, b) => Number(b.id) - Number(a.id));
 }
 
+function isPlaceholderProductName(value) {
+    const name = String(value || '').trim();
+    return !name || ['商品名', '商品名称', 'name', 'product', 'placeholder'].includes(name.toLowerCase());
+}
+
+function findProductByOrderItem(item) {
+    const products = readProducts();
+    const itemId = item.id == null ? '' : String(item.id);
+    const itemName = String(item.name || '').trim();
+    return products.find((product) => String(product.id) === itemId)
+        || products.find((product) => product.name === itemName)
+        || null;
+}
+
 // ========== HTTP 服务 ==========
 const server = http.createServer(async (req, res) => {
     // CORS 预检
@@ -288,6 +302,16 @@ async function handleGrabCommand(ws, msg) {
         ws.send(JSON.stringify({ type: 'error', message: `机器人正在处理订单 ${activeOrderId}，请稍后再试` }));
         return;
     }
+    if (ROBOT_GRASP_REAL) {
+        const invalid = items.find((item) => {
+            const product = findProductByOrderItem(item);
+            return !product || isPlaceholderProductName(product.name);
+        });
+        if (invalid) {
+            ws.send(JSON.stringify({ type: 'error', message: `无效商品，已拒绝启动真实抓取: ${invalid.name || invalid.id || '空'}` }));
+            return;
+        }
+    }
 
     log(`🤖 开始处理订单 ${orderId}，共 ${items.length} 件商品`);
     activeOrderId = orderId;
@@ -346,7 +370,12 @@ async function runSimulatedGrab(ws, orderId, item, index, total) {
 
 function runRealGrab(ws, orderId, item, progressBase, totalItems, itemNo, itemQty) {
     return new Promise((resolve, reject) => {
-        const itemName = item.name || String(item.id || '');
+        const product = findProductByOrderItem(item);
+        if (!product || isPlaceholderProductName(product.name)) {
+            reject(new Error(`无效商品或商品未入库: ${item.name || item.id || '空'}`));
+            return;
+        }
+        const itemName = product.name;
         const label = itemQty > 1 ? `${itemName} (${itemNo}/${itemQty})` : itemName;
         const progressStep = 80 / totalItems / Math.max(1, itemQty);
         log(`  📦 真实抓取: ${label}`);
@@ -419,7 +448,13 @@ async function getProductPosition(itemName, index) {
 }
 
 function itemStatus(item) {
-    return { id: item.id, name: item.name || item.id, qty: item.qty, emoji: item.emoji };
+    const product = findProductByOrderItem(item);
+    return {
+        id: product ? product.id : item.id,
+        name: product ? product.name : (item.name || item.id),
+        qty: item.qty,
+        emoji: product ? product.emoji : item.emoji
+    };
 }
 
 function inferGrabStage(line) {

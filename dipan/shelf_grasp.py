@@ -1419,6 +1419,8 @@ def main():
             target_detections = _filter_detections_by_target_query(detections, target_query)
             _print_target_filter_result(target_query, detections, target_detections)
             if target_query and not target_detections:
+                if SHELF_GRASP_AUTO_ONCE:
+                    raise RuntimeError(f"前端自动模式未找到目标: {target_query}")
                 continue
             target, edge = pick_target_box(
                 target_detections,
@@ -1428,6 +1430,8 @@ def main():
             )
             if target is None:
                 print("无法确定目标")
+                if SHELF_GRASP_AUTO_ONCE:
+                    raise RuntimeError("前端自动模式无法确定目标")
                 continue
             target_tracks = [
                 t for t in tracks
@@ -1804,10 +1808,13 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        try:
-            go_to_stow_pose(arm)
-        except Exception as e:
-            print(f"[收起姿态] 退出前收起失败/跳过: {e}")
+        if SHELF_GRASP_AUTO_ONCE:
+            print("[前端自动模式] 退出时不自动收起, 保持当前安全观察位/当前位置")
+        else:
+            try:
+                go_to_stow_pose(arm)
+            except Exception as e:
+                print(f"[收起姿态] 退出前收起失败/跳过: {e}")
         if not SKIP_HAND:
             hand.disconnect()
         arm.close()

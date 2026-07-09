@@ -52,8 +52,7 @@ TARGET_PRODUCT_QUERY=class_id:63 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 前端点单服务：
 
 ```bash
-cd /home/nvidia/grasp/qianduan
-npm start
+/home/nvidia/grasp/start_frontend.sh
 ```
 
 `npm start` 会自动执行 `init_db.js`，把 Excel 商品表导入到本地 JSON 商品库 `qianduan/data/products.json`。不需要安装或启动 MySQL/MariaDB。前端依赖在 `package.json` 中，目前只有 `ws`、`xlsx`；目录里已有 `node_modules` 时不需要重复安装，缺依赖时执行 `npm install`。
@@ -61,8 +60,7 @@ npm start
 默认是模拟抓取，浏览器打开 `http://localhost:3000`。如果要把订单接到真实机械臂抓取：
 
 ```bash
-cd /home/nvidia/grasp/qianduan
-ROBOT_GRASP_MODE=real DOBOT_IP=192.168.5.1 npm start
+ROBOT_GRASP_MODE=real DOBOT_IP=192.168.5.1 /home/nvidia/grasp/start_frontend.sh
 ```
 
 前端每个商品会通过 `TARGET_PRODUCT_QUERY` 调用一次 `dipan/shelf_grasp.py` 的单次自动抓取模式；真实模式下请先确认机械臂、相机、货架层和放置点已经按主程序调好。
