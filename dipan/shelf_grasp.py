@@ -1855,7 +1855,9 @@ def main():
         if SHELF_GRASP_WORKER and not worker_stow_requested:
             print("[前端常驻模式] 未收到收起指令, 保持连接/使能, 不主动断开")
             return
-        if SHELF_GRASP_AUTO_ONCE:
+        if SHELF_GRASP_WORKER and worker_stow_requested:
+            print("[前端常驻模式] 已按收起指令到位, 跳过退出前二次收起")
+        elif SHELF_GRASP_AUTO_ONCE:
             print("[前端自动模式] 退出时不自动收起, 保持当前安全观察位/当前位置")
         else:
             try:
