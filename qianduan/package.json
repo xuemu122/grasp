@@ -5,14 +5,15 @@
   "main": "script.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node start.js",
+    "serve": "node server.js",
+    "init-db": "node init_db.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "mysql2": "^3.22.5",
     "ws": "^8.21.0",
     "xlsx": "^0.18.5"
   }

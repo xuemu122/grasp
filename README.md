@@ -53,9 +53,10 @@ TARGET_PRODUCT_QUERY=class_id:63 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 
 ```bash
 cd /home/nvidia/grasp/qianduan
-node init_db.js
 npm start
 ```
+
+`npm start` 会自动执行 `init_db.js`，把 Excel 商品表导入到本地 JSON 商品库 `qianduan/data/products.json`。不需要安装或启动 MySQL/MariaDB。前端依赖在 `package.json` 中，目前只有 `ws`、`xlsx`；目录里已有 `node_modules` 时不需要重复安装，缺依赖时执行 `npm install`。
 
 默认是模拟抓取，浏览器打开 `http://localhost:3000`。如果要把订单接到真实机械臂抓取：
 

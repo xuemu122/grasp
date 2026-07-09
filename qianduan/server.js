@@ -11,7 +11,6 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { WebSocketServer } = require('ws');
-const mysql = require('mysql2/promise');
 
 const PORT = Number(process.env.PORT || 3000);
 const WS_PORT = Number(process.env.WS_PORT || 3001);
@@ -20,17 +19,8 @@ const ROBOT_GRASP_REAL = ['real', 'robot', 'hardware'].includes(ROBOT_GRASP_MODE
 const GRASP_SCRIPT = process.env.GRASP_SCRIPT || path.resolve(__dirname, '../dipan/shelf_grasp.py');
 const GRASP_CWD = path.dirname(GRASP_SCRIPT);
 const DOBOT_IP = process.env.DOBOT_IP || '192.168.5.1';
+const PRODUCTS_DB_FILE = process.env.PRODUCTS_DB_FILE || path.join(__dirname, 'data', 'products.json');
 let activeOrderId = null;
-
-// ========== MySQL 连接池 ==========
-const pool = mysql.createPool({
-    host: 'localhost',
-    user: 'root',
-    password: 'nvidia',
-    database: 'robot_order',
-    waitForConnections: true,
-    connectionLimit: 10
-});
 
 // 机器人初始位置
 const ROBOT_HOME = { x: 0, y: 0, z: 100 };
@@ -70,6 +60,60 @@ function sendJSON(res, data, status = 200) {
     res.end(JSON.stringify(data));
 }
 
+function normalizeProduct(raw, fallbackId = 1) {
+    const id = Number(raw.id || fallbackId);
+    return {
+        id,
+        name: raw.name || '',
+        spec: raw.spec || '',
+        packaging: raw.packaging || '',
+        category: raw.category || '',
+        manufacturer: raw.manufacturer || '',
+        photo_front: raw.photo_front || '',
+        photo_back: raw.photo_back || '',
+        location: raw.location || '',
+        shelf_x: Number(raw.shelf_x || 0),
+        shelf_y: Number(raw.shelf_y || 0),
+        shelf_z: Number(raw.shelf_z || 50),
+        emoji: raw.emoji || '📦',
+        price: Number(raw.price || 0),
+        stock: Number(raw.stock ?? 100),
+        status: Number(raw.status ?? 1),
+    };
+}
+
+function readProducts() {
+    if (!fs.existsSync(PRODUCTS_DB_FILE)) return [];
+    try {
+        const data = JSON.parse(fs.readFileSync(PRODUCTS_DB_FILE, 'utf8'));
+        return Array.isArray(data.products) ? data.products.map((p, idx) => normalizeProduct(p, idx + 1)) : [];
+    } catch (e) {
+        log(`⚠️ 商品数据读取失败: ${e.message}`);
+        return [];
+    }
+}
+
+function writeProducts(products) {
+    fs.mkdirSync(path.dirname(PRODUCTS_DB_FILE), { recursive: true });
+    fs.writeFileSync(PRODUCTS_DB_FILE, JSON.stringify({ products }, null, 2), 'utf8');
+}
+
+function nextProductId(products) {
+    return products.reduce((max, item) => Math.max(max, Number(item.id || 0)), 0) + 1;
+}
+
+function filterProducts(products, { search = '', category = '' } = {}) {
+    const keyword = String(search || '').trim().toLowerCase();
+    return products
+        .filter((item) => {
+            if (category && item.category !== category) return false;
+            if (!keyword) return true;
+            return [item.name, item.spec, item.manufacturer, item.location]
+                .some((value) => String(value || '').toLowerCase().includes(keyword));
+        })
+        .sort((a, b) => Number(b.id) - Number(a.id));
+}
+
 // ========== HTTP 服务 ==========
 const server = http.createServer(async (req, res) => {
     // CORS 预检
@@ -88,12 +132,7 @@ const server = http.createServer(async (req, res) => {
         try {
             const search = url.searchParams.get('search') || '';
             const category = url.searchParams.get('category') || '';
-            let sql = 'SELECT * FROM products WHERE 1=1';
-            const params = [];
-            if (search) { sql += ' AND name LIKE ?'; params.push(`%${search}%`); }
-            if (category) { sql += ' AND category = ?'; params.push(category); }
-            sql += ' ORDER BY id DESC';
-            const [rows] = await pool.execute(sql, params);
+            const rows = filterProducts(readProducts(), { search, category });
             sendJSON(res, { code: 0, data: rows, total: rows.length });
         } catch (e) {
             sendJSON(res, { code: 1, message: e.message }, 500);
@@ -105,9 +144,9 @@ const server = http.createServer(async (req, res) => {
     const singleMatch = pathname.match(/^\/api\/products\/(\d+)$/);
     if (singleMatch && req.method === 'GET') {
         try {
-            const [rows] = await pool.execute('SELECT * FROM products WHERE id = ?', [singleMatch[1]]);
-            if (rows.length === 0) { sendJSON(res, { code: 1, message: '商品不存在' }, 404); return; }
-            sendJSON(res, { code: 0, data: rows[0] });
+            const product = readProducts().find((item) => String(item.id) === singleMatch[1]);
+            if (!product) { sendJSON(res, { code: 1, message: '商品不存在' }, 404); return; }
+            sendJSON(res, { code: 0, data: product });
         } catch (e) {
             sendJSON(res, { code: 1, message: e.message }, 500);
         }
@@ -119,16 +158,12 @@ const server = http.createServer(async (req, res) => {
         const body = await parseBody(req);
         if (!body || !body.name) { sendJSON(res, { code: 1, message: '商品名称不能为空' }, 400); return; }
         try {
-            const [result] = await pool.execute(
-                `INSERT INTO products (name, spec, packaging, category, manufacturer, photo_front, photo_back, location, shelf_x, shelf_y, shelf_z, emoji, price, stock, status)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [body.name, body.spec || '', body.packaging || '', body.category || '', body.manufacturer || '',
-                 body.photo_front || '', body.photo_back || '', body.location || '',
-                 body.shelf_x || 0, body.shelf_y || 0, body.shelf_z || 50,
-                 body.emoji || '📦', body.price || 0, body.stock || 100, body.status ?? 1]
-            );
-            log(`➕ 新增商品: ${body.name} (id=${result.insertId})`);
-            sendJSON(res, { code: 0, message: '添加成功', id: result.insertId });
+            const products = readProducts();
+            const product = normalizeProduct({ ...body, id: nextProductId(products) });
+            products.push(product);
+            writeProducts(products);
+            log(`➕ 新增商品: ${body.name} (id=${product.id})`);
+            sendJSON(res, { code: 0, message: '添加成功', id: product.id });
         } catch (e) {
             sendJSON(res, { code: 1, message: e.message }, 500);
         }
@@ -141,18 +176,19 @@ const server = http.createServer(async (req, res) => {
         const body = await parseBody(req);
         if (!body) { sendJSON(res, { code: 1, message: '无效数据' }, 400); return; }
         try {
-            const fields = [];
-            const params = [];
+            const products = readProducts();
+            const index = products.findIndex((item) => String(item.id) === updateMatch[1]);
+            if (index < 0) { sendJSON(res, { code: 1, message: '商品不存在' }, 404); return; }
             const allowed = ['name','spec','packaging','category','manufacturer','photo_front','photo_back','location','shelf_x','shelf_y','shelf_z','emoji','price','stock','status'];
+            const patch = {};
             for (const key of allowed) {
                 if (body[key] !== undefined) {
-                    fields.push(`${key} = ?`);
-                    params.push(body[key]);
+                    patch[key] = body[key];
                 }
             }
-            if (fields.length === 0) { sendJSON(res, { code: 1, message: '没有要更新的字段' }, 400); return; }
-            params.push(updateMatch[1]);
-            await pool.execute(`UPDATE products SET ${fields.join(', ')} WHERE id = ?`, params);
+            if (Object.keys(patch).length === 0) { sendJSON(res, { code: 1, message: '没有要更新的字段' }, 400); return; }
+            products[index] = normalizeProduct({ ...products[index], ...patch, id: products[index].id });
+            writeProducts(products);
             log(`✏️ 更新商品 id=${updateMatch[1]}`);
             sendJSON(res, { code: 0, message: '更新成功' });
         } catch (e) {
@@ -165,7 +201,9 @@ const server = http.createServer(async (req, res) => {
     const delMatch = pathname.match(/^\/api\/products\/(\d+)$/);
     if (delMatch && req.method === 'DELETE') {
         try {
-            await pool.execute('DELETE FROM products WHERE id = ?', [delMatch[1]]);
+            const before = readProducts();
+            const products = before.filter((item) => String(item.id) !== delMatch[1]);
+            writeProducts(products);
             log(`🗑 删除商品 id=${delMatch[1]}`);
             sendJSON(res, { code: 0, message: '删除成功' });
         } catch (e) {
@@ -177,8 +215,8 @@ const server = http.createServer(async (req, res) => {
     // GET /api/categories - 获取所有品类
     if (pathname === '/api/categories' && req.method === 'GET') {
         try {
-            const [rows] = await pool.execute('SELECT DISTINCT category FROM products WHERE category != "" ORDER BY category');
-            sendJSON(res, { code: 0, data: rows.map(r => r.category) });
+            const categories = [...new Set(readProducts().map((item) => item.category).filter(Boolean))].sort();
+            sendJSON(res, { code: 0, data: categories });
         } catch (e) {
             sendJSON(res, { code: 1, message: e.message }, 500);
         }
@@ -373,13 +411,9 @@ function runRealGrab(ws, orderId, item, progressBase, totalItems, itemNo, itemQt
 }
 
 async function getProductPosition(itemName, index) {
-    try {
-        const [rows] = await pool.execute('SELECT shelf_x, shelf_y, shelf_z, location FROM products WHERE name = ? LIMIT 1', [itemName]);
-        if (rows.length > 0) {
-            return { x: rows[0].shelf_x, y: rows[0].shelf_y, z: rows[0].shelf_z, shelf: rows[0].location || '货架' };
-        }
-    } catch (e) {
-        log(`  [数据库] 读取商品位置失败: ${e.message}`);
+    const product = readProducts().find((item) => item.name === itemName || String(item.id) === String(itemName));
+    if (product) {
+        return { x: product.shelf_x, y: product.shelf_y, z: product.shelf_z, shelf: product.location || '货架' };
     }
     return { x: 100, y: (index + 1) * 100, z: 50, shelf: '未知' };
 }
