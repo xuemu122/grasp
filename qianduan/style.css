@@ -143,6 +143,8 @@ body {
 .header-status {
     min-width: 140px;
     display: flex;
+    align-items: center;
+    gap: 8px;
     justify-content: flex-end;
 }
 
@@ -157,6 +159,23 @@ body {
     font-size: 0.85rem;
     font-weight: 500;
     color: var(--gray-700);
+}
+
+.btn-stow {
+    border: 1px solid var(--gray-300);
+    background: #fff;
+    color: var(--gray-700);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-stow:hover {
+    border-color: var(--primary);
+    color: var(--primary);
 }
 
 .status-dot {

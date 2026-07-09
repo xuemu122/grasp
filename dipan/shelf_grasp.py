@@ -99,6 +99,7 @@ HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "bottle").lower()
 DETECTION_STABILITY_IOU = float(os.getenv("DETECTION_STABILITY_IOU", "0.35"))
 TARGET_PRODUCT_QUERY = os.getenv("TARGET_PRODUCT_QUERY", os.getenv("TARGET_NAME", "")).strip()
 SHELF_GRASP_AUTO_ONCE = os.getenv("SHELF_GRASP_AUTO_ONCE", "0").lower() in ("1", "true", "yes", "on")
+SHELF_GRASP_WORKER = os.getenv("SHELF_GRASP_WORKER", "0").lower() in ("1", "true", "yes", "on")
 TARGET_DEPTH_REFINE_RADIUS_PX = int(os.getenv("TARGET_DEPTH_REFINE_RADIUS_PX", "10"))
 TARGET_DEPTH_REFINE_MAX_DELTA_M = float(os.getenv("TARGET_DEPTH_REFINE_MAX_DELTA_M", "0.08"))
 DEPTH_GUARD_ENABLE = os.getenv("DEPTH_GUARD_ENABLE", "1").lower() in ("1", "true", "yes", "on")
@@ -1133,7 +1134,9 @@ def main():
     print(f"  灵巧手: {HAND_LENGTH*100:.0f}cm  {HAND_W_Y*100:.1f}cm×{HAND_W_X*100:.1f}cm  {HAND_WEIGHT}kg")
     print(f"  手势模式: {HAND_GRASP_MODE}")
     print(f"  目标商品: {TARGET_PRODUCT_QUERY or '未指定'}")
-    if SHELF_GRASP_AUTO_ONCE:
+    if SHELF_GRASP_WORKER:
+        print("  前端常驻模式: 保持使能, 等待 stdin 商品名; __stow__ 后收起并退出")
+    elif SHELF_GRASP_AUTO_ONCE:
         print("  前端自动模式: 单次抓取后自动退出")
     print("=" * 60)
     target_query = TARGET_PRODUCT_QUERY
@@ -1208,12 +1211,32 @@ def main():
     try:
         auto_attempt_pending = SHELF_GRASP_AUTO_ONCE
         auto_attempt_succeeded = False
+        worker_stow_requested = False
         while True:
             if SHELF_GRASP_AUTO_ONCE and not auto_attempt_pending:
                 break
             chassis_state = "开" if USE_CHASSIS_PLACE else "关"
             target_state = target_query or "任意"
-            if SHELF_GRASP_AUTO_ONCE:
+            if SHELF_GRASP_WORKER:
+                print("\n[前端常驻模式] 等待商品名 (__stow__=收起并退出, __quit__=直接退出) ...", flush=True)
+                cmd = sys.stdin.readline()
+                if cmd == "":
+                    print("[前端常驻模式] stdin 已关闭, 保持使能并退出程序")
+                    break
+                cmd = cmd.strip()
+                if cmd in ("__stow__", "__shutdown__"):
+                    print("[前端常驻模式] 收到收起指令")
+                    go_to_stow_pose(arm)
+                    worker_stow_requested = True
+                    break
+                if cmd in ("__quit__", "__exit__"):
+                    print("[前端常驻模式] 收到退出指令, 不自动收起")
+                    break
+                if not cmd:
+                    continue
+                target_query = cmd
+                print(f"[前端常驻模式] 目标:{target_query}, 开始抓取")
+            elif SHELF_GRASP_AUTO_ONCE:
                 cmd = ""
                 auto_attempt_pending = False
                 print(f"\n[前端自动模式] 目标:{target_state}, 开始单次抓取")
@@ -1419,6 +1442,9 @@ def main():
             target_detections = _filter_detections_by_target_query(detections, target_query)
             _print_target_filter_result(target_query, detections, target_detections)
             if target_query and not target_detections:
+                if SHELF_GRASP_WORKER:
+                    print(f"[前端常驻模式][失败] 未找到目标: {target_query}", flush=True)
+                    continue
                 if SHELF_GRASP_AUTO_ONCE:
                     raise RuntimeError(f"前端自动模式未找到目标: {target_query}")
                 continue
@@ -1430,6 +1456,9 @@ def main():
             )
             if target is None:
                 print("无法确定目标")
+                if SHELF_GRASP_WORKER:
+                    print("[前端常驻模式][失败] 无法确定目标", flush=True)
+                    continue
                 if SHELF_GRASP_AUTO_ONCE:
                     raise RuntimeError("前端自动模式无法确定目标")
                 continue
@@ -1799,15 +1828,21 @@ def main():
             auto_attempt_succeeded = True
 
             print("抓取完成! 按 Enter 继续 / q 退出")
+            if SHELF_GRASP_WORKER:
+                print(f"[前端常驻模式][完成] {target_query}", flush=True)
+                continue
             if SHELF_GRASP_AUTO_ONCE:
                 break
 
-        if SHELF_GRASP_AUTO_ONCE and not auto_attempt_succeeded:
+        if SHELF_GRASP_AUTO_ONCE and not SHELF_GRASP_WORKER and not auto_attempt_succeeded:
             raise RuntimeError("前端自动模式单次抓取未完成")
 
     except KeyboardInterrupt:
         pass
     finally:
+        if SHELF_GRASP_WORKER and not worker_stow_requested:
+            print("[前端常驻模式] 未收到收起指令, 保持连接/使能, 不主动断开")
+            return
         if SHELF_GRASP_AUTO_ONCE:
             print("[前端自动模式] 退出时不自动收起, 保持当前安全观察位/当前位置")
         else:

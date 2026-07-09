@@ -63,7 +63,7 @@ TARGET_PRODUCT_QUERY=class_id:63 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 ROBOT_GRASP_MODE=real DOBOT_IP=192.168.5.1 /home/nvidia/grasp/start_frontend.sh
 ```
 
-前端每个商品会通过 `TARGET_PRODUCT_QUERY` 调用一次 `dipan/shelf_grasp.py` 的单次自动抓取模式；真实模式下请先确认机械臂、相机、货架层和放置点已经按主程序调好。
+真实模式会启动一个常驻 `dipan/shelf_grasp.py` worker，DOBOT 和 Aero Hand 会一直保持连接/使能，前端点单只向 worker 发送商品名。抓完后不会断开；需要结束时在前端点击“收起”，worker 会回到收起姿态后再关闭连接。真实模式下请先确认机械臂、相机、货架层和放置点已经按主程序调好。
 
 手眼标定：
 

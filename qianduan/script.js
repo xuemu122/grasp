@@ -59,7 +59,7 @@ function handleWSMessage(msg) {
             break;
         case 'status':
             if (msg.status === 'started') {
-                updateRobotStatus('busy', '机器人抓取中...');
+                updateRobotStatus('busy', msg.message || '机器人抓取中...');
             } else if (msg.status === 'grabbing') {
                 updateGrabProgress(msg);
             } else if (msg.status === 'completed') {
@@ -363,6 +363,16 @@ function submitOrder() {
 
     logWS('📤 发送抓取命令: ' + JSON.stringify(payload));
     ws.send(JSON.stringify(payload));
+}
+
+function stowRobot() {
+    if (!wsConnected) {
+        alert('后端服务未连接');
+        return;
+    }
+    if (!confirm('确认让机器人回到收起姿态并关闭连接吗？')) return;
+    updateRobotStatus('busy', '机器人收起中...');
+    ws.send(JSON.stringify({ type: 'stow', timestamp: Date.now() }));
 }
 
 // ========== 更新抓取进度 ==========
