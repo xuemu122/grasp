@@ -20,6 +20,8 @@ const GRASP_SCRIPT = process.env.GRASP_SCRIPT || path.resolve(__dirname, '../dip
 const GRASP_CWD = path.dirname(GRASP_SCRIPT);
 const DOBOT_IP = process.env.DOBOT_IP || '192.168.5.1';
 const PRODUCTS_DB_FILE = process.env.PRODUCTS_DB_FILE || path.join(__dirname, 'data', 'products.json');
+const ROBOT_WORKER_READY_TIMEOUT_MS = Number(process.env.ROBOT_WORKER_READY_TIMEOUT_MS || 90000);
+const ROBOT_GRAB_TIMEOUT_MS = Number(process.env.ROBOT_GRAB_TIMEOUT_MS || 120000);
 let activeOrderId = null;
 let robotWorker = null;
 let robotWorkerReady = false;
@@ -311,6 +313,7 @@ function ensureRobotWorker() {
     robotWorkerStarting = new Promise((resolve, reject) => {
         log('🤖 启动常驻抓取 worker...');
         robotWorkerReady = false;
+        let settled = false;
         const child = spawn('python3', [GRASP_SCRIPT], {
             cwd: GRASP_CWD,
             env: {
@@ -321,6 +324,12 @@ function ensureRobotWorker() {
             }
         });
         robotWorker = child;
+        const readyTimer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            robotWorkerStarting = null;
+            reject(new Error(`抓取 worker 启动超时 (${ROBOT_WORKER_READY_TIMEOUT_MS}ms)`));
+        }, ROBOT_WORKER_READY_TIMEOUT_MS);
 
         const handleOutput = (chunk) => {
             const text = chunk.toString();
@@ -328,7 +337,9 @@ function ensureRobotWorker() {
                 const trimmed = line.trim();
                 if (!trimmed) continue;
                 log(`  [worker] ${trimmed}`);
-                if (trimmed.includes('等待商品名')) {
+                if (!settled && trimmed.includes('等待商品名')) {
+                    settled = true;
+                    clearTimeout(readyTimer);
                     robotWorkerReady = true;
                     resolve(child);
                 }
@@ -339,16 +350,25 @@ function ensureRobotWorker() {
         child.stdout.on('data', handleOutput);
         child.stderr.on('data', handleOutput);
         child.on('error', (e) => {
+            clearTimeout(readyTimer);
             robotWorker = null;
             robotWorkerReady = false;
             robotWorkerStarting = null;
-            reject(e);
+            if (!settled) {
+                settled = true;
+                reject(e);
+            }
         });
         child.on('close', (code) => {
+            clearTimeout(readyTimer);
             log(`🤖 抓取 worker 已退出 code=${code}`);
             robotWorker = null;
             robotWorkerReady = false;
             robotWorkerStarting = null;
+            if (!settled) {
+                settled = true;
+                reject(new Error(`抓取 worker 启动失败，退出码 ${code}`));
+            }
         });
     });
 
@@ -460,6 +480,7 @@ function runRealGrab(ws, orderId, item, progressBase, totalItems, itemNo, itemQt
         const label = itemQty > 1 ? `${itemName} (${itemNo}/${itemQty})` : itemName;
         const progressStep = 80 / totalItems / Math.max(1, itemQty);
         let outputTail = '';
+        let settled = false;
 
         log(`  📦 真实抓取(worker): ${label}`);
         sendStatus(ws, 'grabbing', {
@@ -471,11 +492,14 @@ function runRealGrab(ws, orderId, item, progressBase, totalItems, itemNo, itemQt
         });
 
         const cleanup = () => {
+            clearTimeout(timeout);
             worker.stdout.off('data', onData);
             worker.stderr.off('data', onData);
             worker.off('close', onClose);
         };
         const finishOk = () => {
+            if (settled) return;
+            settled = true;
             cleanup();
             sendStatus(ws, 'grabbing', {
                 orderId,
@@ -487,13 +511,19 @@ function runRealGrab(ws, orderId, item, progressBase, totalItems, itemNo, itemQt
             resolve();
         };
         const finishError = (message) => {
+            if (settled) return;
+            settled = true;
             cleanup();
             reject(new Error(`${label}: ${message}`));
         };
+        const timeout = setTimeout(() => {
+            finishError(`抓取超时 (${ROBOT_GRAB_TIMEOUT_MS}ms): ${summarizeOutput(outputTail) || '无输出'}`);
+        }, ROBOT_GRAB_TIMEOUT_MS);
         const onData = (chunk) => {
             const text = chunk.toString();
             outputTail = (outputTail + text).slice(-4000);
             for (const line of text.split(/\r?\n/)) {
+                if (settled) return;
                 const trimmed = line.trim();
                 if (!trimmed) continue;
                 const stage = inferGrabStage(trimmed);
@@ -506,8 +536,14 @@ function runRealGrab(ws, orderId, item, progressBase, totalItems, itemNo, itemQt
                         message: stage.message || trimmed
                     });
                 }
-                if (trimmed.includes('[前端常驻模式][完成]')) finishOk();
-                if (trimmed.includes('[前端常驻模式][失败]')) finishError(trimmed);
+                if (trimmed.includes('[前端常驻模式][完成]')) {
+                    finishOk();
+                    return;
+                }
+                if (trimmed.includes('[前端常驻模式][失败]')) {
+                    finishError(trimmed);
+                    return;
+                }
             }
         };
         const onClose = (code) => finishError(`worker 已退出 code=${code}: ${summarizeOutput(outputTail)}`);

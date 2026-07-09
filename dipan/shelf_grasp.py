@@ -1212,6 +1212,11 @@ def main():
         auto_attempt_pending = SHELF_GRASP_AUTO_ONCE
         auto_attempt_succeeded = False
         worker_stow_requested = False
+
+        def worker_fail(message: str):
+            if SHELF_GRASP_WORKER:
+                print(f"[前端常驻模式][失败] {message}", flush=True)
+
         while True:
             if SHELF_GRASP_AUTO_ONCE and not auto_attempt_pending:
                 break
@@ -1403,6 +1408,7 @@ def main():
 
             if best_img is None:
                 print("相机未就绪")
+                worker_fail("相机未就绪")
                 continue
 
             detections, tracks = _fuse_detection_tracks(frame_detections, DETECTION_STABILITY_IOU)
@@ -1433,6 +1439,7 @@ def main():
                         f"{c['class_name']}:{c['confidence']:.2f}@{c['bbox']}" for c in top
                     )
                     print(f"  → 低置信候选Top: {cand_text}")
+                worker_fail(f"未检测到目标: {target_query or '任意'}")
                 continue
 
             # ── 选最靠边的盒子。先按当前层记录的世界 Z 过滤上下层，避免误抓上一层。 ──
@@ -1606,7 +1613,7 @@ def main():
                  print(f"    f     ← 手动输入偏移 (格式: x,y,z mm)")
                  print(f"    F5    ← 重新拍照 (复位偏移)")
                  print(f"    Q     ← 跳过/退出")
-                 if SHELF_GRASP_AUTO_ONCE:
+                 if SHELF_GRASP_AUTO_ONCE or SHELF_GRASP_WORKER:
                      choice = ""
                      print("  [前端自动模式] 自动确认目标位姿")
                  else:
@@ -1762,6 +1769,7 @@ def main():
                     go_to_layer(arm, _current_layer_idx)
                 else:
                     arm.go_home()
+                worker_fail("对齐位运动失败/深度护栏拒绝")
                 continue
             time.sleep(GRASP_SETTLE_S)
 
@@ -1793,6 +1801,7 @@ def main():
                     go_to_layer(arm, _current_layer_idx)
                 else:
                     arm.go_home()
+                worker_fail("探入路径被深度护栏拒绝")
                 continue
             time.sleep(GRASP_SETTLE_S)
 
@@ -1810,12 +1819,14 @@ def main():
             if not arm.movel(float(retreat_pt[0]), float(retreat_pt[1]), float(retreat_pt[2]), speed=100,
                              allow_low_z=allow_low_z):
                 print("  [停止] 后退失败/报警, 停在当前位置, 不继续放置流程")
+                worker_fail("后退失败/报警")
                 continue
             time.sleep(GRASP_SETTLE_S)
 
             if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
                 if not go_to_layer(arm, _current_layer_idx):
                     print("  [停止] 回观察位失败/报警, 停在当前位置, 不继续放置流程")
+                    worker_fail("回观察位失败/报警")
                     continue
             else:
                 arm.go_home()
@@ -1823,6 +1834,7 @@ def main():
             # 6. 放置并回到当前层观察位
             if not finish_pick_cycle(arm, hand, _current_layer_idx):
                 print("  [停止] 放置/回层失败, 本次抓取未完成")
+                worker_fail("放置/回层失败")
                 continue
             time.sleep(MOTION_SETTLE_S)
             auto_attempt_succeeded = True
