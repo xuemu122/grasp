@@ -94,8 +94,8 @@ DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.7"))
 # 透明矿泉水/塑料瓶在复杂光照下置信度会明显偏低，只对饮料类单独放宽。
 WATER_CONF_THRESHOLD = float(os.getenv("WATER_CONF_THRESHOLD", "0.52"))
 DRINK_CLASS_IDS = set(range(70, 78)) | set(range(80, 87))
-# 当前识别目标以瓶子为主, 默认使用瓶子抓取手势；原侧抓/上抓手势仍保留。
-HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "bottle").lower()
+# 当前默认使用电流反馈柔性抓取；原侧抓/上抓固定手势仍可通过 HAND_GRASP_MODE=bottle/auto 保留。
+HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "flex").lower()
 DETECTION_STABILITY_IOU = float(os.getenv("DETECTION_STABILITY_IOU", "0.35"))
 TARGET_PRODUCT_QUERY = os.getenv("TARGET_PRODUCT_QUERY", os.getenv("TARGET_NAME", "")).strip()
 SHELF_GRASP_AUTO_ONCE = os.getenv("SHELF_GRASP_AUTO_ONCE", "0").lower() in ("1", "true", "yes", "on")
@@ -1807,8 +1807,12 @@ def main():
 
             # 4. 抓取 (动作二) 并等待 5s 握紧
             if not SKIP_HAND:
-                grasp_mode = "bottle" if HAND_GRASP_MODE == "bottle" and is_side_grasp else None
-                if hand.close(top=not is_side_grasp, mode=grasp_mode):
+                if HAND_GRASP_MODE in ("flex", "flexible", "current"):
+                    hand_ok = hand.flexible_close()
+                else:
+                    grasp_mode = "bottle" if HAND_GRASP_MODE == "bottle" and is_side_grasp else None
+                    hand_ok = hand.close(top=not is_side_grasp, mode=grasp_mode)
+                if hand_ok:
                     print(f"  灵巧手 → 闭合, 等待 {HAND_CLOSE_WAIT_S:.1f}s ...")
                     time.sleep(HAND_CLOSE_WAIT_S)
                 else:

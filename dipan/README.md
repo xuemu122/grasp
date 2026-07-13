@@ -52,6 +52,12 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `MOTION_SETTLE_S`：普通运动完成后的短缓冲，默认 `0.2` 秒。
 - `GRASP_SETTLE_S`：抓取前进、闭手前、后退后的缓冲，默认 `0.4` 秒。
 - `HAND_CLOSE_WAIT_S`：灵巧手闭合后等待物体稳定的时间，默认 `3.0` 秒。
+- `HAND_GRASP_MODE`：灵巧手抓取模式，默认 `flex`，使用电流反馈柔性抓取；可设 `bottle` 使用旧瓶子固定手势，或设 `auto` 使用普通/上抓固定手势。
+- `AERO_FLEX_PROFILE`：柔性抓取空载曲线 CSV，默认 `/tmp/aero_empty.csv`；建议先用 `test_aero_current_grasp.py --disable-trigger` 录制。
+- `AERO_FLEX_ACTIVE_JOINTS`：柔性抓取参与闭合的 compact 关节，默认 `1,2,3,4,5,6`。
+- `AERO_FLEX_REQUIRED_FINGERS`：柔性抓取必须完成的手指，默认取 active 中的 `3..6`；如果只用两指抓可设为 `3,4`。
+- `AERO_FLEX_PROFILE_DELTA_MA`：相对空载曲线额外增加多少 mA 判定接触，默认 `180`。
+- `AERO_FLEX_EXTRA_CLOSE`：单根手指检测到接触后继续闭合多少度再锁住，默认 `8`。
 - `ROBOT_POLL_S`：等待 DOBOT 运动完成时的状态轮询间隔，默认 `0.2` 秒。
 - `PLACE_TRANSITION_CP`：放置路径经过过渡点时的平滑过渡比例，默认 `60`；调大更顺滑，但会更明显地绕过中间点。
 - `PLACE_SMOOTH_TRANSITION`：放置段是否启用 `MovL cp` 平滑过渡，默认关闭。
@@ -185,16 +191,29 @@ q   返回
 
 侧面抓取点不会低于物体底部上方 `6cm`。如果检测框估算出的物体高度小于等于 `6cm`，会自动改成上面抓取，避免手掌或手指低位撞到货架/物体。
 
-机械臂路径仍按侧抓/上抓自动判定。灵巧手侧面抓当前默认使用瓶子抓取手势：
+机械臂路径仍按侧抓/上抓自动判定。灵巧手默认使用电流反馈柔性抓取：
+
+```bash
+HAND_GRASP_MODE=flex
+```
+
+建议先录制空载电流曲线：
+
+```bash
+cd /home/nvidia/grasp/dipan
+python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 80 --step 2 --fast --disable-trigger --release-after --log /tmp/aero_empty.csv
+```
+
+如果要恢复旧的侧面瓶子固定手势：
 
 ```python
-GRASP_BOTTLE = [0, 82, 65, 76, 55, 67, 63]
+GRASP_BOTTLE = [100, 92, 75, 76, 75, 67, 69]
 ```
 
 启动时默认：
 
 ```bash
-HAND_GRASP_MODE=bottle
+HAND_GRASP_MODE=bottle DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 ```
 
 上端抓取不使用瓶子手势，仍使用 `GRASP_TOP`。如果后续不是瓶子，想让侧面抓也恢复原来的普通手势，可以这样启动：
@@ -241,13 +260,13 @@ python3 test_aero_current_grasp.py --release-after
 如果空载弯曲本身就会让电流上升，先录一条空载曲线，再按同角度差值判断：
 
 ```bash
-python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 60 --step 1 --disable-trigger --release-after --log /tmp/aero_empty.csv
+python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 60 --step 2 --fast --disable-trigger --release-after --log /tmp/aero_empty.csv
 python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 60 --step 1 --profile /tmp/aero_empty.csv --profile-delta-ma 180 --min-cmd 15 --consecutive 2 --release-after
-python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 80 --step 1 --profile /tmp/aero_empty.csv --profile-delta-ma 180 --min-cmd 15 --consecutive 2 --per-finger --extra-close 8 --thumb-follow --release-after
+python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 80 --step 2 --fast --profile /tmp/aero_empty.csv --profile-delta-ma 180 --min-cmd 15 --consecutive 2 --per-finger --extra-close 8 --thumb-follow --release-after
 ```
 
 这会把“正常弯曲/预紧造成的电流”从判断里扣掉，只在比空载曲线额外高出阈值时才停止。
-`--per-finger` 会让 3-6 号四根手指分开判断；某根手指触发后会再闭合 `--extra-close` 度并锁住，直到四根手指都抓紧/到上限才退出。`--thumb-follow` 让 1/2 号拇指继续随步进闭合，但不作为“四指都抓紧”的退出条件。
+`--per-finger` 会让 active-joints 里的 3-6 号手指分开判断；某根手指触发后会再闭合 `--extra-close` 度并锁住，直到这些手指都抓紧/到上限才退出。`--thumb-follow` 让 1/2 号拇指继续随步进闭合，但不作为“四指都抓紧”的退出条件。需要强制指定等待哪些手指时可加 `--required-fingers 3,4`。
 
 目标选择支持两层规则：先按目标关键词过滤，再由 `pick_target_box()` 做几何选择。主菜单里输入 `?` 可查看当前模型的全部 `class_id:class_name`；输入 `c` 可以设置任意目标商品/类别/id；也可以直接输入目标名开始抓取，例如 `雪碧`、`褪黑素`、`sprite`、`ths`、`class_id:63`。输入 `all` 或 `clear` 会清空目标，恢复任意候选抓取。
 

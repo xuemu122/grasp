@@ -41,6 +41,7 @@ def parse_args():
     parser.add_argument("--settle", type=float, default=float(os.getenv("AERO_TEST_SETTLE", "0.12")), help="每步动作后等待秒数")
     parser.add_argument("--samples", type=int, default=int(os.getenv("AERO_TEST_SAMPLES", "3")), help="每步电流采样次数")
     parser.add_argument("--sample-delay", type=float, default=float(os.getenv("AERO_TEST_SAMPLE_DELAY", "0.03")), help="采样间隔秒")
+    parser.add_argument("--fast", action="store_true", help="快速测试: settle=0.05, samples=1, sample-delay=0")
     parser.add_argument("--delta-ma", type=float, default=float(os.getenv("AERO_TEST_DELTA_MA", "180")), help="相对基线电流增量阈值 mA")
     parser.add_argument("--abs-ma", type=float, default=float(os.getenv("AERO_TEST_ABS_MA", "650")), help="绝对电流阈值 mA")
     parser.add_argument("--trigger-count", type=int, default=int(os.getenv("AERO_TEST_TRIGGER_COUNT", "1")), help="至少多少路电机超过阈值才停止")
@@ -52,9 +53,10 @@ def parse_args():
     parser.add_argument("--profile", default=os.getenv("AERO_TEST_PROFILE", ""), help="空载CSV曲线; 有值时按同角度空载电流差值触发")
     parser.add_argument("--profile-delta-ma", type=float, default=float(os.getenv("AERO_TEST_PROFILE_DELTA_MA", "180")), help="相对空载曲线额外增加多少mA才触发")
     parser.add_argument("--per-finger", action="store_true", help="3-6号四根手指分开判断; 全部抓紧后退出")
-    parser.add_argument("--required-fingers", default=os.getenv("AERO_TEST_REQUIRED_FINGERS", "3,4,5,6"), help="per-finger模式下必须抓紧的手指, 默认3,4,5,6")
+    parser.add_argument("--required-fingers", default=os.getenv("AERO_TEST_REQUIRED_FINGERS", ""), help="per-finger模式下必须抓紧的手指; 默认使用active-joints里的3-6")
     parser.add_argument("--extra-close", type=float, default=float(os.getenv("AERO_TEST_EXTRA_CLOSE", "8")), help="单根手指触发后继续闭合多少度再锁住")
     parser.add_argument("--thumb-follow", action="store_true", help="per-finger模式下1/2号拇指继续跟随递增")
+    parser.add_argument("--max-steps", type=int, default=int(os.getenv("AERO_TEST_MAX_STEPS", "300")), help="per-finger最大循环步数兜底")
     parser.add_argument("--torque-limit", type=int, default=int(os.getenv("AERO_TEST_TORQUE_LIMIT", "0")), help="可选: 先把0-6号位置控制力矩限制到0..1000")
     parser.add_argument("--hold-seconds", type=float, default=float(os.getenv("AERO_TEST_HOLD_SECONDS", "5")), help="触发后保持秒数")
     parser.add_argument("--release-after", action="store_true", help="测试结束后张开")
@@ -179,6 +181,10 @@ def triggered_actuators(args, ignored, currents, baseline, empty_profile, comman
 
 def main():
     args = parse_args()
+    if args.fast:
+        args.settle = min(args.settle, 0.05)
+        args.samples = 1
+        args.sample_delay = 0.0
     if args.step <= 0:
         raise ValueError("--step 必须 > 0")
     if args.max < args.start:
@@ -187,9 +193,15 @@ def main():
     active_joints = parse_index_set(args.active_joints, "--active-joints", min_value=1, max_value=6)
     if not active_joints:
         raise ValueError("--active-joints 至少需要一个 1..6 的关节")
-    required_fingers = parse_index_set(args.required_fingers, "--required-fingers", min_value=3, max_value=6)
+    if str(args.required_fingers or "").strip():
+        required_fingers = parse_index_set(args.required_fingers, "--required-fingers", min_value=3, max_value=6)
+    else:
+        required_fingers = {idx for idx in active_joints if 3 <= idx <= 6}
     if args.per_finger and not required_fingers:
         raise ValueError("--required-fingers 至少需要一个 3..6 的手指")
+    missing_required = sorted(required_fingers - active_joints)
+    if args.per_finger and missing_required:
+        raise ValueError(f"--required-fingers 必须包含在 --active-joints 里, 未激活: {missing_required}")
     if args.extra_close < 0:
         raise ValueError("--extra-close 必须 >= 0")
 
@@ -206,6 +218,8 @@ def main():
     print("[Aero测试] compact映射: " + " | ".join(f"{i}:{name}" for i, name in enumerate(COMPACT_NAMES)))
     if ignored:
         print("[Aero测试] 忽略触发电机: " + ",".join(str(i) for i in sorted(ignored)))
+    if args.fast:
+        print("[Aero测试] fast=on: settle=0.05, samples=1, sample_delay=0")
     if args.disable_trigger:
         print("[Aero测试] disable-trigger=on: 只记录曲线, 不会因电流停止")
     if empty_profile:
@@ -263,6 +277,10 @@ def main():
                 step_idx = 0
 
                 while any(idx not in locked for idx in required_fingers):
+                    if step_idx >= args.max_steps:
+                        pending = sorted(idx for idx in required_fingers if idx not in locked)
+                        print(f"[Aero测试][停止] 达到最大循环步数 {args.max_steps}, 未完成: {pending}")
+                        break
                     pose = compact_pose_values(args.thumb0, values)
                     final_pose = pose
                     hand.set_joint_positions(pose)
