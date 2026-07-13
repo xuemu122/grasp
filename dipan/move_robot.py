@@ -18,6 +18,7 @@ MARKER_YAOJIA = "yaojia1"
 MARKER_CHARGE = "charge_point_1F_35744"
 MARKER_PLACE = os.getenv("MARKER_PLACE", "place_point")
 DEFAULT_WAIT_TIMEOUT_S = int(os.getenv("MOVE_WAIT_TIMEOUT_S", "180"))
+CHARGE_RETURN_ON_DOCKING = os.getenv("CHARGE_RETURN_ON_DOCKING", "1").lower() in ("1", "true", "yes", "on")
 
 
 def response_results(result):
@@ -105,7 +106,7 @@ def get_robot_status(sock):
     return result
 
 
-def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S):
+def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S, arrive_on_docking=False):
     """等待底盘移动任务完成。成功返回 True, 失败/取消/超时返回 False。"""
     deadline = time.time() + timeout_s
     last_status = None
@@ -144,6 +145,10 @@ def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S):
         if target_matches and move_status in ("running", "succeeded"):
             seen_current_task = True
 
+        if target_matches and arrive_on_docking and running_status == "dock_to_charging_pile":
+            print("[底盘] 已到充电桩附近, 开始自动对接充电桩")
+            return True
+
         if move_status == "succeeded":
             if marker and not target_matches and not seen_current_task:
                 stale = (move_status, move_target)
@@ -173,7 +178,7 @@ def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S):
     return False
 
 
-def move_to(sock, marker, wait=False):
+def move_to(sock, marker, wait=False, arrive_on_docking=False):
     """发送移动到目标点位的指令"""
     cmd = f"/api/move?marker={marker}"
     print(f">>> 发送: {cmd}")
@@ -186,7 +191,7 @@ def move_to(sock, marker, wait=False):
         print(f"失败: {response_error_message(result)}")
     result = attach_power_status(sock, result)
     if wait and result.get("status") == "OK":
-        result["move_done"] = wait_move_done(sock, marker=marker)
+        result["move_done"] = wait_move_done(sock, marker=marker, arrive_on_docking=arrive_on_docking)
     return result
 
 
@@ -232,7 +237,7 @@ def main():
             if not MARKER_CHARGE:
                 print("错误: 充电桩点位名称未设置，请先编辑脚本填写 MARKER_CHARGE")
                 sys.exit(1)
-            result = move_to(sock, MARKER_CHARGE, wait=wait)
+            result = move_to(sock, MARKER_CHARGE, wait=wait, arrive_on_docking=CHARGE_RETURN_ON_DOCKING)
             if wait and result.get("move_done") is False:
                 sys.exit(2)
         elif target == "place":

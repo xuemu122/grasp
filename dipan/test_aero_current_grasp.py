@@ -60,7 +60,7 @@ def parse_args():
     parser.add_argument("--torque-limit", type=int, default=int(os.getenv("AERO_TEST_TORQUE_LIMIT", "0")), help="可选: 先把0-6号位置控制力矩限制到0..1000")
     parser.add_argument("--hold-seconds", type=float, default=float(os.getenv("AERO_TEST_HOLD_SECONDS", "5")), help="触发后保持秒数")
     parser.add_argument("--release-after", action="store_true", help="测试结束后张开")
-    parser.add_argument("--log", default=os.getenv("AERO_TEST_LOG", ""), help="CSV日志路径; 默认写 /tmp")
+    parser.add_argument("--log", default=os.getenv("AERO_TEST_LOG", ""), help="CSV日志路径; 默认测试日志写 /tmp")
     return parser.parse_args()
 
 
@@ -234,6 +234,7 @@ def main():
 
     triggered = False
     final_pose = OPEN_POSE[:]
+    log_rows = 0
     with open(log_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
@@ -339,6 +340,7 @@ def main():
 
                     reason = ";".join(events)
                     write_log_row(writer, step_idx, command_value, currents, baseline, reason)
+                    log_rows += 1
                     f.flush()
                     value_text = " ".join(f"{idx}:{values.get(idx, 0):.1f}" for idx in range(1, 7))
                     print(
@@ -398,6 +400,7 @@ def main():
                     reason = f"candidate({consecutive_hits}/{max(1, args.consecutive)}):" + ",".join(str(i) for i in over)
 
                 write_log_row(writer, step_idx, value, currents, baseline, reason)
+                log_rows += 1
                 f.flush()
                 print(
                     f"[Aero测试] cmd={value:5.1f} "
@@ -431,6 +434,7 @@ def main():
                 time.sleep(0.3)
             else:
                 print("[Aero测试] 保持最后姿态: " + " ".join(f"{v:.1f}" for v in final_pose))
+            print(f"[Aero测试] 已写CSV: {log_path} ({log_rows}条数据 + 表头)")
             hand.close()
             print("[Aero测试] 已断开")
 

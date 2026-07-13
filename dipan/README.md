@@ -53,7 +53,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `GRASP_SETTLE_S`：抓取前进、闭手前、后退后的缓冲，默认 `0.4` 秒。
 - `HAND_CLOSE_WAIT_S`：灵巧手闭合后等待物体稳定的时间，默认 `3.0` 秒。
 - `HAND_GRASP_MODE`：灵巧手抓取模式，默认 `flex`，使用电流反馈柔性抓取；可设 `bottle` 使用旧瓶子固定手势，或设 `auto` 使用普通/上抓固定手势。
-- `AERO_FLEX_PROFILE`：柔性抓取空载曲线 CSV，默认 `/tmp/aero_empty.csv`；建议先用 `test_aero_current_grasp.py --disable-trigger` 录制。
+- `AERO_FLEX_PROFILE`：柔性抓取空载曲线 CSV，默认 `/home/nvidia/grasp/dipan/runtime/aero_empty.csv`；建议先用 `test_aero_current_grasp.py --disable-trigger` 录制。
 - `AERO_FLEX_ACTIVE_JOINTS`：柔性抓取参与闭合的 compact 关节，默认 `1,2,3,4,5,6`。
 - `AERO_FLEX_REQUIRED_FINGERS`：柔性抓取必须完成的手指，默认取 active 中的 `3..6`；如果只用两指抓可设为 `3,4`。
 - `AERO_FLEX_PROFILE_DELTA_MA`：相对空载曲线额外增加多少 mA 判定接触，默认 `180`。
@@ -201,7 +201,7 @@ HAND_GRASP_MODE=flex
 
 ```bash
 cd /home/nvidia/grasp/dipan
-python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 80 --step 2 --fast --disable-trigger --release-after --log /tmp/aero_empty.csv
+python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 80 --step 2 --fast --disable-trigger --release-after --log /home/nvidia/grasp/dipan/runtime/aero_empty.csv
 ```
 
 如果要恢复旧的侧面瓶子固定手势：
@@ -260,9 +260,9 @@ python3 test_aero_current_grasp.py --release-after
 如果空载弯曲本身就会让电流上升，先录一条空载曲线，再按同角度差值判断：
 
 ```bash
-python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 60 --step 2 --fast --disable-trigger --release-after --log /tmp/aero_empty.csv
-python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 60 --step 1 --profile /tmp/aero_empty.csv --profile-delta-ma 180 --min-cmd 15 --consecutive 2 --release-after
-python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 80 --step 2 --fast --profile /tmp/aero_empty.csv --profile-delta-ma 180 --min-cmd 15 --consecutive 2 --per-finger --extra-close 8 --thumb-follow --release-after
+python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 60 --step 2 --fast --disable-trigger --release-after --log /home/nvidia/grasp/dipan/runtime/aero_empty.csv
+python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 60 --step 1 --profile /home/nvidia/grasp/dipan/runtime/aero_empty.csv --profile-delta-ma 180 --min-cmd 15 --consecutive 2 --release-after
+python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 80 --step 2 --fast --profile /home/nvidia/grasp/dipan/runtime/aero_empty.csv --profile-delta-ma 180 --min-cmd 15 --consecutive 2 --per-finger --extra-close 8 --thumb-follow --release-after
 ```
 
 这会把“正常弯曲/预紧造成的电流”从判断里扣掉，只在比空载曲线额外高出阈值时才停止。
@@ -427,4 +427,10 @@ python3 move_robot.py cancel    # 取消移动
 /api/robot_status
 ```
 
-直到本次目标点的 `move_status=succeeded` 才返回成功；如果刚下发后读到上一轮残留的 `succeeded target=旧点位`，会忽略并继续等待。如果本次任务 `failed`、`canceled` 或超时，会返回非 0，抓取主程序不会继续机械臂放置。
+普通移动直到本次目标点的 `move_status=succeeded` 才返回成功；如果刚下发后读到上一轮残留的 `succeeded target=旧点位`，会忽略并继续等待。如果本次任务 `failed`、`canceled` 或超时，会返回非 0，抓取主程序不会继续机械臂放置。
+
+`charge` 比较特殊：到底充电桩点位后，底盘会进入 `running_status=dock_to_charging_pile` 自动对接，API 可能很久才把 `move_status` 置为 `succeeded`。脚本默认看到本次目标进入 `dock_to_charging_pile` 就返回成功；如果要一直等到底盘最终 `succeeded`，可这样跑：
+
+```bash
+CHARGE_RETURN_ON_DOCKING=0 python3 move_robot.py charge
+```

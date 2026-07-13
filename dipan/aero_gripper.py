@@ -22,6 +22,9 @@ COMPACT_NAMES = [
     "pinky",
 ]
 
+DIPAN_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_AERO_FLEX_PROFILE = os.path.join(DIPAN_DIR, "runtime", "aero_empty.csv")
+
 
 def _parse_index_set(raw, default, min_value=1, max_value=6):
     text = str(raw if raw not in (None, "") else default)
@@ -143,7 +146,7 @@ class AeroGripper:
             delta_ma = float(os.getenv("AERO_FLEX_DELTA_MA", "180"))
             abs_ma = float(os.getenv("AERO_FLEX_ABS_MA", "650"))
             max_steps = int(os.getenv("AERO_FLEX_MAX_STEPS", "300"))
-            profile_path = os.getenv("AERO_FLEX_PROFILE", "/tmp/aero_empty.csv")
+            profile_path = os.getenv("AERO_FLEX_PROFILE", DEFAULT_AERO_FLEX_PROFILE)
             active_joints = _parse_index_set(os.getenv("AERO_FLEX_ACTIVE_JOINTS"), "1,2,3,4,5,6")
             required_raw = os.getenv("AERO_FLEX_REQUIRED_FINGERS", "")
             required_fingers = (
