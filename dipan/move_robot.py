@@ -20,6 +20,29 @@ MARKER_PLACE = os.getenv("MARKER_PLACE", "place_point")
 DEFAULT_WAIT_TIMEOUT_S = int(os.getenv("MOVE_WAIT_TIMEOUT_S", "180"))
 
 
+def response_results(result):
+    """Return the nested API results object when present."""
+    if isinstance(result, dict) and isinstance(result.get("results"), dict):
+        return result["results"]
+    return {}
+
+
+def response_field(result, key, default=None):
+    """Read a field from either the top level or results.* for API version compatibility."""
+    if isinstance(result, dict) and key in result:
+        return result.get(key, default)
+    return response_results(result).get(key, default)
+
+
+def response_error_message(result):
+    """Build a useful error string from inconsistent chassis API responses."""
+    if not isinstance(result, dict):
+        return "无返回"
+    status = result.get("status") or "UNKNOWN"
+    message = result.get("error_message") or response_results(result).get("error_message") or ""
+    return f"status={status}" + (f" error={message}" if message else "")
+
+
 def send_command(sock, cmd):
     """发送指令并接收返回"""
     sock.sendall((cmd + "\n").encode())
@@ -50,10 +73,10 @@ def get_power_status(sock):
 def print_power_summary(power_result):
     """打印简短电量信息"""
     if not power_result or power_result.get("status") != "OK":
-        msg = (power_result or {}).get("error_message", "未知错误")
+        msg = response_error_message(power_result)
         print(f"电量查询失败: {msg}")
         return
-    info = power_result.get("results") or {}
+    info = response_results(power_result)
     capacity = info.get("battery_capacity")
     voltage = info.get("battery_voltage")
     current = info.get("battery_current")
@@ -86,20 +109,28 @@ def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S):
     """等待底盘移动任务完成。成功返回 True, 失败/取消/超时返回 False。"""
     deadline = time.time() + timeout_s
     last_status = None
+    last_query_error = None
     while time.time() < deadline:
         try:
             result = get_robot_status(sock)
         except Exception as e:
-            print(f"[底盘] 查询 robot_status 失败: {e}")
+            err = str(e)
+            if err != last_query_error:
+                print(f"[底盘] robot_status 暂不可用: {err}")
+                last_query_error = err
             time.sleep(1)
             continue
 
         if result.get("status") != "OK":
-            print(f"[底盘] robot_status 异常: {result.get('error_message', '未知错误')}")
+            err = response_error_message(result)
+            if err != last_query_error:
+                print(f"[底盘] robot_status 暂不可用: {err}")
+                last_query_error = err
             time.sleep(1)
             continue
 
-        info = result.get("results") or {}
+        last_query_error = None
+        info = response_results(result)
         move_status = info.get("move_status")
         running_status = info.get("running_status")
         move_target = info.get("move_target")
@@ -128,9 +159,10 @@ def move_to(sock, marker, wait=False):
     result = send_command(sock, cmd)
     print(f"<<< 返回: {json.dumps(result, ensure_ascii=False, indent=2)}")
     if result.get("status") == "OK":
-        print(f"任务已下发，task_id: {result.get('task_id', 'N/A')}")
+        task_id = response_field(result, "task_id", "N/A")
+        print(f"任务已下发，task_id: {task_id}")
     else:
-        print(f"失败: {result.get('error_message', '未知错误')}")
+        print(f"失败: {response_error_message(result)}")
     result = attach_power_status(sock, result)
     if wait and result.get("status") == "OK":
         result["move_done"] = wait_move_done(sock, marker=marker)
