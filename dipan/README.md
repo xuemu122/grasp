@@ -16,6 +16,7 @@
 | `self_collision_guard.py` | Nova5 自碰撞护栏：读取 URDF/SRDF，用胶囊近似在 MovL/MovJ 前检查自身连杆碰撞 |
 | `hand_eye_calib.py` | ArUco 手眼标定，生成 `calib_eye_in_hand.json` |
 | `move_robot.py` | 底盘 TCP 控制，移动到药架/充电点/取消任务，并返回底盘电量 |
+| `test_aero_current_grasp.py` | Aero Hand 电流夹紧测试：0号固定，其余关节渐闭，电流上升后停止 |
 | `shelf_layers.json` | 货架层观察位姿，程序内 `l` 菜单维护 |
 | `place_point.json` | 放置点位姿，程序内 `p` 菜单维护 |
 | `place_transition.json` | 放置过渡点位姿，程序内 `p` 菜单维护 |
@@ -201,6 +202,50 @@ HAND_GRASP_MODE=bottle
 ```bash
 HAND_GRASP_MODE=auto DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 ```
+
+## Aero 电流夹紧测试
+
+单独测试灵巧手“电流变大即停止”：
+
+```bash
+cd /home/nvidia/grasp/dipan
+python3 test_aero_current_grasp.py
+```
+
+默认流程：
+
+- 0 号关节固定 `80`
+- 1-6 号关节从 `0` 开始，每步增加 `2`
+- 每步读取 7 路电机电流，单位 mA
+- 1-6 号任意一路满足 `相对基线增加 >= 180mA` 或 `绝对电流 >= 650mA` 时停止
+- 低于 `--min-cmd` 的早期尖峰只记录不停止，默认 `5`
+- 默认需要连续 `2` 步超过阈值才停止，避免刚启动的瞬时电流误触发
+- 停止后保持 5 秒，不主动张开；加 `--release-after` 可测试结束后张开
+
+常用调参：
+
+```bash
+python3 test_aero_current_grasp.py --step 1 --delta-ma 120 --abs-ma 300 --min-cmd 8 --consecutive 3 --settle 0.3 --samples 5
+python3 test_aero_current_grasp.py --step 1 --delta-ma 120 --abs-ma 300 --ignore-actuators 5
+python3 test_aero_current_grasp.py --active-joints 3 --max 45 --release-after  # 只测食指
+python3 test_aero_current_grasp.py --active-joints 4 --max 45 --release-after  # 只测中指
+python3 test_aero_current_grasp.py --active-joints 5 --max 45 --release-after  # 只测无名指
+python3 test_aero_current_grasp.py --active-joints 6 --max 45 --release-after  # 只测小指
+python3 test_aero_current_grasp.py --torque-limit 250 --step 1 --delta-ma 120 --abs-ma 300 --min-cmd 8
+python3 test_aero_current_grasp.py --max 70 --hold-seconds 10
+python3 test_aero_current_grasp.py --release-after
+```
+
+每次会把日志写到 `/tmp/aero_current_grasp_*.csv`，里面有每步命令角度、电流、相对基线增量和触发原因。
+
+如果空载弯曲本身就会让电流上升，先录一条空载曲线，再按同角度差值判断：
+
+```bash
+python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 60 --step 1 --disable-trigger --release-after --log /tmp/aero_empty.csv
+python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 60 --step 1 --profile /tmp/aero_empty.csv --profile-delta-ma 180 --min-cmd 15 --consecutive 2 --release-after
+```
+
+这会把“正常弯曲/预紧造成的电流”从判断里扣掉，只在比空载曲线额外高出阈值时才停止。
 
 目标选择支持两层规则：先按目标关键词过滤，再由 `pick_target_box()` 做几何选择。主菜单里输入 `?` 可查看当前模型的全部 `class_id:class_name`；输入 `c` 可以设置任意目标商品/类别/id；也可以直接输入目标名开始抓取，例如 `雪碧`、`褪黑素`、`sprite`、`ths`、`class_id:63`。输入 `all` 或 `clear` 会清空目标，恢复任意候选抓取。
 
