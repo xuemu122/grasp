@@ -65,6 +65,18 @@ def _nearest_profile_abs(profile, command_value):
     return min(profile, key=lambda item: abs(item[0] - command_value))
 
 
+def _profile_abs_envelope(profile, command_value, window_deg):
+    nearest_cmd, nearest_abs = _nearest_profile_abs(profile, command_value)
+    window = abs(float(window_deg))
+    if window <= 1e-6:
+        return nearest_cmd, nearest_abs
+    rows = [abs_ma for cmd, abs_ma in profile if abs(cmd - float(command_value)) <= window]
+    if not rows:
+        return nearest_cmd, nearest_abs
+    envelope = [max(row[i] for row in rows) for i in range(7)]
+    return nearest_cmd, envelope
+
+
 def _current_summary(currents, baseline):
     abs_curr = [abs(v) for v in currents]
     delta = [max(0.0, abs(currents[i]) - abs(baseline[i])) for i in range(7)]
@@ -143,6 +155,7 @@ class AeroGripper:
             consecutive = max(1, int(os.getenv("AERO_FLEX_CONSECUTIVE", "2")))
             extra_close = float(os.getenv("AERO_FLEX_EXTRA_CLOSE", "8"))
             profile_delta_ma = float(os.getenv("AERO_FLEX_PROFILE_DELTA_MA", "180"))
+            profile_window_deg = float(os.getenv("AERO_FLEX_PROFILE_WINDOW_DEG", "6"))
             delta_ma = float(os.getenv("AERO_FLEX_DELTA_MA", "180"))
             abs_ma = float(os.getenv("AERO_FLEX_ABS_MA", "650"))
             max_steps = int(os.getenv("AERO_FLEX_MAX_STEPS", "300"))
@@ -183,7 +196,8 @@ class AeroGripper:
             print(
                 "[Aero] 柔性抓取开始: "
                 f"active={sorted(active_joints)} required={sorted(required_fingers)} "
-                f"max={max_cmd:.0f} step={step:.1f} extra={extra_close:.1f}"
+                f"max={max_cmd:.0f} step={step:.1f} extra={extra_close:.1f} "
+                f"profile_window=±{profile_window_deg:.1f}°"
             )
 
             for step_idx in range(max_steps):
@@ -200,7 +214,11 @@ class AeroGripper:
                 profile_extra = [0.0] * 7
                 if empty_profile:
                     for idx in range(1, 7):
-                        _, profile_abs = _nearest_profile_abs(empty_profile, values.get(idx, start))
+                        _, profile_abs = _profile_abs_envelope(
+                            empty_profile,
+                            values.get(idx, start),
+                            profile_window_deg,
+                        )
                         profile_extra[idx] = max(0.0, abs_curr[idx] - profile_abs[idx])
                         if profile_extra[idx] >= profile_delta_ma:
                             over.append(idx)
@@ -220,10 +238,26 @@ class AeroGripper:
                         continue
                     hit_counts[idx] = hit_counts[idx] + 1 if idx in active_over else 0
                     if hit_counts[idx] >= consecutive:
+                        trigger_cmd = values.get(idx, start)
                         lock_value = min(max_cmd, values.get(idx, start) + extra_close)
                         values[idx] = lock_value
                         locked[idx] = lock_value
-                        events.append(f"{idx}:{COMPACT_NAMES[idx]}@{lock_value:.0f}")
+                        if empty_profile:
+                            _, profile_abs = _profile_abs_envelope(empty_profile, trigger_cmd, profile_window_deg)
+                            reason = (
+                                f"extra={profile_extra[idx]:.0f}mA "
+                                f"abs={abs_curr[idx]:.0f}mA empty_env={profile_abs[idx]:.0f}mA "
+                                f"hit={hit_counts[idx]}/{consecutive}"
+                            )
+                        else:
+                            reason = (
+                                f"delta={delta[idx]:.0f}mA abs={abs_curr[idx]:.0f}mA "
+                                f"hit={hit_counts[idx]}/{consecutive}"
+                            )
+                        events.append(
+                            f"{idx}:{COMPACT_NAMES[idx]} trigger@{trigger_cmd:.0f} "
+                            f"lock@{lock_value:.0f} ({reason})"
+                        )
 
                 for idx in active_joints:
                     if idx not in locked:

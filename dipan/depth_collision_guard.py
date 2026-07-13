@@ -37,6 +37,7 @@ def depth_to_robot_obstacles(
     self_hand_dir_m: Optional[Sequence[float]] = None,
     self_hand_length_m: float = 0.25,
     self_hand_radius_m: float = 0.07,
+    self_hand_radius_profile_m: Optional[Sequence[Tuple[float, float, float]]] = None,
     self_hand_backoff_m: float = 0.03,
     return_pixels: bool = False,
 ) -> np.ndarray:
@@ -100,8 +101,10 @@ def depth_to_robot_obstacles(
         flange_xyz = np.asarray(pose[:3], dtype=np.float32) / 1000.0
         hand_start = flange_xyz - float(self_hand_backoff_m) * hand_dir
         hand_end = flange_xyz + float(self_hand_length_m) * hand_dir
-        self_dist = _point_segment_distances(base_pts, hand_start, hand_end)
-        keep = self_dist > float(self_hand_radius_m)
+        self_dist, self_closest = _point_segment_distances_and_closest(base_pts, hand_start, hand_end)
+        self_axial = (self_closest - flange_xyz[None, :]) @ hand_dir
+        self_radius = _radius_for_axial(self_axial, float(self_hand_radius_m), self_hand_radius_profile_m)
+        keep = self_dist > self_radius
         base_pts = base_pts[keep]
         pixels = pixels[keep]
 
@@ -127,6 +130,22 @@ def _point_segment_distances(points: np.ndarray, a: np.ndarray, b: np.ndarray) -
     return distances
 
 
+def _radius_for_axial(
+    axial_m: np.ndarray,
+    default_radius_m: float,
+    radius_profile_m: Optional[Sequence[Tuple[float, float, float]]],
+) -> np.ndarray:
+    radius = np.full(axial_m.shape, float(default_radius_m), dtype=np.float32)
+    if not radius_profile_m:
+        return radius
+    for start_m, end_m, radius_m in radius_profile_m:
+        lo = min(float(start_m), float(end_m))
+        hi = max(float(start_m), float(end_m))
+        mask = (axial_m >= lo) & (axial_m <= hi)
+        radius[mask] = float(radius_m)
+    return radius
+
+
 def _camera_depth_aligned(
     points: np.ndarray,
     closest: np.ndarray,
@@ -148,6 +167,7 @@ def check_hand_path(
     hand_dir_m: Sequence[float],
     hand_length_m: float,
     hand_radius_m: float,
+    hand_radius_profile_m: Optional[Sequence[Tuple[float, float, float]]] = None,
     samples: int = 8,
     camera_depth_axis_m: Optional[Sequence[float]] = None,
     camera_depth_tolerance_m: Optional[float] = None,
@@ -171,16 +191,18 @@ def check_hand_path(
         d, closest = _point_segment_distances_and_closest(points, flange, fingertip)
         if d.size:
             depth_ok = _camera_depth_aligned(points, closest, camera_depth_axis_m, camera_depth_tolerance_m)
+            point_axial = (points - flange[None, :]) @ hand_dir
+            closest_axial = (closest - flange[None, :]) @ hand_dir
             if axis_min_m is not None or axis_max_m is not None:
-                axial = (points - flange[None, :]) @ hand_dir
                 if axis_min_m is not None:
-                    depth_ok &= axial >= float(axis_min_m)
+                    depth_ok &= point_axial >= float(axis_min_m)
                 if axis_max_m is not None:
-                    depth_ok &= axial <= float(axis_max_m)
+                    depth_ok &= point_axial <= float(axis_max_m)
             if np.any(depth_ok):
                 local_min = float(np.min(d[depth_ok]))
                 min_dist = min(min_dist, local_min)
-                hit_count += int(np.count_nonzero((d < hand_radius_m) & depth_ok))
+                radius = _radius_for_axial(closest_axial, float(hand_radius_m), hand_radius_profile_m)
+                hit_count += int(np.count_nonzero((d < radius) & depth_ok))
 
     return DepthGuardResult(hit_count == 0, min_dist, hit_count, int(points.shape[0]))
 
@@ -192,6 +214,7 @@ def hand_path_hit_mask(
     hand_dir_m: Sequence[float],
     hand_length_m: float,
     hand_radius_m: float,
+    hand_radius_profile_m: Optional[Sequence[Tuple[float, float, float]]] = None,
     samples: int = 8,
     camera_depth_axis_m: Optional[Sequence[float]] = None,
     camera_depth_tolerance_m: Optional[float] = None,
@@ -208,17 +231,21 @@ def hand_path_hit_mask(
     hand_dir = hand_dir / max(float(np.linalg.norm(hand_dir)), 1e-9)
 
     min_dist = np.full((points.shape[0],), np.inf, dtype=np.float32)
+    hit_mask = np.zeros((points.shape[0],), dtype=bool)
     for alpha in np.linspace(0.0, 1.0, max(2, int(samples))):
         flange = (1.0 - alpha) * start + alpha * end
         fingertip = flange + float(hand_length_m) * hand_dir
         d, closest = _point_segment_distances_and_closest(points, flange, fingertip)
         d = d.astype(np.float32)
         depth_ok = _camera_depth_aligned(points, closest, camera_depth_axis_m, camera_depth_tolerance_m)
+        point_axial = (points - flange[None, :]) @ hand_dir
+        closest_axial = (closest - flange[None, :]) @ hand_dir
         if axis_min_m is not None or axis_max_m is not None:
-            axial = (points - flange[None, :]) @ hand_dir
             if axis_min_m is not None:
-                depth_ok &= axial >= float(axis_min_m)
+                depth_ok &= point_axial >= float(axis_min_m)
             if axis_max_m is not None:
-                depth_ok &= axial <= float(axis_max_m)
+                depth_ok &= point_axial <= float(axis_max_m)
         min_dist[depth_ok] = np.minimum(min_dist[depth_ok], d[depth_ok])
-    return min_dist < float(hand_radius_m), min_dist
+        radius = _radius_for_axial(closest_axial, float(hand_radius_m), hand_radius_profile_m)
+        hit_mask |= (d < radius) & depth_ok
+    return hit_mask, min_dist

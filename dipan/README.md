@@ -58,6 +58,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `AERO_FLEX_ACTIVE_JOINTS`：柔性抓取参与闭合的 compact 关节，默认 `1,2,3,4,5,6`。
 - `AERO_FLEX_REQUIRED_FINGERS`：柔性抓取必须完成的手指，默认取 active 中的 `3..6`；如果只用两指抓可设为 `3,4`。
 - `AERO_FLEX_PROFILE_DELTA_MA`：相对空载曲线额外增加多少 mA 判定接触，默认 `180`。
+- `AERO_FLEX_PROFILE_WINDOW_DEG`：读取空载曲线时取附近角度电流上包络，默认 `6` 度；用于抑制某个角度空载电流异常偏低导致误触发。
 - `AERO_FLEX_EXTRA_CLOSE`：单根手指检测到接触后继续闭合多少度再锁住，默认 `8`。
 - `ROBOT_POLL_S`：等待 DOBOT 运动完成时的状态轮询间隔，默认 `0.2` 秒。
 - `PLACE_TRANSITION_CP`：放置路径经过过渡点时的平滑过渡比例，默认 `60`；调大更顺滑，但会更明显地绕过中间点。
@@ -82,8 +83,11 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `SELF_COLLISION_VERBOSE`：自碰撞护栏通过时是否打印最近余量，默认关闭。
 - `DOBOT_IK_VERBOSE`：是否打印自碰撞检查用的 `InverseKin` 请求/响应，默认关闭；排查 IK 失败时可开启。
 - `DEPTH_GUARD_ENABLE`：深度护栏开关，默认开启；会排除当前画面中所有检测框，把其余深度点当成货架/障碍，检查对齐和探入路径。
-- `DEPTH_GUARD_CLEARANCE_M`：深度护栏额外安全余量，默认 `0.002` m；默认手部半径按 `HAND_W_Y/2 + 余量` 计算。
-- `DEPTH_GUARD_HAND_RADIUS_M`：灵巧手安全半径，默认约 `0.0495` m；等于 95mm 手宽的一半再加 2mm 余量。误拦截可调小到 `0.0475`，仍擦碰可调大到 `0.055`。
+- `HAND_PALM_LENGTH_M`：法兰到掌心前端长度，默认 `0.157` m；之后到指尖的部分按手指建模。
+- `HAND_FINGER_THICKNESS_M`：手指厚度，默认 `0.03` m。
+- `DEPTH_GUARD_CLEARANCE_M`：深度护栏额外安全余量，默认 `0.002` m。
+- `DEPTH_GUARD_HAND_RADIUS_M`：掌心段安全半径，默认约 `0.0495` m；等于 95mm 掌心宽度的一半再加 2mm 余量。
+- `DEPTH_GUARD_FINGER_RADIUS_M`：手指段安全半径，默认约 `0.017` m；等于 30mm 手指厚度的一半再加 2mm 余量。
 - `DEPTH_GUARD_APPROACH_LENGTH_M`：对齐路径使用的手部检查长度，默认 `0.08` m；对齐阶段只检查法兰/手掌根部附近，避免把准备抓的货物前方误判成碰撞。最后探入仍使用完整手长。
 - `DEPTH_GUARD_STRIDE`：深度点采样步长，默认 `8`；调小更密但更慢，调大更快但可能漏细杆/边缘。
 - `DEPTH_GUARD_PATH_SAMPLES`：路径采样次数，默认 `8`；运动路径长或拐得多时可调大。
@@ -268,8 +272,8 @@ python3 test_aero_current_grasp.py --release-after
 
 ```bash
 python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 60 --step 2 --fast --disable-trigger --release-after --log /home/nvidia/grasp/dipan/runtime/aero_empty.csv
-python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 60 --step 1 --profile /home/nvidia/grasp/dipan/runtime/aero_empty.csv --profile-delta-ma 180 --min-cmd 15 --consecutive 2 --release-after
-python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 80 --step 2 --fast --profile /home/nvidia/grasp/dipan/runtime/aero_empty.csv --profile-delta-ma 180 --min-cmd 15 --consecutive 2 --per-finger --extra-close 8 --thumb-follow --release-after
+python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 60 --step 1 --profile /home/nvidia/grasp/dipan/runtime/aero_empty.csv --profile-delta-ma 180 --profile-window-deg 6 --min-cmd 15 --consecutive 2 --release-after
+python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 80 --step 2 --fast --profile /home/nvidia/grasp/dipan/runtime/aero_empty.csv --profile-delta-ma 180 --profile-window-deg 6 --min-cmd 15 --consecutive 2 --per-finger --extra-close 8 --thumb-follow --release-after
 ```
 
 这会把“正常弯曲/预紧造成的电流”从判断里扣掉，只在比空载曲线额外高出阈值时才停止。

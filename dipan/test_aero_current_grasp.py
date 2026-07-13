@@ -52,6 +52,7 @@ def parse_args():
     parser.add_argument("--disable-trigger", action="store_true", help="只记录电流曲线, 不因电流停止")
     parser.add_argument("--profile", default=os.getenv("AERO_TEST_PROFILE", ""), help="空载CSV曲线; 有值时按同角度空载电流差值触发")
     parser.add_argument("--profile-delta-ma", type=float, default=float(os.getenv("AERO_TEST_PROFILE_DELTA_MA", "180")), help="相对空载曲线额外增加多少mA才触发")
+    parser.add_argument("--profile-window-deg", type=float, default=float(os.getenv("AERO_TEST_PROFILE_WINDOW_DEG", "6")), help="空载曲线附近角度包络窗口; 默认±6度")
     parser.add_argument("--per-finger", action="store_true", help="3-6号四根手指分开判断; 全部抓紧后退出")
     parser.add_argument("--required-fingers", default=os.getenv("AERO_TEST_REQUIRED_FINGERS", ""), help="per-finger模式下必须抓紧的手指; 默认使用active-joints里的3-6")
     parser.add_argument("--extra-close", type=float, default=float(os.getenv("AERO_TEST_EXTRA_CLOSE", "8")), help="单根手指触发后继续闭合多少度再锁住")
@@ -103,6 +104,18 @@ def load_empty_profile(path):
 def nearest_profile_abs(profile, command_value):
     cmd, abs_ma = min(profile, key=lambda item: abs(item[0] - command_value))
     return cmd, abs_ma
+
+
+def profile_abs_envelope(profile, command_value, window_deg):
+    nearest_cmd, nearest_abs = nearest_profile_abs(profile, command_value)
+    window = abs(float(window_deg))
+    if window <= 1e-6:
+        return nearest_cmd, nearest_abs
+    rows = [abs_ma for cmd, abs_ma in profile if abs(cmd - float(command_value)) <= window]
+    if not rows:
+        return nearest_cmd, nearest_abs
+    envelope = [max(row[i] for row in rows) for i in range(7)]
+    return nearest_cmd, envelope
 
 
 def parse_index_set(raw, label, min_value=0, max_value=6):
@@ -165,7 +178,7 @@ def triggered_actuators(args, ignored, currents, baseline, empty_profile, comman
     profile_extra = None
     profile_cmd = None
     if empty_profile:
-        profile_cmd, profile_abs = nearest_profile_abs(empty_profile, command_value)
+        profile_cmd, profile_abs = profile_abs_envelope(empty_profile, command_value, args.profile_window_deg)
         profile_extra = [max(0.0, abs_curr[i] - profile_abs[i]) for i in range(7)]
         over = [
             i for i in range(1, 7)
@@ -223,7 +236,10 @@ def main():
     if args.disable_trigger:
         print("[Aero测试] disable-trigger=on: 只记录曲线, 不会因电流停止")
     if empty_profile:
-        print(f"[Aero测试] 使用空载曲线: {args.profile}, profile_delta={args.profile_delta_ma:.0f}mA")
+        print(
+            f"[Aero测试] 使用空载曲线: {args.profile}, "
+            f"profile_delta={args.profile_delta_ma:.0f}mA, window=±{args.profile_window_deg:.1f}°"
+        )
     if args.per_finger:
         print(
             "[Aero测试] per-finger=on: "
@@ -300,7 +316,11 @@ def main():
                     if empty_profile:
                         profile_extra = [0.0] * 7
                         for idx in range(1, 7):
-                            profile_cmd, profile_abs = nearest_profile_abs(empty_profile, values.get(idx, args.start))
+                            profile_cmd, profile_abs = profile_abs_envelope(
+                                empty_profile,
+                                values.get(idx, args.start),
+                                args.profile_window_deg,
+                            )
                             profile_extra[idx] = max(0.0, abs_curr[idx] - profile_abs[idx])
                             if idx not in ignored and profile_extra[idx] >= args.profile_delta_ma:
                                 over.append(idx)

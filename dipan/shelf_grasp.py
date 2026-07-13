@@ -58,13 +58,15 @@ def _parse_float_list_env(name, default):
 # 参数
 # ============================================================
 HAND_LENGTH = 0.25      # 法兰 → 指尖 (米)
+HAND_PALM_LENGTH_M = float(os.getenv("HAND_PALM_LENGTH_M", "0.157"))  # 法兰 → 掌心前端 (米)
+HAND_FINGER_THICKNESS_M = float(os.getenv("HAND_FINGER_THICKNESS_M", "0.03"))  # 手指厚度 (米)
 HAND_WEIGHT = 0.6       # 末端重量 (kg), Aero Hand
 HAND_W_Y = 0.095        # 手 Y 方向宽度 (米)
 HAND_W_X = 0.08         # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.13, 0.02, 0.018)
+SIDE_GRASP_OFFSET_M = (-0.13, 0.02, 0.008)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.035)
 
@@ -106,12 +108,14 @@ DEPTH_GUARD_ENABLE = os.getenv("DEPTH_GUARD_ENABLE", "1").lower() in ("1", "true
 DEPTH_GUARD_STRIDE = int(os.getenv("DEPTH_GUARD_STRIDE", "8"))
 DEPTH_GUARD_CLEARANCE_M = float(os.getenv("DEPTH_GUARD_CLEARANCE_M", "0.002"))
 DEPTH_GUARD_HAND_RADIUS_M = float(os.getenv("DEPTH_GUARD_HAND_RADIUS_M", str(HAND_W_Y * 0.5 + DEPTH_GUARD_CLEARANCE_M)))
+DEPTH_GUARD_FINGER_RADIUS_M = float(os.getenv("DEPTH_GUARD_FINGER_RADIUS_M", str(HAND_FINGER_THICKNESS_M * 0.5 + DEPTH_GUARD_CLEARANCE_M)))
 DEPTH_GUARD_APPROACH_LENGTH_M = float(os.getenv("DEPTH_GUARD_APPROACH_LENGTH_M", "0.08"))
 DEPTH_GUARD_PATH_SAMPLES = int(os.getenv("DEPTH_GUARD_PATH_SAMPLES", "8"))
 DEPTH_GUARD_MAX_DEPTH_M = float(os.getenv("DEPTH_GUARD_MAX_DEPTH_M", "1.20"))
 DEPTH_GUARD_EXCLUDE_MARGIN_PX = int(os.getenv("DEPTH_GUARD_EXCLUDE_MARGIN_PX", "32"))
 DEPTH_GUARD_SELF_MASK_ENABLE = os.getenv("DEPTH_GUARD_SELF_MASK_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 DEPTH_GUARD_SELF_MASK_RADIUS_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_RADIUS_M", str(DEPTH_GUARD_HAND_RADIUS_M + 0.02)))
+DEPTH_GUARD_SELF_MASK_FINGER_RADIUS_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_FINGER_RADIUS_M", str(DEPTH_GUARD_FINGER_RADIUS_M + 0.02)))
 DEPTH_GUARD_SELF_MASK_LENGTH_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_LENGTH_M", str(HAND_LENGTH)))
 DEPTH_GUARD_SELF_MASK_BACKOFF_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_BACKOFF_M", "0.03"))
 DEPTH_GUARD_DEPTH_ALIGN_ENABLE = os.getenv("DEPTH_GUARD_DEPTH_ALIGN_ENABLE", "1").lower() in ("1", "true", "yes", "on")
@@ -155,6 +159,26 @@ def _current_layer_allows_low_z() -> bool:
     return _layer_allows_low_z(_current_layer_idx)
 
 
+def _depth_guard_hand_radius_profile(hand_length_m=HAND_LENGTH, self_mask=False):
+    length = max(0.0, float(hand_length_m))
+    palm_len = max(0.0, min(float(HAND_PALM_LENGTH_M), length))
+    palm_radius = DEPTH_GUARD_SELF_MASK_RADIUS_M if self_mask else DEPTH_GUARD_HAND_RADIUS_M
+    finger_radius = DEPTH_GUARD_SELF_MASK_FINGER_RADIUS_M if self_mask else DEPTH_GUARD_FINGER_RADIUS_M
+    profile = []
+    if palm_len > 1e-6:
+        profile.append((0.0, palm_len, palm_radius))
+    if length > palm_len + 1e-6:
+        profile.append((palm_len, length, finger_radius))
+    return profile
+
+
+def _depth_guard_radius_label():
+    return (
+        f"掌{DEPTH_GUARD_HAND_RADIUS_M*1000:.0f}mm/"
+        f"指{DEPTH_GUARD_FINGER_RADIUS_M*1000:.0f}mm"
+    )
+
+
 def _depth_guard_path_ok(
     label,
     obstacle_points_m,
@@ -181,6 +205,7 @@ def _depth_guard_path_ok(
         hand_dir_m,
         hand_length_m,
         DEPTH_GUARD_HAND_RADIUS_M,
+        hand_radius_profile_m=_depth_guard_hand_radius_profile(hand_length_m),
         samples=DEPTH_GUARD_PATH_SAMPLES,
         camera_depth_axis_m=camera_depth_axis_m if DEPTH_GUARD_DEPTH_ALIGN_ENABLE else None,
         camera_depth_tolerance_m=DEPTH_GUARD_DEPTH_ALIGN_TOLERANCE_M if DEPTH_GUARD_DEPTH_ALIGN_ENABLE else None,
@@ -192,7 +217,7 @@ def _depth_guard_path_ok(
         print(
             f"  [深度护栏] {label}: 最近 {min_dist_mm:.0f}mm, "
             f"命中 {result.hit_count}/{result.checked_points}, "
-            f"半径 {DEPTH_GUARD_HAND_RADIUS_M*1000:.0f}mm, "
+            f"半径 {_depth_guard_radius_label()}, "
             f"长度 {hand_length_m*1000:.0f}mm"
             + (
                 f", 深度对齐±{DEPTH_GUARD_DEPTH_ALIGN_TOLERANCE_M*1000:.0f}mm"
@@ -320,6 +345,7 @@ def _save_depth_guard_viz(
         hand_dir_m,
         hand_length_m,
         DEPTH_GUARD_HAND_RADIUS_M,
+        hand_radius_profile_m=_depth_guard_hand_radius_profile(hand_length_m),
         samples=DEPTH_GUARD_PATH_SAMPLES,
         camera_depth_axis_m=camera_depth_axis_m if DEPTH_GUARD_DEPTH_ALIGN_ENABLE else None,
         camera_depth_tolerance_m=DEPTH_GUARD_DEPTH_ALIGN_TOLERANCE_M if DEPTH_GUARD_DEPTH_ALIGN_ENABLE else None,
@@ -368,7 +394,7 @@ def _save_depth_guard_viz(
     min_mm = float(np.min(finite_min) * 1000.0) if len(finite_min) else float("inf")
     cv2.putText(
         viz,
-        f"{label} hit={int(np.count_nonzero(hit_mask))} min={min_mm:.0f}mm r={DEPTH_GUARD_HAND_RADIUS_M*1000:.0f} len={hand_length_m*1000:.0f}",
+        f"{label} hit={int(np.count_nonzero(hit_mask))} min={min_mm:.0f}mm r={_depth_guard_radius_label()} len={hand_length_m*1000:.0f}",
         (12, 24),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.55,
@@ -1131,7 +1157,10 @@ def _toggle_chassis_place():
 def main():
     print("=" * 60)
     print("  货架边缘抓取系统")
-    print(f"  灵巧手: {HAND_LENGTH*100:.0f}cm  {HAND_W_Y*100:.1f}cm×{HAND_W_X*100:.1f}cm  {HAND_WEIGHT}kg")
+    print(
+        f"  灵巧手: 总长{HAND_LENGTH*100:.0f}cm, 掌心{HAND_PALM_LENGTH_M*100:.1f}cm, "
+        f"手指厚{HAND_FINGER_THICKNESS_M*100:.1f}cm, 掌宽{HAND_W_Y*100:.1f}cm, {HAND_WEIGHT}kg"
+    )
     print(f"  手势模式: {HAND_GRASP_MODE}")
     print(f"  目标商品: {TARGET_PRODUCT_QUERY or '未指定'}")
     if SHELF_GRASP_WORKER:
@@ -1568,6 +1597,10 @@ def main():
                     self_hand_dir_m=fz_dir,
                     self_hand_length_m=DEPTH_GUARD_SELF_MASK_LENGTH_M,
                     self_hand_radius_m=DEPTH_GUARD_SELF_MASK_RADIUS_M,
+                    self_hand_radius_profile_m=_depth_guard_hand_radius_profile(
+                        DEPTH_GUARD_SELF_MASK_LENGTH_M,
+                        self_mask=True,
+                    ),
                     self_hand_backoff_m=DEPTH_GUARD_SELF_MASK_BACKOFF_M,
                     return_pixels=True,
                 )
@@ -1576,7 +1609,7 @@ def main():
                     f"(stride={DEPTH_GUARD_STRIDE}, max_depth={DEPTH_GUARD_MAX_DEPTH_M:.2f}m, "
                     f"排除框={len(depth_guard_exclude_bboxes)}, 外扩={DEPTH_GUARD_EXCLUDE_MARGIN_PX}px, "
                     f"自手部={'on' if DEPTH_GUARD_SELF_MASK_ENABLE else 'off'} "
-                    f"r={DEPTH_GUARD_SELF_MASK_RADIUS_M*1000:.0f}mm, "
+                    f"r=掌{DEPTH_GUARD_SELF_MASK_RADIUS_M*1000:.0f}/指{DEPTH_GUARD_SELF_MASK_FINGER_RADIUS_M*1000:.0f}mm, "
                     f"深度对齐={'on' if DEPTH_GUARD_DEPTH_ALIGN_ENABLE else 'off'} "
                     f"±{DEPTH_GUARD_DEPTH_ALIGN_TOLERANCE_M*1000:.0f}mm)"
                 )
