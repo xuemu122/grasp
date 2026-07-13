@@ -14,6 +14,7 @@ LAYER_Z_FILTER_ENABLE = os.getenv("LAYER_Z_FILTER_ENABLE", "1").lower() in ("1",
 LAYER_Z_TOLERANCE_M = float(os.getenv("LAYER_Z_TOLERANCE_M", "0.16"))
 MAX_GRASP_DEPTH_M = float(os.getenv("MAX_GRASP_DEPTH_M", "0.52"))  # 超过此深度的物品不抓取，避免碰撞
 ALLOW_NO_DEPTH_GRASP = os.getenv("ALLOW_NO_DEPTH_GRASP", "0").lower() in ("1", "true", "yes", "on")
+FORCE_SIDE_GRASP = os.getenv("FORCE_SIDE_GRASP", "0").lower() in ("1", "true", "yes", "on")
 
 
 def axis_aligned_approach_m(current_xyz_m, grasp_xyz_m, forward_dir, min_backoff_m):
@@ -134,7 +135,7 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
     """
     边缘抓取:
       - 盒宽 <= 8cm: 侧边缘 (x1/x2) + 离底部至少 SIDE_GRASP_MIN_HEIGHT_M 的安全高度
-      - 盒宽 > 8cm: 上边缘 (y1) + 中心 X
+      - 盒宽 > 8cm: 上边缘 (y1) + 中心 X; FORCE_SIDE_GRASP=1 时临时强制侧抓
     返回: (world_x, world_y, world_z, grasp_mode, p_cam)
     """
     x1, y1, x2, y2 = det.bbox
@@ -147,7 +148,7 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
     real_h = pixel_h * depth / fy
     print(f"  盒宽: {pixel_w}px → {real_w*100:.1f}cm, 盒高: {pixel_h}px → {real_h*100:.1f}cm")
 
-    if real_w <= 0.08:
+    if FORCE_SIDE_GRASP or real_w <= 0.08:
         edge_u = x1 if edge == "left" else x2
         p_bottom_cam = transformer.pixel_to_camera(edge_u, y2, depth)
         p_top_cam = transformer.pixel_to_camera(edge_u, y1, depth)
@@ -155,7 +156,7 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
         p_top_robot = transformer.camera_to_robot(p_top_cam, flange_pose, debug=False)
         world_h = p_top_robot[2] - p_bottom_robot[2]
 
-        if real_h <= SIDE_GRASP_MIN_HEIGHT_M or world_h <= SIDE_GRASP_MIN_HEIGHT_M:
+        if not FORCE_SIDE_GRASP and (real_h <= SIDE_GRASP_MIN_HEIGHT_M or world_h <= SIDE_GRASP_MIN_HEIGHT_M):
             edge_u = (x1 + x2) / 2
             edge_v = y1
             mode = "top_center"
@@ -164,8 +165,15 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
                 f"{SIDE_GRASP_MIN_HEIGHT_M*100:.1f}cm, 改为上面抓取"
             )
         else:
-            midpoint_height_m = real_h / 2
-            pixel_ratio = max(midpoint_height_m / real_h, SIDE_GRASP_MIN_HEIGHT_M / world_h)
+            if real_h <= SIDE_GRASP_MIN_HEIGHT_M or world_h <= SIDE_GRASP_MIN_HEIGHT_M:
+                pixel_ratio = 0.5
+                print(
+                    f"  → FORCE_SIDE_GRASP=1: 物体高度 {real_h*100:.1f}cm / Z高差 {world_h*100:.1f}cm "
+                    f"不足侧抓安全高度, 仍临时从{edge}侧中部抓取"
+                )
+            else:
+                midpoint_height_m = real_h / 2
+                pixel_ratio = max(midpoint_height_m / real_h, SIDE_GRASP_MIN_HEIGHT_M / world_h)
             pixel_ratio = max(0.0, min(1.0, pixel_ratio))
             edge_v = y2 + pixel_ratio * (y1 - y2)
             edge_v = max(y1, min(y2, edge_v))
@@ -176,8 +184,9 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
                 pixel_ratio = side_height_m / max(world_h, 0.001)
                 edge_v = y2 + pixel_ratio * (y1 - y2)
                 edge_v = max(y1, min(y2, edge_v))
+            width_label = "强制侧抓" if FORCE_SIDE_GRASP and real_w > 0.08 else "窄盒"
             print(
-                f"  → 窄盒 ({real_w*100:.1f}cm ≤ 8cm), 从{edge}侧边缘抓取, "
+                f"  → {width_label} ({real_w*100:.1f}cm), 从{edge}侧边缘抓取, "
                 f"抓点离底部 Z高差 {side_height_m*100:.1f}cm, 像素=({edge_u:.0f},{edge_v:.0f})"
             )
     else:

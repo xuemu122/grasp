@@ -53,6 +53,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `GRASP_SETTLE_S`：抓取前进、闭手前、后退后的缓冲，默认 `0.4` 秒。
 - `HAND_CLOSE_WAIT_S`：灵巧手闭合后等待物体稳定的时间，默认 `3.0` 秒。
 - `HAND_GRASP_MODE`：灵巧手抓取模式，默认 `flex`，使用电流反馈柔性抓取；可设 `bottle` 使用旧瓶子固定手势，或设 `auto` 使用普通/上抓固定手势。
+- `FORCE_SIDE_GRASP`：是否临时强制所有目标按侧面抓取点规划，默认 `0`，即宽盒/矮盒会自动上抓；设为 `1` 可临时全侧抓。
 - `AERO_FLEX_PROFILE`：柔性抓取空载曲线 CSV，默认 `/home/nvidia/grasp/dipan/runtime/aero_empty.csv`；建议先用 `test_aero_current_grasp.py --disable-trigger` 录制。
 - `AERO_FLEX_ACTIVE_JOINTS`：柔性抓取参与闭合的 compact 关节，默认 `1,2,3,4,5,6`。
 - `AERO_FLEX_REQUIRED_FINGERS`：柔性抓取必须完成的手指，默认取 active 中的 `3..6`；如果只用两指抓可设为 `3,4`。
@@ -184,10 +185,16 @@ q   返回
 
 ## 抓取模式
 
-`plan_edge_grasp()` 会根据检测框宽度自动判断：
+当前默认 `FORCE_SIDE_GRASP=0`，`plan_edge_grasp()` 会根据检测框宽度自动判断：
 
 - 盒宽 `<= 8cm`：侧面抓，使用 `SIDE_GRASP_OFFSET_M`
 - 盒宽 `> 8cm`：上面抓，使用 `TOP_GRASP_OFFSET_M`，抓取前 J6 转到 `TOP_J6_DEG`
+
+如果现场需要临时让所有目标都按侧面抓取点规划：
+
+```bash
+FORCE_SIDE_GRASP=1 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
+```
 
 侧面抓取点不会低于物体底部上方 `6cm`。如果检测框估算出的物体高度小于等于 `6cm`，会自动改成上面抓取，避免手掌或手指低位撞到货架/物体。
 
