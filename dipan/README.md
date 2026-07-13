@@ -427,4 +427,4 @@ python3 move_robot.py cancel    # 取消移动
 /api/robot_status
 ```
 
-直到 `move_status=succeeded` 才返回成功；如果 `failed`、`canceled` 或超时，会返回非 0，抓取主程序不会继续机械臂放置。
+直到本次目标点的 `move_status=succeeded` 才返回成功；如果刚下发后读到上一轮残留的 `succeeded target=旧点位`，会忽略并继续等待。如果本次任务 `failed`、`canceled` 或超时，会返回非 0，抓取主程序不会继续机械臂放置。

@@ -110,6 +110,8 @@ def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S):
     deadline = time.time() + timeout_s
     last_status = None
     last_query_error = None
+    seen_current_task = False
+    seen_stale_status = None
     while time.time() < deadline:
         try:
             result = get_robot_status(sock)
@@ -138,12 +140,31 @@ def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S):
             print(f"[底盘] move_status={move_status} running_status={running_status} target={move_target}")
             last_status = (move_status, running_status, move_target)
 
+        target_matches = (not marker) or (move_target == marker)
+        if target_matches and move_status in ("running", "succeeded"):
+            seen_current_task = True
+
         if move_status == "succeeded":
-            if marker and move_target and move_target != marker:
+            if marker and not target_matches and not seen_current_task:
+                stale = (move_status, move_target)
+                if stale != seen_stale_status:
+                    print(f"[底盘] 忽略上一轮完成状态: target={move_target}, 当前等待 {marker}")
+                    seen_stale_status = stale
+                time.sleep(1)
+                continue
+            if marker and not target_matches:
                 print(f"[底盘] 移动完成, 但目标为 {move_target}, 不是期望 {marker}")
+                return False
             print("[底盘] 已到达目标点")
             return True
         if move_status in ("failed", "canceled"):
+            if marker and not target_matches and not seen_current_task:
+                stale = (move_status, move_target)
+                if stale != seen_stale_status:
+                    print(f"[底盘] 忽略上一轮结束状态: status={move_status} target={move_target}, 当前等待 {marker}")
+                    seen_stale_status = stale
+                time.sleep(1)
+                continue
             print(f"[底盘] 移动任务结束但未成功: {move_status}")
             return False
         time.sleep(1)
