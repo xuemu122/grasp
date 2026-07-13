@@ -88,6 +88,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `DEPTH_GUARD_CLEARANCE_M`：深度护栏额外安全余量，默认 `0.002` m。
 - `DEPTH_GUARD_HAND_RADIUS_M`：掌心段安全半径，默认约 `0.0495` m；等于 95mm 掌心宽度的一半再加 2mm 余量。
 - `DEPTH_GUARD_FINGER_RADIUS_M`：手指段安全半径，默认约 `0.017` m；等于 30mm 手指厚度的一半再加 2mm 余量。
+- `DEPTH_GUARD_SELF_MASK_RADIUS_M` / `DEPTH_GUARD_SELF_MASK_FINGER_RADIUS_M`：从深度障碍点里排除相机看到的自己手，默认约 `0.07` m；只影响“删自己手”，不影响路径碰撞半径。
 - `DEPTH_GUARD_APPROACH_LENGTH_M`：对齐路径使用的手部检查长度，默认 `0.08` m；对齐阶段只检查法兰/手掌根部附近，避免把准备抓的货物前方误判成碰撞。最后探入仍使用完整手长。
 - `DEPTH_GUARD_STRIDE`：深度点采样步长，默认 `8`；调小更密但更慢，调大更快但可能漏细杆/边缘。
 - `DEPTH_GUARD_PATH_SAMPLES`：路径采样次数，默认 `8`；运动路径长或拐得多时可调大。
