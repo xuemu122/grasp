@@ -51,6 +51,10 @@ def parse_args():
     parser.add_argument("--disable-trigger", action="store_true", help="只记录电流曲线, 不因电流停止")
     parser.add_argument("--profile", default=os.getenv("AERO_TEST_PROFILE", ""), help="空载CSV曲线; 有值时按同角度空载电流差值触发")
     parser.add_argument("--profile-delta-ma", type=float, default=float(os.getenv("AERO_TEST_PROFILE_DELTA_MA", "180")), help="相对空载曲线额外增加多少mA才触发")
+    parser.add_argument("--per-finger", action="store_true", help="3-6号四根手指分开判断; 全部抓紧后退出")
+    parser.add_argument("--required-fingers", default=os.getenv("AERO_TEST_REQUIRED_FINGERS", "3,4,5,6"), help="per-finger模式下必须抓紧的手指, 默认3,4,5,6")
+    parser.add_argument("--extra-close", type=float, default=float(os.getenv("AERO_TEST_EXTRA_CLOSE", "8")), help="单根手指触发后继续闭合多少度再锁住")
+    parser.add_argument("--thumb-follow", action="store_true", help="per-finger模式下1/2号拇指继续跟随递增")
     parser.add_argument("--torque-limit", type=int, default=int(os.getenv("AERO_TEST_TORQUE_LIMIT", "0")), help="可选: 先把0-6号位置控制力矩限制到0..1000")
     parser.add_argument("--hold-seconds", type=float, default=float(os.getenv("AERO_TEST_HOLD_SECONDS", "5")), help="触发后保持秒数")
     parser.add_argument("--release-after", action="store_true", help="测试结束后张开")
@@ -122,6 +126,17 @@ def compact_pose(thumb0, value, active_joints):
     return pose
 
 
+def compact_pose_values(thumb0, values_by_joint):
+    pose = OPEN_POSE[:]
+    pose[0] = thumb0
+    for idx, value in values_by_joint.items():
+        if idx == 0:
+            pose[0] = value
+        else:
+            pose[idx] = value
+    return pose
+
+
 def current_summary(currents, baseline):
     abs_curr = [abs(v) for v in currents]
     delta = [max(0.0, abs(currents[i]) - abs(baseline[i])) for i in range(7)]
@@ -143,6 +158,25 @@ def write_log_row(writer, step_idx, command_value, currents, baseline, reason=""
     })
 
 
+def triggered_actuators(args, ignored, currents, baseline, empty_profile, command_value):
+    abs_curr, delta = current_summary(currents, baseline)
+    profile_extra = None
+    profile_cmd = None
+    if empty_profile:
+        profile_cmd, profile_abs = nearest_profile_abs(empty_profile, command_value)
+        profile_extra = [max(0.0, abs_curr[i] - profile_abs[i]) for i in range(7)]
+        over = [
+            i for i in range(1, 7)
+            if i not in ignored and profile_extra[i] >= args.profile_delta_ma
+        ]
+    else:
+        over = [
+            i for i in range(1, 7)
+            if i not in ignored and (delta[i] >= args.delta_ma or abs_curr[i] >= args.abs_ma)
+        ]
+    return over, abs_curr, delta, profile_extra, profile_cmd
+
+
 def main():
     args = parse_args()
     if args.step <= 0:
@@ -153,6 +187,11 @@ def main():
     active_joints = parse_index_set(args.active_joints, "--active-joints", min_value=1, max_value=6)
     if not active_joints:
         raise ValueError("--active-joints 至少需要一个 1..6 的关节")
+    required_fingers = parse_index_set(args.required_fingers, "--required-fingers", min_value=3, max_value=6)
+    if args.per_finger and not required_fingers:
+        raise ValueError("--required-fingers 至少需要一个 3..6 的手指")
+    if args.extra_close < 0:
+        raise ValueError("--extra-close 必须 >= 0")
 
     log_path = args.log or f"/tmp/aero_current_grasp_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     empty_profile = load_empty_profile(args.profile) if args.profile else None
@@ -171,6 +210,12 @@ def main():
         print("[Aero测试] disable-trigger=on: 只记录曲线, 不会因电流停止")
     if empty_profile:
         print(f"[Aero测试] 使用空载曲线: {args.profile}, profile_delta={args.profile_delta_ma:.0f}mA")
+    if args.per_finger:
+        print(
+            "[Aero测试] per-finger=on: "
+            f"required={','.join(str(i) for i in sorted(required_fingers))}, "
+            f"extra_close={args.extra_close:.1f}, thumb_follow={'on' if args.thumb_follow else 'off'}"
+        )
     print(f"[Aero测试] CSV日志: {log_path}")
 
     triggered = False
@@ -209,6 +254,97 @@ def main():
                 raise RuntimeError("无法读取基线电流")
             print("[Aero测试] 基线电流(mA): " + " ".join(f"{v:.1f}" for v in baseline))
 
+            if args.per_finger:
+                values = {idx: args.start for idx in active_joints}
+                for idx in required_fingers:
+                    values.setdefault(idx, args.start)
+                hit_counts = {idx: 0 for idx in required_fingers}
+                locked = {}
+                step_idx = 0
+
+                while any(idx not in locked for idx in required_fingers):
+                    pose = compact_pose_values(args.thumb0, values)
+                    final_pose = pose
+                    hand.set_joint_positions(pose)
+                    time.sleep(args.settle)
+                    currents = read_currents(hand, args.samples, args.sample_delay)
+                    if currents is None:
+                        print(f"[Aero测试][警告] step={step_idx}: 电流读取失败, 继续")
+                        step_idx += 1
+                        continue
+
+                    command_value = max(values.get(idx, args.start) for idx in required_fingers)
+                    abs_curr, delta = current_summary(currents, baseline)
+                    profile_extra = None
+                    profile_cmd = None
+                    over = []
+                    if empty_profile:
+                        profile_extra = [0.0] * 7
+                        for idx in range(1, 7):
+                            profile_cmd, profile_abs = nearest_profile_abs(empty_profile, values.get(idx, args.start))
+                            profile_extra[idx] = max(0.0, abs_curr[idx] - profile_abs[idx])
+                            if idx not in ignored and profile_extra[idx] >= args.profile_delta_ma:
+                                over.append(idx)
+                    else:
+                        over = [
+                            idx for idx in range(1, 7)
+                            if idx not in ignored and (delta[idx] >= args.delta_ma or abs_curr[idx] >= args.abs_ma)
+                        ]
+                    active_over = [idx for idx in over if idx in required_fingers and values.get(idx, args.start) >= args.min_cmd]
+                    events = []
+                    for idx in required_fingers:
+                        if idx in locked:
+                            continue
+                        if idx in active_over:
+                            hit_counts[idx] += 1
+                        else:
+                            hit_counts[idx] = 0
+                        if hit_counts[idx] >= max(1, args.consecutive):
+                            lock_value = min(args.max, values.get(idx, args.start) + args.extra_close)
+                            values[idx] = lock_value
+                            locked[idx] = lock_value
+                            events.append(f"lock:{idx}@{lock_value:.1f}")
+
+                    movable = [idx for idx in active_joints if idx not in locked]
+                    if args.thumb_follow:
+                        movable.extend(idx for idx in (1, 2) if idx not in active_joints)
+                    for idx in set(movable):
+                        values[idx] = min(args.max, values.get(idx, args.start) + args.step)
+
+                    saturated = [
+                        idx for idx in required_fingers
+                        if idx not in locked and values.get(idx, args.start) >= args.max
+                    ]
+                    for idx in saturated:
+                        locked[idx] = values.get(idx, args.max)
+                        events.append(f"max:{idx}@{locked[idx]:.1f}")
+
+                    reason = ";".join(events)
+                    write_log_row(writer, step_idx, command_value, currents, baseline, reason)
+                    f.flush()
+                    value_text = " ".join(f"{idx}:{values.get(idx, 0):.1f}" for idx in range(1, 7))
+                    print(
+                        f"[Aero测试] step={step_idx:03d} values={value_text} "
+                        f"over={over or '-'} locked={sorted(locked)} "
+                        + (
+                            f"profile_cmd={profile_cmd:.1f} max_extra={max(profile_extra[1:]):.1f}mA "
+                            if profile_extra is not None
+                            else f"max_delta={max(delta[1:]):.1f}mA max_abs={max(abs_curr[1:]):.1f}mA "
+                        )
+                        + reason
+                    )
+
+                    if all(idx in locked for idx in required_fingers):
+                        triggered = True
+                        print(
+                            "[Aero测试][完成] 所需手指已抓紧/到上限: "
+                            + ", ".join(f"{idx}:{COMPACT_NAMES[idx]}={locked[idx]:.1f}" for idx in sorted(required_fingers))
+                        )
+                        time.sleep(max(0.0, args.hold_seconds))
+                        break
+                    step_idx += 1
+                return
+
             value = args.start
             step_idx = 0
             consecutive_hits = 0
@@ -224,21 +360,9 @@ def main():
                     step_idx += 1
                     continue
 
-                abs_curr, delta = current_summary(currents, baseline)
-                profile_extra = None
-                profile_cmd = None
-                if empty_profile:
-                    profile_cmd, profile_abs = nearest_profile_abs(empty_profile, value)
-                    profile_extra = [max(0.0, abs_curr[i] - profile_abs[i]) for i in range(7)]
-                    over = [
-                        i for i in range(1, 7)
-                        if i not in ignored and profile_extra[i] >= args.profile_delta_ma
-                    ]
-                else:
-                    over = [
-                        i for i in range(1, 7)
-                        if i not in ignored and (delta[i] >= args.delta_ma or abs_curr[i] >= args.abs_ma)
-                    ]
+                over, abs_curr, delta, profile_extra, profile_cmd = triggered_actuators(
+                    args, ignored, currents, baseline, empty_profile, value
+                )
                 reason = ""
                 active_detection = value >= args.min_cmd
                 if args.disable_trigger:

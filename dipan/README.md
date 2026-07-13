@@ -243,9 +243,11 @@ python3 test_aero_current_grasp.py --release-after
 ```bash
 python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 60 --step 1 --disable-trigger --release-after --log /tmp/aero_empty.csv
 python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 60 --step 1 --profile /tmp/aero_empty.csv --profile-delta-ma 180 --min-cmd 15 --consecutive 2 --release-after
+python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 80 --step 1 --profile /tmp/aero_empty.csv --profile-delta-ma 180 --min-cmd 15 --consecutive 2 --per-finger --extra-close 8 --thumb-follow --release-after
 ```
 
 这会把“正常弯曲/预紧造成的电流”从判断里扣掉，只在比空载曲线额外高出阈值时才停止。
+`--per-finger` 会让 3-6 号四根手指分开判断；某根手指触发后会再闭合 `--extra-close` 度并锁住，直到四根手指都抓紧/到上限才退出。`--thumb-follow` 让 1/2 号拇指继续随步进闭合，但不作为“四指都抓紧”的退出条件。
 
 目标选择支持两层规则：先按目标关键词过滤，再由 `pick_target_box()` 做几何选择。主菜单里输入 `?` 可查看当前模型的全部 `class_id:class_name`；输入 `c` 可以设置任意目标商品/类别/id；也可以直接输入目标名开始抓取，例如 `雪碧`、`褪黑素`、`sprite`、`ths`、`class_id:63`。输入 `all` 或 `clear` 会清空目标，恢复任意候选抓取。
 
