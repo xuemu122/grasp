@@ -69,7 +69,11 @@ function handleWSMessage(msg) {
             } else if (msg.status === 'grabbing') {
                 updateGrabProgress(msg);
             } else if (msg.status === 'completed') {
-                onGrabCompleted(msg);
+                if (msg.orderId && currentOrderId && msg.orderId === currentOrderId) {
+                    onGrabCompleted(msg);
+                } else {
+                    onStowCompleted(msg);
+                }
             } else if (msg.status === 'error') {
                 alert('抓取失败: ' + msg.message);
                 onGrabFailed();
@@ -381,6 +385,11 @@ function stowRobot() {
     ws.send(JSON.stringify({ type: 'stow', timestamp: Date.now() }));
 }
 
+function onStowCompleted(msg) {
+    updateConnectionStatus('standby');
+    logWS(`✅ ${msg.message || '机械臂已收起'}`);
+}
+
 // ========== 更新抓取进度 ==========
 function updateGrabProgress(msg) {
     const progressBar = document.getElementById('progressBar');
@@ -409,8 +418,9 @@ function onGrabCompleted(msg) {
     setTimeout(() => {
         if (overlay) overlay.style.display = 'none';
         updateRobotStatus('online', '机器人就绪');
-        showOrderToast(msg.orderId || currentOrderId, items);
+        showOrderToast(msg.orderId, items);
         cart = {};
+        currentOrderId = null;
         updateCartUI();
         renderProducts();
 
