@@ -49,21 +49,31 @@ TARGET_PRODUCT_QUERY=class_id:63 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 
 主程序里也可以输入 `?` 查看模型类别，输入 `c` 设置目标。
 
-前端点单服务：
+盒子端订单 WebSocket 服务：
 
 ```bash
-/home/nvidia/grasp/start_frontend.sh
+cd /home/nvidia/grasp/qianduan
+PORT=3000 \
+WS_PORT=3001 \
+ROBOT_GRASP_MODE=real \
+DOBOT_IP=192.168.5.1 \
+node server.js
 ```
 
-`npm start` 会自动执行 `init_db.js`，把 Excel 商品表导入到本地 JSON 商品库 `qianduan/data/products.json`。不需要安装或启动 MySQL/MariaDB。前端依赖在 `package.json` 中，目前只有 `ws`、`xlsx`；目录里已有 `node_modules` 时不需要重复安装，缺依赖时执行 `npm install`。
+云端前端通过 WebSocket 向盒子发送 `grab`、`stow` 和 `ping` JSON 指令。真实抓取直接使用订单里的商品 `name`，不再依赖盒子本地 `products.json` 校验；每个商品会按 `qty` 逐件写入常驻 `shelf_grasp.py` worker。盒子默认只回传连接、状态、错误和心跳消息，不广播 worker 内部日志。
 
-默认是模拟抓取，浏览器打开 `http://localhost:3000`。如果要把订单接到真实机械臂抓取：
+FRP 增加 WebSocket TCP 通道：
 
-```bash
-ROBOT_GRASP_MODE=real DOBOT_IP=192.168.5.1 /home/nvidia/grasp/start_frontend.sh
+```toml
+[[proxies]]
+name = "admin_order_ws"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 3001
+remotePort = 5061
 ```
 
-真实模式会启动一个常驻 `dipan/shelf_grasp.py` worker，DOBOT 和 Aero Hand 会一直保持连接/使能，前端点单只向 worker 发送商品名。抓完后不会断开；需要结束时在前端点击“收起”，worker 会回到收起姿态后再关闭连接。真实模式下请先确认机械臂、相机、货架层和放置点已经按主程序调好。
+最终链路为：云端网页 → 云端 Nginx → 云端 `127.0.0.1:5061` → FRP → 盒子 `127.0.0.1:3001` → `server.js` → `shelf_grasp.py`。真实模式会保持 DOBOT 和 Aero Hand 连接/使能；收到 `stow` 后写入 `**stow**`，机械臂回到收起姿态并退出 worker。真实模式下请先确认机械臂、相机、货架层和放置点已经按主程序调好。
 
 手眼标定：
 

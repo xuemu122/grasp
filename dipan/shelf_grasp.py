@@ -1255,13 +1255,13 @@ def main():
             chassis_state = "开" if USE_CHASSIS_PLACE else "关"
             target_state = target_query or "任意"
             if SHELF_GRASP_WORKER:
-                print("\n[前端常驻模式] 等待商品名 (__stow__=收起并退出, __quit__=直接退出) ...", flush=True)
+                print("\n[前端常驻模式] 等待商品名 (**stow**=收起并退出, __quit__=直接退出) ...", flush=True)
                 cmd = sys.stdin.readline()
                 if cmd == "":
                     print("[前端常驻模式] stdin 已关闭, 保持使能并退出程序")
                     break
                 cmd = cmd.strip()
-                if cmd in ("__stow__", "__shutdown__"):
+                if cmd in ("**stow**", "__stow__", "__shutdown__"):
                     print("[前端常驻模式] 收到收起指令")
                     go_to_stow_pose(arm)
                     worker_stow_requested = True

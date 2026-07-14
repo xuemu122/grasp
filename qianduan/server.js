@@ -10,7 +10,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { WebSocketServer } = require('ws');
+const { WebSocket, WebSocketServer } = require('ws');
 
 const PORT = Number(process.env.PORT || 3000);
 const WS_PORT = Number(process.env.WS_PORT || 3001);
@@ -22,10 +22,17 @@ const DOBOT_IP = process.env.DOBOT_IP || '192.168.5.1';
 const PRODUCTS_DB_FILE = process.env.PRODUCTS_DB_FILE || path.join(__dirname, 'data', 'products.json');
 const ROBOT_WORKER_READY_TIMEOUT_MS = Number(process.env.ROBOT_WORKER_READY_TIMEOUT_MS || 90000);
 const ROBOT_GRAB_TIMEOUT_MS = Number(process.env.ROBOT_GRAB_TIMEOUT_MS || 120000);
+const ROBOT_STOW_TIMEOUT_MS = Number(process.env.ROBOT_STOW_TIMEOUT_MS || 120000);
+const ROBOT_STOW_COMMAND = process.env.ROBOT_STOW_COMMAND || '**stow**';
+const ROBOT_MAX_ITEM_QTY = Number(process.env.ROBOT_MAX_ITEM_QTY || 20);
+const ROBOT_MAX_ORDER_UNITS = Number(process.env.ROBOT_MAX_ORDER_UNITS || 50);
+const ROBOT_SIM_DELAY_SCALE = Math.max(0, Number(process.env.ROBOT_SIM_DELAY_SCALE || 1));
+const ROBOT_BROADCAST_LOGS = /^(1|true|yes|on)$/i.test(process.env.ROBOT_BROADCAST_LOGS || '');
 let activeOrderId = null;
 let robotWorker = null;
 let robotWorkerReady = false;
 let robotWorkerStarting = null;
+let robotStowPromise = null;
 
 // 机器人初始位置
 const ROBOT_HOME = { x: 0, y: 0, z: 100 };
@@ -34,6 +41,16 @@ const ROBOT_HOME = { x: 0, y: 0, z: 100 };
 function log(msg) {
     const time = new Date().toLocaleTimeString('zh-CN');
     console.log(`[${time}] ${msg}`);
+}
+
+function createLineHandler(onLine) {
+    let pending = '';
+    return (chunk) => {
+        pending += chunk.toString();
+        const lines = pending.split(/\r?\n/);
+        pending = lines.pop();
+        for (const line of lines) onLine(line);
+    };
 }
 
 // ========== MIME 类型 ==========
@@ -119,18 +136,30 @@ function filterProducts(products, { search = '', category = '' } = {}) {
         .sort((a, b) => Number(b.id) - Number(a.id));
 }
 
-function isPlaceholderProductName(value) {
-    const name = String(value || '').trim();
-    return !name || ['商品名', '商品名称', 'name', 'product', 'placeholder'].includes(name.toLowerCase());
-}
+function normalizeOrderItems(items) {
+    const normalized = items.map((item, index) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+            throw new Error(`第 ${index + 1} 个商品格式无效`);
+        }
+        const name = String(item.name || '').trim();
+        if (!name) throw new Error(`第 ${index + 1} 个商品缺少 name`);
+        if (/\r|\n/.test(name)) throw new Error(`商品名称不能包含换行: ${name}`);
+        if (['**stow**', '__stow__', '__shutdown__', '__quit__', '__exit__'].includes(name)) {
+            throw new Error(`商品名称使用了保留控制词: ${name}`);
+        }
 
-function findProductByOrderItem(item) {
-    const products = readProducts();
-    const itemId = item.id == null ? '' : String(item.id);
-    const itemName = String(item.name || '').trim();
-    return products.find((product) => String(product.id) === itemId)
-        || products.find((product) => product.name === itemName)
-        || null;
+        const qty = Number(item.qty ?? 1);
+        if (!Number.isInteger(qty) || qty < 1 || qty > ROBOT_MAX_ITEM_QTY) {
+            throw new Error(`商品 ${name} 的 qty 必须是 1..${ROBOT_MAX_ITEM_QTY} 的整数`);
+        }
+        return { ...item, name, qty };
+    });
+
+    const totalUnits = normalized.reduce((sum, item) => sum + item.qty, 0);
+    if (totalUnits > ROBOT_MAX_ORDER_UNITS) {
+        throw new Error(`订单商品总数不能超过 ${ROBOT_MAX_ORDER_UNITS}`);
+    }
+    return { items: normalized, totalUnits };
 }
 
 // ========== HTTP 服务 ==========
@@ -267,15 +296,35 @@ server.listen(PORT, () => {
 });
 
 // ========== WebSocket 服务 ==========
-const wss = new WebSocketServer({ port: WS_PORT });
+const wss = new WebSocketServer({ port: WS_PORT, maxPayload: 64 * 1024 });
 
 log(`WebSocket 服务已启动: ws://localhost:${WS_PORT}`);
 
 function broadcast(message) {
     const data = JSON.stringify(message);
     for (const client of wss.clients) {
-        if (client.readyState === 1) client.send(data);
+        if (client.readyState === WebSocket.OPEN) client.send(data);
     }
+}
+
+function sendMessage(ws, message) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        log(`WebSocket 已断开，无法回传 ${message.type || '消息'}`);
+        return false;
+    }
+    try {
+        ws.send(JSON.stringify(message));
+        return true;
+    } catch (error) {
+        log(`WebSocket 回传失败: ${error.message}`);
+        return false;
+    }
+}
+
+function currentRobotStatus() {
+    if (robotStowPromise) return 'stowing';
+    if (activeOrderId) return 'busy';
+    return 'idle';
 }
 
 wss.on('connection', (ws) => {
@@ -284,7 +333,11 @@ wss.on('connection', (ws) => {
     ws.on('message', async (raw) => {
         let msg;
         try { msg = JSON.parse(raw.toString()); }
-        catch (e) { ws.send(JSON.stringify({ type: 'error', message: '无效的 JSON 格式' })); return; }
+        catch (e) { sendMessage(ws, { type: 'error', message: '无效的 JSON 格式' }); return; }
+        if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+            sendMessage(ws, { type: 'error', message: 'JSON 指令必须是对象' });
+            return;
+        }
 
         log(`📩 收到命令: ${JSON.stringify(msg)}`);
 
@@ -293,16 +346,20 @@ wss.on('connection', (ws) => {
         } else if (msg.type === 'stow') {
             handleStowCommand(ws);
         } else if (msg.type === 'ping') {
-            ws.send(JSON.stringify({ type: 'pong', time: Date.now() }));
+            sendMessage(ws, { type: 'pong', time: Date.now() });
         } else {
-            ws.send(JSON.stringify({ type: 'error', message: `未知命令类型: ${msg.type}` }));
+            sendMessage(ws, { type: 'error', message: `未知命令类型: ${msg.type}` });
         }
     });
 
     ws.on('close', () => { log('❌ 前端已断开'); });
     ws.on('error', (err) => { log(`⚠️ WebSocket 错误: ${err.message}`); });
 
-    ws.send(JSON.stringify({ type: 'connected', message: '已连接到机器人控制系统', robotStatus: 'idle' }));
+    sendMessage(ws, {
+        type: 'connected',
+        message: '已连接到机器人控制系统',
+        robotStatus: currentRobotStatus()
+    });
 });
 
 function ensureRobotWorker() {
@@ -331,24 +388,23 @@ function ensureRobotWorker() {
             reject(new Error(`抓取 worker 启动超时 (${ROBOT_WORKER_READY_TIMEOUT_MS}ms)`));
         }, ROBOT_WORKER_READY_TIMEOUT_MS);
 
-        const handleOutput = (chunk) => {
-            const text = chunk.toString();
-            for (const line of text.split(/\r?\n/)) {
-                const trimmed = line.trim();
-                if (!trimmed) continue;
-                log(`  [worker] ${trimmed}`);
-                if (!settled && trimmed.includes('等待商品名')) {
-                    settled = true;
-                    clearTimeout(readyTimer);
-                    robotWorkerReady = true;
-                    resolve(child);
-                }
+        const handleOutputLine = (line) => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            log(`  [worker] ${trimmed}`);
+            if (!settled && trimmed.includes('等待商品名')) {
+                settled = true;
+                clearTimeout(readyTimer);
+                robotWorkerReady = true;
+                resolve(child);
+            }
+            if (ROBOT_BROADCAST_LOGS) {
                 broadcast({ type: 'robot_log', line: trimmed, timestamp: Date.now() });
             }
         };
 
-        child.stdout.on('data', handleOutput);
-        child.stderr.on('data', handleOutput);
+        child.stdout.on('data', createLineHandler(handleOutputLine));
+        child.stderr.on('data', createLineHandler(handleOutputLine));
         child.on('error', (e) => {
             clearTimeout(readyTimer);
             robotWorker = null;
@@ -377,68 +433,111 @@ function ensureRobotWorker() {
 
 async function handleStowCommand(ws) {
     if (!ROBOT_GRASP_REAL) {
-        ws.send(JSON.stringify({ type: 'status', status: 'completed', message: '模拟模式无需收起', timestamp: Date.now() }));
+        sendStatus(ws, 'completed', { message: '模拟模式无需收起' });
         return;
     }
     if (activeOrderId) {
-        ws.send(JSON.stringify({ type: 'error', message: `订单 ${activeOrderId} 正在执行，完成后再收起` }));
+        sendMessage(ws, { type: 'error', message: `订单 ${activeOrderId} 正在执行，完成后再收起` });
         return;
     }
-    if (!robotWorker || robotWorker.killed) {
-        ws.send(JSON.stringify({ type: 'status', status: 'completed', message: '机器人 worker 未启动，无需收起', timestamp: Date.now() }));
+    if (robotStowPromise) {
+        sendMessage(ws, { type: 'error', message: '机械臂正在收起，请勿重复发送' });
         return;
     }
-    ws.send(JSON.stringify({ type: 'status', status: 'started', message: '正在回收起姿态并关闭机器人连接', timestamp: Date.now() }));
-    robotWorker.stdin.write('__stow__\n');
+    if (!robotWorker || robotWorker.exitCode !== null) {
+        sendStatus(ws, 'completed', { message: '机器人 worker 未启动，无需收起' });
+        return;
+    }
+    sendStatus(ws, 'started', { message: '正在回收起姿态并关闭机器人连接' });
+
+    const worker = robotWorker;
+    robotWorkerReady = false;
+    robotStowPromise = new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            worker.off('close', onClose);
+            worker.off('error', onError);
+            if (error) reject(error);
+            else resolve();
+        };
+        const onClose = (code) => {
+            if (code === 0) finish();
+            else finish(new Error(`机器人 worker 收起时退出，退出码 ${code}`));
+        };
+        const onError = (error) => finish(error);
+        const timeout = setTimeout(() => {
+            finish(new Error(`机械臂收起超时 (${ROBOT_STOW_TIMEOUT_MS}ms)`));
+        }, ROBOT_STOW_TIMEOUT_MS);
+
+        worker.once('close', onClose);
+        worker.once('error', onError);
+        worker.stdin.write(`${ROBOT_STOW_COMMAND}\n`, (error) => {
+            if (error) finish(error);
+        });
+    });
+
+    try {
+        await robotStowPromise;
+        sendStatus(ws, 'completed', { progress: 100, message: '机械臂已收起' });
+    } catch (error) {
+        sendStatus(ws, 'error', { message: error.message });
+    } finally {
+        robotStowPromise = null;
+    }
 }
 
-// ========== 处理抓取命令（从数据库读取位置信息） ==========
+// ========== 处理抓取命令 ==========
 async function handleGrabCommand(ws, msg) {
-    const { orderId, items } = msg;
-    if (!orderId || !items || !Array.isArray(items)) {
-        ws.send(JSON.stringify({ type: 'error', message: '缺少 orderId 或 items' }));
+    const orderId = String(msg.orderId || '').trim();
+    if (!orderId || !Array.isArray(msg.items) || msg.items.length === 0) {
+        sendMessage(ws, { type: 'error', message: '缺少 orderId 或 items' });
+        return;
+    }
+
+    let items;
+    let totalUnits;
+    try {
+        ({ items, totalUnits } = normalizeOrderItems(msg.items));
+    } catch (error) {
+        sendMessage(ws, { type: 'error', message: error.message });
+        return;
+    }
+    if (robotStowPromise) {
+        sendMessage(ws, { type: 'error', message: '机械臂正在收起，请稍后再试' });
         return;
     }
     if (activeOrderId) {
-        ws.send(JSON.stringify({ type: 'error', message: `机器人正在处理订单 ${activeOrderId}，请稍后再试` }));
+        sendMessage(ws, { type: 'error', message: `机器人正在处理订单 ${activeOrderId}，请稍后再试` });
         return;
     }
-    if (ROBOT_GRASP_REAL) {
-        const invalid = items.find((item) => {
-            const product = findProductByOrderItem(item);
-            return !product || isPlaceholderProductName(product.name);
-        });
-        if (invalid) {
-            ws.send(JSON.stringify({ type: 'error', message: `无效商品，已拒绝启动真实抓取: ${invalid.name || invalid.id || '空'}` }));
-            return;
-        }
-    }
 
-    log(`🤖 开始处理订单 ${orderId}，共 ${items.length} 件商品`);
+    log(`🤖 开始处理订单 ${orderId}，共 ${totalUnits} 件商品`);
     activeOrderId = orderId;
 
     try {
         sendStatus(ws, 'started', {
             orderId,
-            message: ROBOT_GRASP_REAL ? '订单已接收，开始调用真实抓取程序' : '订单已接收，开始执行模拟抓取任务'
+            message: '订单已接收'
         });
 
+        let completedUnits = 0;
         for (let i = 0; i < items.length; i++) {
             const item = items[i];
-            const qty = Math.max(1, Number(item.qty || 1));
-            for (let n = 0; n < qty; n++) {
-                const itemProgressIndex = i + n / qty;
-                const progressBase = (itemProgressIndex / items.length) * 100;
+            for (let n = 0; n < item.qty; n++) {
+                const progressBase = (completedUnits / totalUnits) * 100;
                 if (ROBOT_GRASP_REAL) {
-                    await runRealGrab(ws, orderId, item, progressBase, items.length, n + 1, qty);
+                    await runRealGrab(ws, orderId, item, progressBase, totalUnits, n + 1);
                 } else {
-                    await runSimulatedGrab(ws, orderId, item, i, items.length);
-                    break;
+                    await runSimulatedGrab(ws, orderId, item, progressBase, totalUnits, n + 1);
                 }
+                completedUnits += 1;
             }
         }
 
-        sendStatus(ws, 'completed', { orderId, message: '所有商品抓取完成！请取走您的商品', progress: 100, position: { x: 0, y: 0, z: 100 } });
+        sendStatus(ws, 'completed', { orderId, message: '所有商品抓取完成', progress: 100 });
         log(`✅ 订单 ${orderId} 处理完成`);
     } catch (e) {
         log(`❌ 订单 ${orderId} 失败: ${e.message}`);
@@ -448,37 +547,34 @@ async function handleGrabCommand(ws, msg) {
     }
 }
 
-async function runSimulatedGrab(ws, orderId, item, index, total) {
-    const itemName = item.name || item.id;
-    const pos = await getProductPosition(itemName, index);
+async function runSimulatedGrab(ws, orderId, item, progressBase, totalUnits, itemNo) {
+    const itemName = item.name;
+    const label = item.qty > 1 ? `${itemName} (${itemNo}/${item.qty})` : itemName;
+    const progressStep = 100 / totalUnits;
+    const pos = await getProductPosition(itemName, itemNo - 1);
 
-    log(`  📦 模拟抓取: ${itemName} (${pos.shelf})`);
+    log(`  📦 模拟抓取: ${label} (${pos.shelf})`);
 
-    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'planning', progress: (index / total) * 100, message: `正在规划到 ${pos.shelf} 的路径...`, position: ROBOT_HOME, targetPosition: pos });
-    await sleep(600);
+    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'planning', progress: progressBase, message: `正在规划到 ${pos.shelf} 的路径...`, position: ROBOT_HOME, targetPosition: pos });
+    await sleep(600 * ROBOT_SIM_DELAY_SCALE);
 
-    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'moving', progress: (index / total) * 100 + (50 / total), message: `机器人移动到 ${pos.shelf}`, position: { x: pos.x * 0.8, y: pos.y * 0.8, z: pos.z }, targetPosition: pos });
-    await sleep(800);
+    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'moving', progress: progressBase + progressStep * 0.5, message: `机器人移动到 ${pos.shelf}`, position: { x: pos.x * 0.8, y: pos.y * 0.8, z: pos.z }, targetPosition: pos });
+    await sleep(800 * ROBOT_SIM_DELAY_SCALE);
 
-    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'picking', progress: (index / total) * 100 + (80 / total), message: `正在从 ${pos.shelf} 抓取 ${itemName} × ${item.qty}`, position: pos, targetPosition: pos });
-    await sleep(1000);
+    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'picking', progress: progressBase + progressStep * 0.8, message: `正在抓取 ${label}`, position: pos, targetPosition: pos });
+    await sleep(1000 * ROBOT_SIM_DELAY_SCALE);
 
-    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'delivering', progress: (index / total) * 100 + (95 / total), message: `${itemName} × ${item.qty} 正在运送至取货口`, position: { x: pos.x * 0.3, y: pos.y * 0.3, z: 50 }, targetPosition: { x: 0, y: 0, z: 50 } });
-    await sleep(700);
+    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'delivering', progress: progressBase + progressStep * 0.95, message: `${label} 正在运送至取货口`, position: { x: pos.x * 0.3, y: pos.y * 0.3, z: 50 }, targetPosition: { x: 0, y: 0, z: 50 } });
+    await sleep(700 * ROBOT_SIM_DELAY_SCALE);
 
-    log(`  ✅ ${itemName} × ${item.qty} 模拟完成`);
+    log(`  ✅ ${label} 模拟完成`);
 }
 
-function runRealGrab(ws, orderId, item, progressBase, totalItems, itemNo, itemQty) {
-    const product = findProductByOrderItem(item);
-    if (!product || isPlaceholderProductName(product.name)) {
-        return Promise.reject(new Error(`无效商品或商品未入库: ${item.name || item.id || '空'}`));
-    }
-
+function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo) {
     return ensureRobotWorker().then((worker) => new Promise((resolve, reject) => {
-        const itemName = product.name;
-        const label = itemQty > 1 ? `${itemName} (${itemNo}/${itemQty})` : itemName;
-        const progressStep = 80 / totalItems / Math.max(1, itemQty);
+        const itemName = item.name;
+        const label = item.qty > 1 ? `${itemName} (${itemNo}/${item.qty})` : itemName;
+        const progressStep = 100 / totalUnits;
         let outputTail = '';
         let settled = false;
 
@@ -491,10 +587,12 @@ function runRealGrab(ws, orderId, item, progressBase, totalItems, itemNo, itemQt
             message: `正在识别并抓取 ${label}...`
         });
 
+        let stdoutData;
+        let stderrData;
         const cleanup = () => {
             clearTimeout(timeout);
-            worker.stdout.off('data', onData);
-            worker.stderr.off('data', onData);
+            worker.stdout.off('data', stdoutData);
+            worker.stderr.off('data', stderrData);
             worker.off('close', onClose);
         };
         const finishOk = () => {
@@ -519,39 +617,51 @@ function runRealGrab(ws, orderId, item, progressBase, totalItems, itemNo, itemQt
         const timeout = setTimeout(() => {
             finishError(`抓取超时 (${ROBOT_GRAB_TIMEOUT_MS}ms): ${summarizeOutput(outputTail) || '无输出'}`);
         }, ROBOT_GRAB_TIMEOUT_MS);
-        const onData = (chunk) => {
-            const text = chunk.toString();
-            outputTail = (outputTail + text).slice(-4000);
-            for (const line of text.split(/\r?\n/)) {
-                if (settled) return;
-                const trimmed = line.trim();
-                if (!trimmed) continue;
-                const stage = inferGrabStage(trimmed);
-                if (stage) {
-                    sendStatus(ws, 'grabbing', {
-                        orderId,
-                        item: itemStatus(item),
-                        stage: stage.stage,
-                        progress: Math.min(99, progressBase + stage.weight * progressStep),
-                        message: stage.message || trimmed
-                    });
-                }
-                if (trimmed.includes('[前端常驻模式][完成]')) {
-                    finishOk();
-                    return;
-                }
-                if (trimmed.includes('[前端常驻模式][失败]')) {
-                    finishError(trimmed);
-                    return;
-                }
+        const onLine = (line) => {
+            if (settled) return;
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            const stage = inferGrabStage(trimmed);
+            if (stage) {
+                const messages = {
+                    planning: `正在识别 ${label}`,
+                    moving: '机械臂正在移动',
+                    picking: `正在抓取 ${label}`,
+                    delivering: `${label} 正在运送至取货口`
+                };
+                sendStatus(ws, 'grabbing', {
+                    orderId,
+                    item: itemStatus(item),
+                    stage: stage.stage,
+                    progress: Math.min(99, progressBase + stage.weight * progressStep),
+                    message: messages[stage.stage]
+                });
             }
+            if (trimmed.includes('[前端常驻模式][完成]')) {
+                finishOk();
+                return;
+            }
+            if (trimmed.includes('[前端常驻模式][失败]')) {
+                finishError(trimmed);
+            }
+        };
+        const makeDataHandler = () => {
+            const handleLines = createLineHandler(onLine);
+            return (chunk) => {
+                outputTail = (outputTail + chunk.toString()).slice(-4000);
+                handleLines(chunk);
+            };
         };
         const onClose = (code) => finishError(`worker 已退出 code=${code}: ${summarizeOutput(outputTail)}`);
 
-        worker.stdout.on('data', onData);
-        worker.stderr.on('data', onData);
+        stdoutData = makeDataHandler();
+        stderrData = makeDataHandler();
+        worker.stdout.on('data', stdoutData);
+        worker.stderr.on('data', stderrData);
         worker.on('close', onClose);
-        worker.stdin.write(`${itemName}\n`);
+        worker.stdin.write(`${itemName}\n`, (error) => {
+            if (error) finishError(`无法写入抓取 worker: ${error.message}`);
+        });
     }));
 }
 
@@ -564,27 +674,26 @@ async function getProductPosition(itemName, index) {
 }
 
 function itemStatus(item) {
-    const product = findProductByOrderItem(item);
     return {
-        id: product ? product.id : item.id,
-        name: product ? product.name : (item.name || item.id),
+        id: item.id,
+        name: item.name,
         qty: item.qty,
-        emoji: product ? product.emoji : item.emoji
+        emoji: item.emoji
     };
 }
 
 function inferGrabStage(line) {
     if (line.includes('拍照中') || line.includes('多帧稳定候选') || line.includes('目标过滤')) {
-        return { stage: 'planning', weight: 0.2, message: line };
+        return { stage: 'planning', weight: 0.2 };
     }
     if (line.includes('MovL') || line.includes('MovJ') || line.includes('移动到') || line.includes('对齐路径')) {
-        return { stage: 'moving', weight: 0.45, message: line };
+        return { stage: 'moving', weight: 0.45 };
     }
     if (line.includes('执行抓取动作') || line.includes('探入路径') || line.includes('闭合')) {
-        return { stage: 'picking', weight: 0.75, message: line };
+        return { stage: 'picking', weight: 0.75 };
     }
     if (line.includes('Place') || line.includes('放置') || line.includes('抓取完成')) {
-        return { stage: 'delivering', weight: 0.95, message: line };
+        return { stage: 'delivering', weight: 0.95 };
     }
     return null;
 }
@@ -594,7 +703,7 @@ function summarizeOutput(text) {
 }
 
 function sendStatus(ws, status, data) {
-    ws.send(JSON.stringify({ type: 'status', status, timestamp: Date.now(), ...data }));
+    sendMessage(ws, { type: 'status', status, timestamp: Date.now(), ...data });
 }
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
