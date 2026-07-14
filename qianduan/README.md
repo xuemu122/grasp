@@ -66,6 +66,21 @@ node server.js
 
 生产环境应使用 systemd 或其他进程管理器保持服务运行。`PRODUCTS_DB_FILE` 必须对运行服务的用户可写，否则商品新增、修改和删除会失败。
 
+### 管理员登录
+
+`/admin.html` 使用服务端会话登录。商品列表查询保持公开，供点单页读取；新增、修改和删除商品必须持有有效的管理员会话 Cookie。
+
+云端服务通过环境变量配置账号，不要把实际密码或会话密钥提交到仓库：
+
+```text
+ADMIN_USERNAME=<管理员账号>
+ADMIN_PASSWORD=<管理员密码>
+ADMIN_SESSION_SECRET=<至少 32 字节的随机密钥>
+ADMIN_SESSION_TTL_MS=28800000
+```
+
+Cookie 使用 `HttpOnly`、`Secure` 和 `SameSite=Strict`，默认有效期为 8 小时。同一来源 15 分钟内连续登录失败 5 次后会被临时限制。修改账号、密码或密钥后需要重启云端商品服务；修改密钥会使现有会话立即失效。
+
 ## 盒子部署
 
 盒子运行真实模式：

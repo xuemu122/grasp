@@ -75,14 +75,41 @@
         .empty-state { text-align: center; padding: 40px; color: var(--gray-400); }
         .empty-state .icon { font-size: 3rem; display: block; margin-bottom: 10px; }
         .loading { text-align: center; padding: 40px; color: var(--gray-400); }
+        .login-overlay { position: fixed; inset: 0; z-index: 3000; display: flex; align-items: center; justify-content: center; padding: 24px; background: #F0F2F5; }
+        .login-panel { width: min(380px, 100%); background: white; border-radius: 8px; padding: 28px; box-shadow: var(--shadow-lg); }
+        .login-panel h1 { font-size: 1.3rem; margin-bottom: 6px; }
+        .login-panel p { color: var(--gray-500); margin-bottom: 22px; font-size: 0.9rem; }
+        .login-error { min-height: 22px; margin-bottom: 8px; color: var(--danger); font-size: 0.85rem; }
+        .login-submit { width: 100%; justify-content: center; }
+        .logout-button { border: 0; background: transparent; color: rgba(255,255,255,0.85); padding: 6px 14px; cursor: pointer; font: inherit; font-size: 0.9rem; }
+        .logout-button:hover { color: white; }
+        .login-overlay[hidden] { display: none; }
     </style>
 </head>
 <body>
+    <div class="login-overlay" id="loginOverlay">
+        <form class="login-panel" id="loginForm">
+            <h1>商品管理登录</h1>
+            <p>请输入管理员账号继续</p>
+            <div class="form-group">
+                <label for="loginUsername">管理员账号</label>
+                <input class="form-input" id="loginUsername" name="username" autocomplete="username" required autofocus>
+            </div>
+            <div class="form-group">
+                <label for="loginPassword">密码</label>
+                <input class="form-input" id="loginPassword" name="password" type="password" autocomplete="current-password" required>
+            </div>
+            <div class="login-error" id="loginError" role="alert"></div>
+            <button class="btn btn-primary login-submit" id="loginSubmit" type="submit">登录</button>
+        </form>
+    </div>
+
     <header class="header">
         <h1>📦 商品信息管理系统</h1>
         <div class="header-links">
             <a href="/">🏠 点餐页面</a>
             <a href="/admin.html">📋 商品管理</a>
+            <button class="logout-button" type="button" onclick="logoutAdmin()">退出登录</button>
         </div>
     </header>
 
@@ -235,12 +262,78 @@
     <script>
         const EMOJI_OPTIONS = ['🥤','💧','🍵','🥛','⚡','🍿','🍞','🍪','🍬','🍜','📦','🧃','🧋','☕','🍺','🥜','🍫','🍩'];
 
-        // ========== 初始化 ==========
-        document.addEventListener('DOMContentLoaded', () => {
+        // ========== 登录与初始化 ==========
+        document.addEventListener('DOMContentLoaded', async () => {
             renderEmojiPicker();
+            document.getElementById('loginForm').addEventListener('submit', loginAdmin);
+            try {
+                const res = await fetch('/api/admin/session', { credentials: 'same-origin' });
+                const session = await res.json();
+                if (session.authenticated) showAdmin();
+            } catch (error) {
+                document.getElementById('loginError').textContent = '无法连接管理服务';
+            }
+        });
+
+        async function loginAdmin(event) {
+            event.preventDefault();
+            const button = document.getElementById('loginSubmit');
+            const error = document.getElementById('loginError');
+            button.disabled = true;
+            error.textContent = '';
+            try {
+                const res = await fetch('/api/admin/login', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: document.getElementById('loginUsername').value.trim(),
+                        password: document.getElementById('loginPassword').value
+                    })
+                });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) {
+                    error.textContent = json.message || '登录失败';
+                    return;
+                }
+                document.getElementById('loginPassword').value = '';
+                showAdmin();
+            } catch (e) {
+                error.textContent = '网络错误，请稍后重试';
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        function showAdmin() {
+            document.getElementById('loginOverlay').hidden = true;
             loadProducts();
             loadCategories();
-        });
+        }
+
+        function showLogin(message = '') {
+            document.getElementById('loginOverlay').hidden = false;
+            document.getElementById('loginError').textContent = message;
+            document.getElementById('loginPassword').value = '';
+            document.getElementById('loginUsername').focus();
+        }
+
+        async function logoutAdmin() {
+            try {
+                await fetch('/api/admin/logout', { method: 'POST', credentials: 'same-origin' });
+            } finally {
+                showLogin();
+            }
+        }
+
+        async function adminFetch(url, options = {}) {
+            const res = await fetch(url, { ...options, credentials: 'same-origin' });
+            if (res.status === 401) {
+                showLogin('登录已过期，请重新登录');
+                throw new Error('登录已过期');
+            }
+            return res;
+        }
 
         function renderEmojiPicker() {
             const picker = document.getElementById('emojiPicker');
@@ -264,7 +357,7 @@
             if (category) params.set('category', category);
 
             try {
-                const res = await fetch(`/api/products?${params.toString()}`);
+                const res = await adminFetch(`/api/products?${params.toString()}`);
                 const json = await res.json();
                 if (json.code !== 0) { showToast('加载失败: ' + json.message, 'error'); return; }
 
@@ -304,7 +397,7 @@
 
         async function loadCategories() {
             try {
-                const res = await fetch('/api/categories');
+                const res = await adminFetch('/api/categories');
                 const json = await res.json();
                 if (json.code === 0) {
                     const sel = document.getElementById('categoryFilter');
@@ -323,7 +416,7 @@
 
         async function editProduct(id) {
             try {
-                const res = await fetch(`/api/products/${id}`);
+                const res = await adminFetch(`/api/products/${id}`);
                 const json = await res.json();
                 if (json.code !== 0) { showToast('获取失败', 'error'); return; }
                 const p = json.data;
@@ -395,7 +488,7 @@
             const url = id ? `/api/products/${id}` : '/api/products';
 
             try {
-                const res = await fetch(url, {
+                const res = await adminFetch(url, {
                     method,
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(data)
@@ -418,7 +511,7 @@
         async function deleteProduct(id) {
             if (!confirm('确定要删除该商品吗？此操作不可撤销。')) return;
             try {
-                const res = await fetch(`/api/products/${id}`, { method: 'DELETE' });
+                const res = await adminFetch(`/api/products/${id}`, { method: 'DELETE' });
                 const json = await res.json();
                 if (json.code === 0) {
                     showToast('删除成功', 'success');

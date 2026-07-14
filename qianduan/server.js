@@ -9,6 +9,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { WebSocket, WebSocketServer } = require('ws');
 
@@ -30,6 +31,12 @@ const ROBOT_MAX_ITEM_QTY = Number(process.env.ROBOT_MAX_ITEM_QTY || 20);
 const ROBOT_MAX_ORDER_UNITS = Number(process.env.ROBOT_MAX_ORDER_UNITS || 50);
 const ROBOT_SIM_DELAY_SCALE = Math.max(0, Number(process.env.ROBOT_SIM_DELAY_SCALE || 1));
 const ROBOT_BROADCAST_LOGS = /^(1|true|yes|on)$/i.test(process.env.ROBOT_BROADCAST_LOGS || '');
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || '';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const ADMIN_SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const ADMIN_SESSION_TTL_MS = Number(process.env.ADMIN_SESSION_TTL_MS || 8 * 60 * 60 * 1000);
+const ADMIN_COOKIE_NAME = 'grasp_admin_session';
+const loginAttempts = new Map();
 let activeOrderId = null;
 let robotWorker = null;
 let robotWorkerReady = false;
@@ -79,9 +86,79 @@ function parseBody(req) {
     });
 }
 
-function sendJSON(res, data, status = 200) {
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+function sendJSON(res, data, status = 200, headers = {}) {
+    res.writeHead(status, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+        ...headers
+    });
     res.end(JSON.stringify(data));
+}
+
+function safeEqual(left, right) {
+    const a = crypto.createHash('sha256').update(String(left)).digest();
+    const b = crypto.createHash('sha256').update(String(right)).digest();
+    return crypto.timingSafeEqual(a, b);
+}
+
+function parseCookies(req) {
+    const cookies = {};
+    for (const part of String(req.headers.cookie || '').split(';')) {
+        const index = part.indexOf('=');
+        if (index < 0) continue;
+        cookies[part.slice(0, index).trim()] = part.slice(index + 1).trim();
+    }
+    return cookies;
+}
+
+function signSession(payload) {
+    return crypto.createHmac('sha256', ADMIN_SESSION_SECRET).update(payload).digest('base64url');
+}
+
+function createAdminSession() {
+    const payload = Buffer.from(JSON.stringify({ user: ADMIN_USERNAME, exp: Date.now() + ADMIN_SESSION_TTL_MS })).toString('base64url');
+    return `${payload}.${signSession(payload)}`;
+}
+
+function readAdminSession(req) {
+    const token = parseCookies(req)[ADMIN_COOKIE_NAME];
+    if (!token) return null;
+    const separator = token.lastIndexOf('.');
+    if (separator < 1) return null;
+    const payload = token.slice(0, separator);
+    if (!safeEqual(token.slice(separator + 1), signSession(payload))) return null;
+    try {
+        const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+        return session.user === ADMIN_USERNAME && Number(session.exp) > Date.now() ? session : null;
+    } catch (error) {
+        return null;
+    }
+}
+
+function requireAdmin(req, res) {
+    if (readAdminSession(req)) return true;
+    sendJSON(res, { code: 1, message: '请先登录管理员账号' }, 401);
+    return false;
+}
+
+function clientIp(req) {
+    return String(req.headers['x-real-ip'] || req.socket.remoteAddress || '').trim();
+}
+
+function loginBlocked(ip) {
+    const now = Date.now();
+    const attempt = loginAttempts.get(ip);
+    if (!attempt || now - attempt.startedAt > 15 * 60 * 1000) {
+        loginAttempts.set(ip, { count: 0, startedAt: now });
+        return false;
+    }
+    return attempt.count >= 5;
+}
+
+function recordLoginFailure(ip) {
+    const attempt = loginAttempts.get(ip) || { count: 0, startedAt: Date.now() };
+    attempt.count += 1;
+    loginAttempts.set(ip, attempt);
 }
 
 function normalizeProduct(raw, fallbackId = 1) {
@@ -177,6 +254,43 @@ const server = http.createServer(async (req, res) => {
     const pathname = url.pathname;
 
     // ========== REST API 路由 ==========
+    if (pathname === '/api/admin/session' && req.method === 'GET') {
+        const session = readAdminSession(req);
+        sendJSON(res, { code: 0, authenticated: Boolean(session), username: session ? session.user : null });
+        return;
+    }
+
+    if (pathname === '/api/admin/login' && req.method === 'POST') {
+        if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
+            sendJSON(res, { code: 1, message: '管理员登录尚未配置' }, 503);
+            return;
+        }
+        const ip = clientIp(req);
+        if (loginBlocked(ip)) {
+            sendJSON(res, { code: 1, message: '登录失败次数过多，请 15 分钟后重试' }, 429);
+            return;
+        }
+        const body = await parseBody(req);
+        if (!body || !safeEqual(body.username, ADMIN_USERNAME) || !safeEqual(body.password, ADMIN_PASSWORD)) {
+            recordLoginFailure(ip);
+            sendJSON(res, { code: 1, message: '账号或密码错误' }, 401);
+            return;
+        }
+        loginAttempts.delete(ip);
+        const maxAge = Math.max(1, Math.floor(ADMIN_SESSION_TTL_MS / 1000));
+        sendJSON(res, { code: 0, username: ADMIN_USERNAME }, 200, {
+            'Set-Cookie': `${ADMIN_COOKIE_NAME}=${createAdminSession()}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`
+        });
+        return;
+    }
+
+    if (pathname === '/api/admin/logout' && req.method === 'POST') {
+        sendJSON(res, { code: 0 }, 200, {
+            'Set-Cookie': `${ADMIN_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`
+        });
+        return;
+    }
+
     // GET /api/products - 获取所有商品
     if (pathname === '/api/products' && req.method === 'GET') {
         try {
@@ -205,6 +319,7 @@ const server = http.createServer(async (req, res) => {
 
     // POST /api/products - 新增商品
     if (pathname === '/api/products' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
         const body = await parseBody(req);
         if (!body || !body.name) { sendJSON(res, { code: 1, message: '商品名称不能为空' }, 400); return; }
         try {
@@ -223,6 +338,7 @@ const server = http.createServer(async (req, res) => {
     // PUT /api/products/:id - 更新商品
     const updateMatch = pathname.match(/^\/api\/products\/(\d+)$/);
     if (updateMatch && req.method === 'PUT') {
+        if (!requireAdmin(req, res)) return;
         const body = await parseBody(req);
         if (!body) { sendJSON(res, { code: 1, message: '无效数据' }, 400); return; }
         try {
@@ -250,6 +366,7 @@ const server = http.createServer(async (req, res) => {
     // DELETE /api/products/:id - 删除商品
     const delMatch = pathname.match(/^\/api\/products\/(\d+)$/);
     if (delMatch && req.method === 'DELETE') {
+        if (!requireAdmin(req, res)) return;
         try {
             const before = readProducts();
             const products = before.filter((item) => String(item.id) !== delMatch[1]);
