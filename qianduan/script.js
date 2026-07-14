@@ -5,6 +5,8 @@ let cart = {};               // { productId: qty }
 let currentCategory = 'all'; // 当前选中的分类
 let searchKeyword = '';      // 搜索关键词
 let currentOrderId = null;
+let currentOrderToken = null;
+let currentOrderItems = [];
 
 // ========== WebSocket 连接 ==========
 let ws = null;
@@ -245,6 +247,11 @@ function renderProducts() {
 // ========== 加入购物车 ==========
 function addToCart(productId, event) {
     if (event) event.stopPropagation();
+    const product = products.find(p => String(p.id) === String(productId));
+    if (!product || Number(product.stock) <= Number(cart[productId] || 0)) {
+        alert('该商品库存不足');
+        return;
+    }
     if (!cart[productId]) cart[productId] = 0;
     cart[productId] += 1;
     updateCartUI();
@@ -340,7 +347,7 @@ function updateCartUI() {
 }
 
 // ========== 提交订单 ==========
-function submitOrder() {
+async function submitOrder() {
     const items = getCartItems();
     if (items.length === 0) return;
 
@@ -353,8 +360,26 @@ function submitOrder() {
     btnSubmit.disabled = true;
     btnSubmit.textContent = '⏳ 提交中...';
 
-    const orderId = 'ORD-' + Date.now().toString(36).toUpperCase();
+    let prepared;
+    try {
+        const res = await fetch('/api/orders/prepare', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: items.map(item => ({ id: item.id, name: item.name, qty: item.qty })) })
+        });
+        prepared = await res.json();
+        if (!res.ok || prepared.code !== 0) throw new Error(prepared.message || '订单校验失败');
+    } catch (error) {
+        alert(`订单提交失败: ${error.message}`);
+        btnSubmit.disabled = false;
+        btnSubmit.textContent = '开始拣选';
+        return;
+    }
+
+    const orderId = prepared.orderId;
     currentOrderId = orderId;
+    currentOrderToken = prepared.completionToken;
+    currentOrderItems = items.map(item => ({ ...item }));
 
     showModal(orderId, items);
 
@@ -390,6 +415,26 @@ function onStowCompleted(msg) {
     logWS(`✅ ${msg.message || '机械臂已收起'}`);
 }
 
+async function completeInventoryOrder(orderId, completionToken) {
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/complete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ completionToken })
+            });
+            const json = await res.json();
+            if (!res.ok || json.code !== 0) throw new Error(json.message || '库存更新失败');
+            return json;
+        } catch (error) {
+            lastError = error;
+            if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 800 * (attempt + 1)));
+        }
+    }
+    throw lastError;
+}
+
 // ========== 更新抓取进度 ==========
 function updateGrabProgress(msg) {
     const progressBar = document.getElementById('progressBar');
@@ -400,7 +445,7 @@ function updateGrabProgress(msg) {
 }
 
 // ========== 抓取完成 ==========
-function onGrabCompleted(msg) {
+async function onGrabCompleted(msg) {
     const progressBar = document.getElementById('progressBar');
     const progressText = document.getElementById('progressText');
     const robotAnim = document.getElementById('robotAnim');
@@ -413,7 +458,13 @@ function onGrabCompleted(msg) {
         robotAnim.textContent = '✅';
     }
 
-    const items = getCartItems();
+    const items = currentOrderItems.map(item => ({ ...item }));
+    try {
+        await completeInventoryOrder(msg.orderId, currentOrderToken);
+        await loadProducts();
+    } catch (error) {
+        alert(`抓取已完成，但库存更新失败: ${error.message}`);
+    }
 
     setTimeout(() => {
         if (overlay) overlay.style.display = 'none';
@@ -421,6 +472,8 @@ function onGrabCompleted(msg) {
         showOrderToast(msg.orderId, items);
         cart = {};
         currentOrderId = null;
+        currentOrderToken = null;
+        currentOrderItems = [];
         updateCartUI();
         renderProducts();
 
@@ -437,6 +490,9 @@ function onGrabFailed() {
     const overlay = document.getElementById('modalOverlay');
     if (overlay) overlay.style.display = 'none';
     updateRobotStatus('online', '机器人就绪');
+    currentOrderId = null;
+    currentOrderToken = null;
+    currentOrderItems = [];
 
     const btnSubmit = document.getElementById('btnSubmit');
     if (btnSubmit) {

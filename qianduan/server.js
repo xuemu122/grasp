@@ -36,6 +36,8 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const ADMIN_SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const ADMIN_SESSION_TTL_MS = Number(process.env.ADMIN_SESSION_TTL_MS || 8 * 60 * 60 * 1000);
 const ADMIN_COOKIE_NAME = 'grasp_admin_session';
+const ORDER_TOKEN_SECRET = process.env.ORDER_TOKEN_SECRET || ADMIN_SESSION_SECRET;
+const ORDER_TOKEN_TTL_MS = Number(process.env.ORDER_TOKEN_TTL_MS || 24 * 60 * 60 * 1000);
 const loginAttempts = new Map();
 let activeOrderId = null;
 let robotWorker = null;
@@ -183,20 +185,34 @@ function normalizeProduct(raw, fallbackId = 1) {
     };
 }
 
-function readProducts() {
-    if (!fs.existsSync(PRODUCTS_DB_FILE)) return [];
+function readProductStore() {
+    if (!fs.existsSync(PRODUCTS_DB_FILE)) return { products: [], completedOrders: {} };
     try {
         const data = JSON.parse(fs.readFileSync(PRODUCTS_DB_FILE, 'utf8'));
-        return Array.isArray(data.products) ? data.products.map((p, idx) => normalizeProduct(p, idx + 1)) : [];
+        return {
+            products: Array.isArray(data.products) ? data.products.map((p, idx) => normalizeProduct(p, idx + 1)) : [],
+            completedOrders: data.completedOrders && typeof data.completedOrders === 'object' ? data.completedOrders : {}
+        };
     } catch (e) {
         log(`⚠️ 商品数据读取失败: ${e.message}`);
-        return [];
+        return { products: [], completedOrders: {} };
     }
 }
 
-function writeProducts(products) {
+function readProducts() {
+    return readProductStore().products;
+}
+
+function writeProductStore(store) {
     fs.mkdirSync(path.dirname(PRODUCTS_DB_FILE), { recursive: true });
-    fs.writeFileSync(PRODUCTS_DB_FILE, JSON.stringify({ products }, null, 2), 'utf8');
+    const tempFile = `${PRODUCTS_DB_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tempFile, JSON.stringify(store, null, 2), 'utf8');
+    fs.renameSync(tempFile, PRODUCTS_DB_FILE);
+}
+
+function writeProducts(products) {
+    const store = readProductStore();
+    writeProductStore({ ...store, products });
 }
 
 function nextProductId(products) {
@@ -239,6 +255,42 @@ function normalizeOrderItems(items) {
         throw new Error(`订单商品总数不能超过 ${ROBOT_MAX_ORDER_UNITS}`);
     }
     return { items: normalized, totalUnits };
+}
+
+function normalizeInventoryItems(items) {
+    if (!Array.isArray(items) || items.length === 0) throw new Error('订单商品不能为空');
+    return items.map((item, index) => {
+        const id = Number(item && item.id);
+        const qty = Number(item && item.qty);
+        if (!Number.isInteger(id) || id < 1) throw new Error(`第 ${index + 1} 个商品 id 无效`);
+        if (!Number.isInteger(qty) || qty < 1 || qty > ROBOT_MAX_ITEM_QTY) {
+            throw new Error(`第 ${index + 1} 个商品数量必须是 1..${ROBOT_MAX_ITEM_QTY} 的整数`);
+        }
+        return { id, qty, name: String(item.name || '').trim() };
+    });
+}
+
+function signOrderPayload(payload) {
+    return crypto.createHmac('sha256', ORDER_TOKEN_SECRET).update(payload).digest('base64url');
+}
+
+function createOrderToken(orderId, items) {
+    const payload = Buffer.from(JSON.stringify({ orderId, items, exp: Date.now() + ORDER_TOKEN_TTL_MS })).toString('base64url');
+    return `${payload}.${signOrderPayload(payload)}`;
+}
+
+function readOrderToken(token) {
+    const value = String(token || '');
+    const separator = value.lastIndexOf('.');
+    if (separator < 1) return null;
+    const payload = value.slice(0, separator);
+    if (!safeEqual(value.slice(separator + 1), signOrderPayload(payload))) return null;
+    try {
+        const order = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+        return Number(order.exp) > Date.now() ? order : null;
+    } catch (error) {
+        return null;
+    }
 }
 
 // ========== HTTP 服务 ==========
@@ -288,6 +340,62 @@ const server = http.createServer(async (req, res) => {
         sendJSON(res, { code: 0 }, 200, {
             'Set-Cookie': `${ADMIN_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`
         });
+        return;
+    }
+
+    if (pathname === '/api/orders/prepare' && req.method === 'POST') {
+        const body = await parseBody(req);
+        try {
+            const items = normalizeInventoryItems(body && body.items);
+            const products = readProducts();
+            for (const item of items) {
+                const product = products.find((candidate) => Number(candidate.id) === item.id);
+                if (!product || Number(product.status) !== 1) throw new Error(`商品不可用: ${item.name || item.id}`);
+                if (Number(product.stock) < item.qty) throw new Error(`${product.name} 库存不足，当前库存 ${product.stock}`);
+                item.name = product.name;
+            }
+            const orderId = `ORD-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+            sendJSON(res, { code: 0, orderId, completionToken: createOrderToken(orderId, items) });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 400);
+        }
+        return;
+    }
+
+    const completeOrderMatch = pathname.match(/^\/api\/orders\/([^/]+)\/complete$/);
+    if (completeOrderMatch && req.method === 'POST') {
+        const body = await parseBody(req);
+        const orderId = decodeURIComponent(completeOrderMatch[1]);
+        const order = readOrderToken(body && body.completionToken);
+        if (!order || order.orderId !== orderId) {
+            sendJSON(res, { code: 1, message: '订单凭证无效或已过期' }, 401);
+            return;
+        }
+        try {
+            const store = readProductStore();
+            if (store.completedOrders[orderId]) {
+                sendJSON(res, { code: 0, alreadyCompleted: true, updated: store.completedOrders[orderId].updated });
+                return;
+            }
+            const updated = [];
+            for (const item of normalizeInventoryItems(order.items)) {
+                const product = store.products.find((candidate) => Number(candidate.id) === item.id);
+                if (!product) throw new Error(`商品不存在: ${item.name || item.id}`);
+                if (Number(product.stock) < item.qty) throw new Error(`${product.name} 库存不足，当前库存 ${product.stock}`);
+                product.stock = Number(product.stock) - item.qty;
+                updated.push({ id: product.id, name: product.name, qty: item.qty, stock: product.stock });
+            }
+            store.completedOrders[orderId] = { completedAt: Date.now(), updated };
+            const orderIds = Object.keys(store.completedOrders);
+            for (const oldOrderId of orderIds.slice(0, Math.max(0, orderIds.length - 1000))) {
+                delete store.completedOrders[oldOrderId];
+            }
+            writeProductStore(store);
+            log(`📉 订单 ${orderId} 已扣减库存: ${updated.map((item) => `${item.name} x${item.qty}`).join(', ')}`);
+            sendJSON(res, { code: 0, alreadyCompleted: false, updated });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 409);
+        }
         return;
     }
 
