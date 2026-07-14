@@ -91,7 +91,7 @@ test('WebSocket real mode trusts cloud items, repeats qty, and stows', async (t)
     await once(ws, 'open');
 
     const connected = await collector.waitFor((message) => message.type === 'connected');
-    assert.equal(connected.robotStatus, 'idle');
+    assert.equal(connected.robotStatus, 'standby');
 
     ws.send(JSON.stringify({ type: 'ping' }));
     const pong = await collector.waitFor((message) => message.type === 'pong');

@@ -22,6 +22,9 @@ grasp/
 └── dataset_captures/现场采集样本
 ```
 
+点单前端、云端 Nginx、FRP、盒子 WebSocket 协议和排障说明见
+[`qianduan/README.md`](qianduan/README.md)。
+
 历史/实验目录：
 
 ```text
@@ -49,7 +52,29 @@ TARGET_PRODUCT_QUERY=class_id:63 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 
 主程序里也可以输入 `?` 查看模型类别，输入 `c` 设置目标。
 
-盒子端订单 WebSocket 服务：
+## 云端点单部署
+
+点单系统拆成云端和盒子端两部分：
+
+- 云端 Nginx 提供静态网页，`/api/` 连接云端商品库服务。
+- 云端网页使用同域 WebSocket `/ws/` 下发订单。
+- Nginx 将 `/ws/` 转发到 FRP 服务端 `127.0.0.1:5061`。
+- FRP 将 `5061` 转到盒子 `127.0.0.1:3001`。
+- 盒子 `server.js` 接收订单并按商品数量调用 `shelf_grasp.py`。
+
+完整链路：
+
+```text
+浏览器 wss://<站点>/ws/
+  -> 云端 Nginx
+  -> 云端 127.0.0.1:5061
+  -> FRP
+  -> 盒子 127.0.0.1:3001
+  -> qianduan/server.js
+  -> dipan/shelf_grasp.py
+```
+
+盒子端启动命令：
 
 ```bash
 cd /home/nvidia/grasp/qianduan
@@ -60,7 +85,7 @@ DOBOT_IP=192.168.5.1 \
 node server.js
 ```
 
-云端前端通过 WebSocket 向盒子发送 `grab`、`stow` 和 `ping` JSON 指令。真实抓取直接使用订单里的商品 `name`，不再依赖盒子本地 `products.json` 校验；每个商品会按 `qty` 逐件写入常驻 `shelf_grasp.py` worker。盒子默认只回传连接、状态、错误和心跳消息，不广播 worker 内部日志。
+真实抓取直接使用云端订单里的商品 `name`，不依赖盒子本地商品库校验。每件商品按 `qty` 逐件写入常驻 worker；收到收起指令后，服务向 worker 写入 `**stow**` 并等待其真正退出。
 
 FRP 增加 WebSocket TCP 通道：
 
@@ -73,7 +98,9 @@ localPort = 3001
 remotePort = 5061
 ```
 
-最终链路为：云端网页 → 云端 Nginx → 云端 `127.0.0.1:5061` → FRP → 盒子 `127.0.0.1:3001` → `server.js` → `shelf_grasp.py`。真实模式会保持 DOBOT 和 Aero Hand 连接/使能；收到 `stow` 后写入 `**stow**`，机械臂回到收起姿态并退出 worker。真实模式下请先确认机械臂、相机、货架层和放置点已经按主程序调好。
+FRP 在线只表示隧道可用，不代表盒子后端或机械臂就绪。页面状态区分为：后端未连接、后端在线但机械臂待启动、机器人就绪、执行中和收起中。只有常驻 worker 输出“等待商品名”后才算机器人就绪。
+
+真实模式下请先确认机械臂、相机、货架层和放置点已经按主程序调好。详细的端口、完整 FRP 示例、WebSocket JSON 协议、部署步骤和排障命令见 [`qianduan/README.md`](qianduan/README.md)。
 
 手眼标定：
 

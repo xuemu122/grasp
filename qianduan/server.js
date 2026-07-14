@@ -300,7 +300,9 @@ server.listen(PORT, HOST, () => {
 // ========== WebSocket 服务 ==========
 const wss = new WebSocketServer({ port: WS_PORT, host: WS_HOST, maxPayload: 64 * 1024 });
 
-log(`WebSocket 服务已启动: ws://localhost:${WS_PORT}`);
+wss.on('listening', () => {
+    log(`WebSocket 服务已启动: ws://${WS_HOST}:${WS_PORT}`);
+});
 
 function broadcast(message) {
     const data = JSON.stringify(message);
