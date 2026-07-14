@@ -60,6 +60,8 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `AERO_FLEX_PROFILE_DELTA_MA`：相对空载曲线额外增加多少 mA 判定接触，默认 `180`。
 - `AERO_FLEX_PROFILE_WINDOW_DEG`：读取空载曲线时取附近角度电流上包络，默认 `6` 度；用于抑制某个角度空载电流异常偏低导致误触发。
 - `AERO_FLEX_EXTRA_CLOSE`：单根手指检测到接触后继续闭合多少度再锁住，默认 `8`。
+- `AERO_RESPONSE_TIMEOUT_S`：等待灵巧手状态响应的单次超时，默认 `0.2` 秒。
+- `AERO_RESPONSE_RETRIES`：灵巧手状态查询失败后的总尝试次数，默认 `3`；读取时会自动跳过串口中的 `[BOOT]` 等非协议文本。
 - `ROBOT_POLL_S`：等待 DOBOT 运动完成时的状态轮询间隔，默认 `0.2` 秒。
 - `PLACE_TRANSITION_CP`：放置路径经过过渡点时的平滑过渡比例，默认 `60`；调大更顺滑，但会更明显地绕过中间点。
 - `PLACE_SMOOTH_TRANSITION`：放置段是否启用 `MovL cp` 平滑过渡，默认关闭。

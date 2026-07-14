@@ -16,6 +16,7 @@
 import os
 import time 
 import struct
+import threading
 from serial import Serial, SerialTimeoutException
 from typing import Iterator
 
@@ -44,6 +45,7 @@ SET_SPE = 0x31
 SET_TOR = 0x32
 
 _UINT16_MAX = 65535
+_RESPONSE_FRAME_SIZE = 2 + 7 * 2
 
 _RAD_TO_DEG = 180.0 / 3.141592653589793
 _DEG_TO_RAD = 3.141592653589793 / 180.0
@@ -55,6 +57,13 @@ class AeroHand:
             print("No port specified. Attempting to auto-detect Aero Hand serial port...")
             port = self._detect_port()
         self.ser = Serial(port, baudrate, timeout=0.01, write_timeout=0.01)
+        self._serial_lock = threading.RLock()
+        self._response_timeout_s = max(
+            0.01, float(os.getenv("AERO_RESPONSE_TIMEOUT_S", "0.2"))
+        )
+        self._response_retries = max(
+            1, int(os.getenv("AERO_RESPONSE_RETRIES", "3"))
+        )
 
         ## Clean Buffers before starting
         self.ser.reset_input_buffer()
@@ -337,8 +346,86 @@ class AeroHand:
         assert len(payload) == 7, "Payload must be a list of 7 integers in Range 0-65535"
         assert all(0 <= v <= 65535 for v in payload), "Payload values must be in Range 0-65535"
         msg = struct.pack("<2B7H", header & 0xFF, 0x00, *(v & 0xFFFF for v in payload))
-        self.ser.write(msg)
-        self.ser.flush()
+        with self._serial_lock:
+            self.ser.write(msg)
+            self.ser.flush()
+
+    def _read_response_frame(self, opcode: int, timeout_s: float):
+        """Read one protocol frame while skipping boot logs or stale bytes."""
+        deadline = time.monotonic() + timeout_s
+        marker = bytes((opcode & 0xFF, 0x00))
+        pending = bytearray()
+        discarded = bytearray()
+
+        while time.monotonic() < deadline:
+            waiting = getattr(self.ser, "in_waiting", 0)
+            chunk = self.ser.read(max(1, min(int(waiting or 1), 64)))
+            if chunk:
+                pending.extend(chunk)
+
+            if len(pending) < 2:
+                continue
+
+            marker_index = pending.find(marker)
+            if marker_index < 0:
+                # Keep a trailing opcode byte because the filler may arrive next.
+                keep = 1 if pending[-1] == marker[0] else 0
+                drop_count = len(pending) - keep
+                discarded.extend(pending[:drop_count])
+                del pending[:drop_count]
+                continue
+
+            if marker_index:
+                discarded.extend(pending[:marker_index])
+                del pending[:marker_index]
+            if len(pending) >= _RESPONSE_FRAME_SIZE:
+                return bytes(pending[:_RESPONSE_FRAME_SIZE]), bytes(discarded[-256:])
+
+        discarded.extend(pending)
+        return None, bytes(discarded[-256:])
+
+    @staticmethod
+    def _response_preview(raw: bytes) -> str:
+        if not raw:
+            return "none"
+        text = (
+            raw.decode("utf-8", errors="replace")
+            .replace("\r", "\\r")
+            .replace("\n", "\\n")
+        )
+        return repr(text[-120:])
+
+    def _request_response(self, opcode: int, name: str):
+        last_discarded = b""
+        for attempt in range(1, self._response_retries + 1):
+            try:
+                with self._serial_lock:
+                    self.ser.reset_input_buffer()
+                    self._send_data(opcode)
+                    frame, discarded = self._read_response_frame(
+                        opcode, self._response_timeout_s
+                    )
+            except SerialTimeoutException as e:
+                print(f"Serial timeout while requesting {name}: {e}")
+                frame, discarded = None, b""
+
+            if frame is not None:
+                if discarded:
+                    print(
+                        f"[Aero] {name}: skipped non-protocol serial data: "
+                        f"{self._response_preview(discarded)}"
+                    )
+                return frame
+
+            last_discarded = discarded
+            if attempt < self._response_retries:
+                time.sleep(0.02)
+
+        print(
+            f"No valid {name} response after {self._response_retries} attempts; "
+            f"ignored={self._response_preview(last_discarded)}"
+        )
+        return None
 
     def send_homing(self, timeout_s: float = 175.0):
         try:
@@ -385,25 +472,10 @@ class AeroHand:
         Returns:
             list: A list of 7 actuations. (degrees)
         """
-        ## Clear input buffer to avoid stale data
-        self.ser.reset_input_buffer()
-
-        try: 
-            self._send_data(GET_POS)
-        except SerialTimeoutException as e:
-            print(f"Error while writing to serial port: {e}")
-            return None
-
-        ## Read the response
-        resp = self.ser.read(2 + 7 * 2)  # 2
-        if len(resp) != 16:
-            print(f"Timeout while reading actuations. Got {len(resp)} bytes.")
+        resp = self._request_response(GET_POS, "GET_POS")
+        if resp is None:
             return None
         data = struct.unpack("<2B7H", resp)
-        if data[0] != GET_POS:
-            print(f"Invalid response from hand in get_actuations. Expected {GET_POS}, got {data[0]}")
-            self.ser.reset_input_buffer()
-            return None
         positions_uint16 = data[2:]
         ## Convert to degrees
         positions = [
@@ -420,25 +492,10 @@ class AeroHand:
         Returns:
             list: A list of 7 actuator currents. (mA)
         """
-        ## Clear input buffer to avoid stale data
-        self.ser.reset_input_buffer()
-
-        try: 
-            self._send_data(GET_CURR)
-        except SerialTimeoutException as e:
-            print(f"Error while writing to serial port: {e}")
-            return None
-        
-        ## Read the response, signed values
-        resp = self.ser.read(2 + 7 * 2)  # 2
-        if len(resp) != 16:
-            print(f"Timeout while reading currents. Got {len(resp)} bytes.")
+        resp = self._request_response(GET_CURR, "GET_CURR")
+        if resp is None:
             return None
         data = struct.unpack("<2B7h", resp)
-        if data[0] != GET_CURR:
-            print(f"Invalid response from hand in get_actuator_currents. Expected {GET_CURR}, got {data[0]}")
-            self.ser.reset_input_buffer()
-            return None
         ## Convert to mA using the conversion factor 1 unit = 6.5 mA as per Feetech documentation
         currents_mA = [val * 6.5 for val in data[2:]]
         return currents_mA
@@ -449,24 +506,10 @@ class AeroHand:
         Returns:
             list: A list of 7 actuator temperatures. (Degree Celsius)
         """
-        self.ser.reset_input_buffer()
-
-        try: 
-            self._send_data(GET_TEMP)
-        except SerialTimeoutException as e:
-            print(f"Error while writing to serial port: {e}")
-            return None
-        
-        ## Read the response, unsigned values
-        resp = self.ser.read(2 + 7 * 2)  # 2
-        if len(resp) != 16:
-            print(f"Timeout while reading temperatures. Got {len(resp)} bytes.")
+        resp = self._request_response(GET_TEMP, "GET_TEMP")
+        if resp is None:
             return None
         data = struct.unpack("<2B7H", resp)
-        if data[0] != GET_TEMP:
-            print(f"Invalid response from hand in get_actuator_temperatures. Expected {GET_TEMP}, got {data[0]}")
-            self.ser.reset_input_buffer()
-            return None
         ## Temperatures are in degree Celsius directly
         temperatures = [float(val) for val in data[2:]]
         return temperatures
@@ -477,27 +520,14 @@ class AeroHand:
         Returns:
             list: A list of 7 actuator speeds. (RPM)
         """
-        self.ser.reset_input_buffer()
-
-        try: 
-            self._send_data(GET_VEL)
-        except SerialTimeoutException as e:
-            print(f"Error while writing to serial port: {e}")
-            return None
-        
-        ## Read the response, signed values
-        resp = self.ser.read(2 + 7 * 2)  # 2
-        if len(resp) != 16:
-            print(f"Timeout while reading speeds. Got {len(resp)} bytes.")
+        resp = self._request_response(GET_VEL, "GET_VEL")
+        if resp is None:
             return None
         data = struct.unpack("<2B7h", resp)
-        if data[0] != GET_VEL:
-            print(f"Invalid response from hand in get_actuator_speeds. Expected {GET_VEL}, got {data[0]}")
-            self.ser.reset_input_buffer()
-            return None
         ## Convert to RPM using the conversion factor 1 unit = 0.732 RPM as per Feetech documentation
         speeds_rpm = [val * 0.732 for val in data[2:]]
         return speeds_rpm
 
     def close(self):
-        self.ser.close()
+        with self._serial_lock:
+            self.ser.close()
