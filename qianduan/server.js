@@ -326,7 +326,8 @@ function sendMessage(ws, message) {
 function currentRobotStatus() {
     if (robotStowPromise) return 'stowing';
     if (activeOrderId) return 'busy';
-    return 'idle';
+    if (!ROBOT_GRASP_REAL) return 'simulated';
+    return robotWorkerReady ? 'ready' : 'standby';
 }
 
 wss.on('connection', (ws) => {
@@ -359,7 +360,7 @@ wss.on('connection', (ws) => {
 
     sendMessage(ws, {
         type: 'connected',
-        message: '已连接到机器人控制系统',
+        message: '已连接到盒子后端',
         robotStatus: currentRobotStatus()
     });
 });

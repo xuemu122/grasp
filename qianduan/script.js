@@ -16,8 +16,8 @@ function connectWebSocket() {
 
     ws.onopen = () => {
         wsConnected = true;
-        logWS('✅ 已连接到机器人控制系统');
-        updateConnectionStatus('connected');
+        logWS('✅ 已连接到盒子后端');
+        updateConnectionStatus('backend');
     };
 
     ws.onmessage = (event) => {
@@ -44,9 +44,15 @@ function logWS(msg) {
 function updateConnectionStatus(status) {
     const robotStatus = document.getElementById('robotStatus');
     if (!robotStatus) return;
-    if (status === 'connected') {
+    if (status === 'backend' || status === 'standby' || status === 'idle') {
+        robotStatus.innerHTML = '<span class="status-dot busy"></span> 后端在线，机械臂待启动';
+    } else if (status === 'ready') {
         robotStatus.innerHTML = '<span class="status-dot online"></span> 机器人就绪';
-    } else if (status === 'disconnected') {
+    } else if (status === 'busy' || status === 'stowing') {
+        robotStatus.innerHTML = `<span class="status-dot busy"></span> ${status === 'stowing' ? '机械臂收起中' : '机器人执行中'}`;
+    } else if (status === 'simulated') {
+        robotStatus.innerHTML = '<span class="status-dot busy"></span> 模拟后端在线';
+    } else {
         robotStatus.innerHTML = '<span class="status-dot" style="background:#EF4444;box-shadow:0 0 8px rgba(239,68,68,0.6)"></span> 后端未连接';
     }
 }
@@ -55,6 +61,7 @@ function handleWSMessage(msg) {
     switch (msg.type) {
         case 'connected':
             logWS(msg.message);
+            updateConnectionStatus(msg.robotStatus || 'backend');
             break;
         case 'status':
             if (msg.status === 'started') {
