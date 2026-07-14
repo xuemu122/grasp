@@ -12,8 +12,7 @@ let wsConnected = false;
 
 function connectWebSocket() {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsHost = window.location.hostname || 'localhost';
-    ws = new WebSocket(`${wsProtocol}//${wsHost}:3001`);
+    ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/`);
 
     ws.onopen = () => {
         wsConnected = true;

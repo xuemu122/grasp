@@ -14,6 +14,8 @@ const { WebSocket, WebSocketServer } = require('ws');
 
 const PORT = Number(process.env.PORT || 3000);
 const WS_PORT = Number(process.env.WS_PORT || 3001);
+const HOST = process.env.HOST || '0.0.0.0';
+const WS_HOST = process.env.WS_HOST || HOST;
 const ROBOT_GRASP_MODE = (process.env.ROBOT_GRASP_MODE || 'sim').toLowerCase();
 const ROBOT_GRASP_REAL = ['real', 'robot', 'hardware'].includes(ROBOT_GRASP_MODE);
 const GRASP_SCRIPT = process.env.GRASP_SCRIPT || path.resolve(__dirname, '../dipan/shelf_grasp.py');
@@ -289,14 +291,14 @@ const server = http.createServer(async (req, res) => {
     });
 });
 
-server.listen(PORT, () => {
-    log(`HTTP 服务已启动: http://localhost:${PORT}`);
+server.listen(PORT, HOST, () => {
+    log(`HTTP 服务已启动: http://${HOST}:${PORT}`);
     log(`商品管理页面: http://localhost:${PORT}/admin.html`);
     log(`抓取模式: ${ROBOT_GRASP_REAL ? '真实机械臂' : '模拟'} (${ROBOT_GRASP_MODE})`);
 });
 
 // ========== WebSocket 服务 ==========
-const wss = new WebSocketServer({ port: WS_PORT, maxPayload: 64 * 1024 });
+const wss = new WebSocketServer({ port: WS_PORT, host: WS_HOST, maxPayload: 64 * 1024 });
 
 log(`WebSocket 服务已启动: ws://localhost:${WS_PORT}`);
 
