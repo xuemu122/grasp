@@ -96,6 +96,17 @@ async function init() {
     await loadCategories();
     await loadProducts();
     bindSearch();
+    window.addEventListener('focus', refreshCatalog);
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) refreshCatalog();
+    });
+    setInterval(() => {
+        if (!document.hidden) refreshCatalog();
+    }, 15000);
+}
+
+async function refreshCatalog() {
+    await Promise.all([loadCategories(), loadProducts()]);
 }
 
 // ========== 加载分类 ==========
@@ -120,6 +131,16 @@ async function loadProducts() {
         const data = await res.json();
         if (data.code === 0) {
             products = data.data || [];
+            const productMap = new Map(products.map(product => [String(product.id), product]));
+            for (const [id, qty] of Object.entries(cart)) {
+                const product = productMap.get(String(id));
+                if (!product || Number(product.status) !== 1 || Number(product.stock) <= 0) {
+                    delete cart[id];
+                } else if (qty > Number(product.stock)) {
+                    cart[id] = Number(product.stock);
+                }
+            }
+            updateCartUI();
         }
     } catch (e) {
         console.error('加载商品失败:', e);
@@ -220,9 +241,10 @@ function renderProducts() {
 
     grid.innerHTML = filtered.map(p => {
         const qty = cart[p.id] || 0;
+        const soldOut = Number(p.stock) <= 0;
         const code = p.location ? String(p.location).replace(/\s/g, '') : ('#' + String(p.id).padStart(12, '0'));
         return `
-            <div class="product-card ${qty > 0 ? 'selected' : ''}" id="card-${p.id}">
+            <div class="product-card ${qty > 0 ? 'selected' : ''} ${soldOut ? 'sold-out' : ''}" id="card-${p.id}">
                 <div class="product-image">
                     ${p.photo_front ? `<img src="${p.photo_front}" alt="${p.name}" loading="lazy">` : `<span class="product-emoji">${p.emoji || '📦'}</span>`}
                     ${qty > 0 ? `<span class="product-badge">${qty}</span>` : ''}
@@ -235,8 +257,8 @@ function renderProducts() {
                     <div class="product-price">
                         <span class="price-symbol">¥</span>${Number(p.price || 0).toFixed(2)}
                     </div>
-                    <button class="btn-add" onclick="addToCart('${p.id}', event)">
-                        ${qty > 0 ? '+' : '添加'}
+                    <button class="btn-add" onclick="addToCart('${p.id}', event)" ${soldOut ? 'disabled' : ''}>
+                        ${soldOut ? '售罄' : (qty > 0 ? '+' : '添加')}
                     </button>
                 </div>
             </div>

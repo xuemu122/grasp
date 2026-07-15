@@ -33,7 +33,11 @@ test('completed orders decrement inventory once', async (t) => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grasp-inventory-'));
     const dataFile = path.join(tempDir, 'products.json');
     fs.writeFileSync(dataFile, JSON.stringify({
-        products: [{ id: 1, name: '测试咖啡', stock: 5, status: 1, price: 8 }]
+        products: [
+            { id: 1, name: '测试咖啡', stock: 5, status: 1, price: 8 },
+            { id: 2, name: '下架商品', stock: 5, status: 0, price: 5 },
+            { id: 3, name: '售罄商品', stock: 0, status: 1, price: 6 }
+        ]
     }));
     t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
@@ -70,6 +74,10 @@ test('completed orders decrement inventory once', async (t) => {
     });
 
     const baseUrl = `http://127.0.0.1:${port}`;
+    const publicProductsResponse = await fetch(`${baseUrl}/api/products?include_inactive=1`);
+    const publicProducts = await publicProductsResponse.json();
+    assert.deepEqual(publicProducts.data.map((item) => item.id).sort(), [1, 3]);
+
     const prepared = await postJson(`${baseUrl}/api/orders/prepare`, {
         items: [{ id: 1, name: '测试咖啡', qty: 2 }]
     });
@@ -88,7 +96,7 @@ test('completed orders decrement inventory once', async (t) => {
 
     const productsResponse = await fetch(`${baseUrl}/api/products`);
     const products = await productsResponse.json();
-    assert.equal(products.data[0].stock, 3);
+    assert.equal(products.data.find((item) => item.id === 1).stock, 3);
 
     const insufficient = await postJson(`${baseUrl}/api/orders/prepare`, {
         items: [{ id: 1, name: '测试咖啡', qty: 4 }]

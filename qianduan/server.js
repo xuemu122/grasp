@@ -404,7 +404,9 @@ const server = http.createServer(async (req, res) => {
         try {
             const search = url.searchParams.get('search') || '';
             const category = url.searchParams.get('category') || '';
-            const rows = filterProducts(readProducts(), { search, category });
+            const includeInactive = url.searchParams.get('include_inactive') === '1' && Boolean(readAdminSession(req));
+            const source = includeInactive ? readProducts() : readProducts().filter((item) => Number(item.status) === 1);
+            const rows = filterProducts(source, { search, category });
             sendJSON(res, { code: 0, data: rows, total: rows.length });
         } catch (e) {
             sendJSON(res, { code: 1, message: e.message }, 500);
@@ -417,7 +419,10 @@ const server = http.createServer(async (req, res) => {
     if (singleMatch && req.method === 'GET') {
         try {
             const product = readProducts().find((item) => String(item.id) === singleMatch[1]);
-            if (!product) { sendJSON(res, { code: 1, message: '商品不存在' }, 404); return; }
+            if (!product || (Number(product.status) !== 1 && !readAdminSession(req))) {
+                sendJSON(res, { code: 1, message: '商品不存在' }, 404);
+                return;
+            }
             sendJSON(res, { code: 0, data: product });
         } catch (e) {
             sendJSON(res, { code: 1, message: e.message }, 500);
@@ -490,7 +495,9 @@ const server = http.createServer(async (req, res) => {
     // GET /api/categories - 获取所有品类
     if (pathname === '/api/categories' && req.method === 'GET') {
         try {
-            const categories = [...new Set(readProducts().map((item) => item.category).filter(Boolean))].sort();
+            const includeInactive = url.searchParams.get('include_inactive') === '1' && Boolean(readAdminSession(req));
+            const source = includeInactive ? readProducts() : readProducts().filter((item) => Number(item.status) === 1);
+            const categories = [...new Set(source.map((item) => item.category).filter(Boolean))].sort();
             sendJSON(res, { code: 0, data: categories });
         } catch (e) {
             sendJSON(res, { code: 1, message: e.message }, 500);
