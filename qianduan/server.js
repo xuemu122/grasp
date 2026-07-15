@@ -23,6 +23,8 @@ const GRASP_SCRIPT = process.env.GRASP_SCRIPT || path.resolve(__dirname, '../dip
 const GRASP_CWD = path.dirname(GRASP_SCRIPT);
 const DOBOT_IP = process.env.DOBOT_IP || '192.168.5.1';
 const PRODUCTS_DB_FILE = process.env.PRODUCTS_DB_FILE || path.join(__dirname, 'data', 'products.json');
+const PRODUCT_UPLOAD_DIR = process.env.PRODUCT_UPLOAD_DIR || path.join(path.dirname(PRODUCTS_DB_FILE), 'uploads');
+const PRODUCT_UPLOAD_MAX_BYTES = Number(process.env.PRODUCT_UPLOAD_MAX_BYTES || 5 * 1024 * 1024);
 const ROBOT_WORKER_READY_TIMEOUT_MS = Number(process.env.ROBOT_WORKER_READY_TIMEOUT_MS || 90000);
 const ROBOT_GRAB_TIMEOUT_MS = Number(process.env.ROBOT_GRAB_TIMEOUT_MS || 120000);
 const ROBOT_STOW_TIMEOUT_MS = Number(process.env.ROBOT_STOW_TIMEOUT_MS || 120000);
@@ -72,6 +74,8 @@ const MIME = {
     '.json': 'application/json; charset=utf-8',
     '.png':  'image/png',
     '.jpg':  'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
     '.svg':  'image/svg+xml',
     '.ico':  'image/x-icon',
 };
@@ -95,6 +99,46 @@ function sendJSON(res, data, status = 200, headers = {}) {
         ...headers
     });
     res.end(JSON.stringify(data));
+}
+
+function parseBinaryBody(req, maxBytes) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        let size = 0;
+        let settled = false;
+
+        req.on('data', (chunk) => {
+            if (settled) return;
+            size += chunk.length;
+            if (size > maxBytes) {
+                settled = true;
+                const error = new Error(`图片不能超过 ${Math.floor(maxBytes / 1024 / 1024)} MB`);
+                error.statusCode = 413;
+                reject(error);
+                return;
+            }
+            chunks.push(chunk);
+        });
+        req.on('end', () => {
+            if (!settled) resolve(Buffer.concat(chunks));
+        });
+        req.on('error', (error) => {
+            if (!settled) reject(error);
+        });
+    });
+}
+
+function detectImageType(buffer) {
+    if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+        return { extension: 'png', contentType: 'image/png' };
+    }
+    if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+        return { extension: 'jpg', contentType: 'image/jpeg' };
+    }
+    if (buffer.length >= 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') {
+        return { extension: 'webp', contentType: 'image/webp' };
+    }
+    return null;
 }
 
 function safeEqual(left, right) {
@@ -339,6 +383,54 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/admin/logout' && req.method === 'POST') {
         sendJSON(res, { code: 0 }, 200, {
             'Set-Cookie': `${ADMIN_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`
+        });
+        return;
+    }
+
+    if (pathname === '/api/admin/uploads' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        try {
+            const image = await parseBinaryBody(req, PRODUCT_UPLOAD_MAX_BYTES);
+            if (image.length === 0) {
+                sendJSON(res, { code: 1, message: '请选择要上传的图片' }, 400);
+                return;
+            }
+            const imageType = detectImageType(image);
+            if (!imageType) {
+                sendJSON(res, { code: 1, message: '仅支持 JPG、PNG 和 WebP 图片' }, 415);
+                return;
+            }
+
+            fs.mkdirSync(PRODUCT_UPLOAD_DIR, { recursive: true });
+            const fileName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.${imageType.extension}`;
+            const filePath = path.join(PRODUCT_UPLOAD_DIR, fileName);
+            const tempPath = `${filePath}.${process.pid}.tmp`;
+            fs.writeFileSync(tempPath, image, { flag: 'wx', mode: 0o640 });
+            fs.renameSync(tempPath, filePath);
+            sendJSON(res, { code: 0, url: `/api/uploads/${fileName}` }, 201);
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message || '图片上传失败' }, error.statusCode || 500);
+        }
+        return;
+    }
+
+    const uploadedImageMatch = pathname.match(/^\/api\/uploads\/([a-zA-Z0-9-]+\.(?:png|jpg|webp))$/);
+    if (uploadedImageMatch && (req.method === 'GET' || req.method === 'HEAD')) {
+        const fileName = uploadedImageMatch[1];
+        const filePath = path.join(PRODUCT_UPLOAD_DIR, fileName);
+        fs.readFile(filePath, (error, data) => {
+            if (error) {
+                res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+                res.end('404 Not Found');
+                return;
+            }
+            res.writeHead(200, {
+                'Content-Type': MIME[path.extname(fileName)] || 'application/octet-stream',
+                'Content-Length': data.length,
+                'Cache-Control': 'public, max-age=31536000, immutable',
+                'X-Content-Type-Options': 'nosniff'
+            });
+            res.end(req.method === 'HEAD' ? undefined : data);
         });
         return;
     }

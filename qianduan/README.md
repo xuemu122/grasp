@@ -28,6 +28,7 @@
 
 - `index.html`、`style.css`、`script.js`：点单页面。
 - `admin.html`：商品管理页面。
+- `uploads/`：管理端上传的商品图片（默认与商品 JSON 位于同一数据目录）。
 - `server.js`：HTTP/API 与订单 WebSocket 服务。
 - `start.js`：初始化商品数据后启动 `server.js`。
 - `init_db.js`：从 Excel 初始化 `data/products.json`。
@@ -39,6 +40,8 @@
 云端 Nginx 直接托管静态文件，并使用以下两个反向代理：
 
 ```nginx
+client_max_body_size 5m;
+
 location ^~ /api/ {
     proxy_pass http://127.0.0.1:3100;
 }
@@ -65,6 +68,15 @@ ROBOT_GRASP_MODE=sim \
 PRODUCTS_DB_FILE=/var/lib/grasp-qianduan/products.json \
 node server.js
 ```
+
+管理端可上传或替换商品正面、反面图片，支持 JPG、PNG 和 WebP，默认单张最大 5 MB。图片上传接口需要管理员会话，图片读取地址保持公开供点单页展示。默认保存到 `PRODUCTS_DB_FILE` 同级的 `uploads/` 目录，也可通过以下环境变量调整：
+
+```text
+PRODUCT_UPLOAD_DIR=/var/lib/grasp-qianduan/uploads
+PRODUCT_UPLOAD_MAX_BYTES=5242880
+```
+
+上传目录必须对运行 Node 服务的用户可写。若 Nginx 位于服务前方，其 `client_max_body_size` 不应小于 Node 的上传限制。
 
 生产环境应使用 systemd 或其他进程管理器保持服务运行。`PRODUCTS_DB_FILE` 必须对运行服务的用户可写，否则商品新增、修改和删除会失败。
 

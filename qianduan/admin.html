@@ -63,6 +63,16 @@
         .emoji-opt { font-size: 1.5rem; cursor: pointer; padding: 4px 8px; border-radius: 6px; border: 2px solid transparent; transition: all 0.15s; }
         .emoji-opt:hover { background: var(--gray-100); }
         .emoji-opt.selected { border-color: var(--primary); background: var(--primary-light); }
+        .product-thumb { width: 42px; height: 42px; object-fit: contain; display: block; border-radius: 6px; background: var(--gray-50); }
+        .image-upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .image-upload { min-width: 0; }
+        .image-preview { aspect-ratio: 4 / 3; width: 100%; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 2px dashed var(--gray-200); border-radius: 8px; background: var(--gray-50); color: var(--gray-400); font-size: 0.82rem; }
+        .image-preview img { width: 100%; height: 100%; object-fit: contain; display: block; }
+        .image-actions { display: flex; gap: 8px; margin: 8px 0; }
+        .image-actions .btn { flex: 1; justify-content: center; padding: 7px 8px; }
+        .image-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+        .image-hint { display: block; margin-top: 5px; color: var(--gray-400); font-size: 0.75rem; line-height: 1.4; }
+        @media (max-width: 520px) { .image-upload-grid { grid-template-columns: 1fr; } }
         .toast { position: fixed; top: 20px; right: 20px; padding: 14px 24px; border-radius: 10px; color: white; font-weight: 600; z-index: 9999; animation: slideDown 0.3s ease; box-shadow: var(--shadow-lg); }
         .toast.success { background: var(--success); }
         .toast.error { background: var(--danger); }
@@ -232,16 +242,29 @@
                         <input type="number" class="form-input" id="formStock" value="100">
                     </div>
                 </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>正面照片URL</label>
-                        <input type="text" class="form-input" id="formPhotoFront" placeholder="图片链接">
+                <div class="image-upload-grid">
+                    <div class="form-group image-upload">
+                        <label>正面照片</label>
+                        <div class="image-preview" id="formPhotoFrontPreview"><span>暂无图片</span></div>
+                        <div class="image-actions">
+                            <label class="btn btn-primary btn-sm" for="formPhotoFrontFile">选择图片</label>
+                            <input class="image-file-input" type="file" id="formPhotoFrontFile" accept="image/jpeg,image/png,image/webp" onchange="selectProductImage('front', this)">
+                            <button class="btn btn-danger btn-sm" type="button" onclick="clearProductImage('front')">移除</button>
+                        </div>
+                        <input type="text" class="form-input" id="formPhotoFront" placeholder="或粘贴图片链接" oninput="changeProductImageUrl('front')">
                     </div>
-                    <div class="form-group">
-                        <label>反面照片URL</label>
-                        <input type="text" class="form-input" id="formPhotoBack" placeholder="图片链接">
+                    <div class="form-group image-upload">
+                        <label>反面照片</label>
+                        <div class="image-preview" id="formPhotoBackPreview"><span>暂无图片</span></div>
+                        <div class="image-actions">
+                            <label class="btn btn-primary btn-sm" for="formPhotoBackFile">选择图片</label>
+                            <input class="image-file-input" type="file" id="formPhotoBackFile" accept="image/jpeg,image/png,image/webp" onchange="selectProductImage('back', this)">
+                            <button class="btn btn-danger btn-sm" type="button" onclick="clearProductImage('back')">移除</button>
+                        </div>
+                        <input type="text" class="form-input" id="formPhotoBack" placeholder="或粘贴图片链接" oninput="changeProductImageUrl('back')">
                     </div>
                 </div>
+                <span class="image-hint">支持 JPG、PNG、WebP，单张不超过 5 MB。选择新图片并保存后会替换原图。</span>
                 <div class="form-group">
                     <label>状态</label>
                     <select class="form-select" id="formStatus">
@@ -261,6 +284,12 @@
 
     <script>
         const EMOJI_OPTIONS = ['🥤','💧','🍵','🥛','⚡','🍿','🍞','🍪','🍬','🍜','📦','🧃','🧋','☕','🍺','🥜','🍫','🍩'];
+        const pendingImages = { front: null, back: null };
+        const imagePreviewUrls = { front: '', back: '' };
+        const imageFieldIds = {
+            front: { value: 'formPhotoFront', file: 'formPhotoFrontFile', preview: 'formPhotoFrontPreview' },
+            back: { value: 'formPhotoBack', file: 'formPhotoBackFile', preview: 'formPhotoBackPreview' }
+        };
 
         // ========== 登录与初始化 ==========
         document.addEventListener('DOMContentLoaded', async () => {
@@ -372,7 +401,7 @@
 
                 tbody.innerHTML = json.data.map(p => `
                     <tr>
-                        <td style="font-size:1.4rem;">${p.emoji || '📦'}</td>
+                        <td>${p.photo_front ? `<img class="product-thumb" src="${esc(p.photo_front)}" alt="${esc(p.name)}">` : `<span style="font-size:1.4rem;">${p.emoji || '📦'}</span>`}</td>
                         <td><strong>${esc(p.name)}</strong></td>
                         <td>${esc(p.spec) || '-'}</td>
                         <td>${esc(p.packaging) || '-'}</td>
@@ -418,6 +447,85 @@
             document.getElementById('btnCancel').style.display = 'none';
         }
 
+        function revokeImagePreview(side) {
+            if (imagePreviewUrls[side]) URL.revokeObjectURL(imagePreviewUrls[side]);
+            imagePreviewUrls[side] = '';
+        }
+
+        function renderImagePreview(side, url) {
+            const preview = document.getElementById(imageFieldIds[side].preview);
+            preview.replaceChildren();
+            if (!url) {
+                const empty = document.createElement('span');
+                empty.textContent = '暂无图片';
+                preview.appendChild(empty);
+                return;
+            }
+            const image = document.createElement('img');
+            image.src = url;
+            image.alt = side === 'front' ? '正面照片预览' : '反面照片预览';
+            image.addEventListener('error', () => {
+                preview.replaceChildren();
+                const error = document.createElement('span');
+                error.textContent = '图片无法加载';
+                preview.appendChild(error);
+            }, { once: true });
+            preview.appendChild(image);
+        }
+
+        function setProductImage(side, url) {
+            revokeImagePreview(side);
+            pendingImages[side] = null;
+            document.getElementById(imageFieldIds[side].file).value = '';
+            document.getElementById(imageFieldIds[side].value).value = url || '';
+            renderImagePreview(side, url || '');
+        }
+
+        function selectProductImage(side, input) {
+            const file = input.files && input.files[0];
+            if (!file) return;
+            const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+            if (!allowed.includes(file.type)) {
+                input.value = '';
+                showToast('仅支持 JPG、PNG 和 WebP 图片', 'error');
+                return;
+            }
+            if (file.size > 5 * 1024 * 1024) {
+                input.value = '';
+                showToast('单张图片不能超过 5 MB', 'error');
+                return;
+            }
+            revokeImagePreview(side);
+            pendingImages[side] = file;
+            imagePreviewUrls[side] = URL.createObjectURL(file);
+            renderImagePreview(side, imagePreviewUrls[side]);
+        }
+
+        function changeProductImageUrl(side) {
+            revokeImagePreview(side);
+            pendingImages[side] = null;
+            document.getElementById(imageFieldIds[side].file).value = '';
+            renderImagePreview(side, document.getElementById(imageFieldIds[side].value).value.trim());
+        }
+
+        function clearProductImage(side) {
+            setProductImage(side, '');
+        }
+
+        async function uploadProductImage(side) {
+            const file = pendingImages[side];
+            if (!file) return document.getElementById(imageFieldIds[side].value).value.trim();
+            const res = await adminFetch('/api/admin/uploads', {
+                method: 'POST',
+                headers: { 'Content-Type': file.type },
+                body: file
+            });
+            const json = await res.json();
+            if (!res.ok || json.code !== 0) throw new Error(json.message || '图片上传失败');
+            document.getElementById(imageFieldIds[side].value).value = json.url;
+            return json.url;
+        }
+
         async function editProduct(id) {
             try {
                 const res = await adminFetch(`/api/products/${id}`);
@@ -437,8 +545,8 @@
                 document.getElementById('formShelfZ').value = p.shelf_z || 50;
                 document.getElementById('formPrice').value = p.price || 0;
                 document.getElementById('formStock').value = p.stock || 100;
-                document.getElementById('formPhotoFront').value = p.photo_front || '';
-                document.getElementById('formPhotoBack').value = p.photo_back || '';
+                setProductImage('front', p.photo_front || '');
+                setProductImage('back', p.photo_back || '');
                 document.getElementById('formStatus').value = p.status ?? 1;
 
                 document.querySelectorAll('.emoji-opt').forEach(e => {
@@ -465,12 +573,23 @@
             document.getElementById('btnSubmit').textContent = '💾 保存商品';
             document.getElementById('btnCancel').style.display = 'none';
             document.querySelectorAll('.emoji-opt').forEach(e => e.classList.remove('selected'));
+            setProductImage('front', '');
+            setProductImage('back', '');
         }
 
         async function saveProduct(event) {
             event.preventDefault();
             const id = document.getElementById('editId').value;
-            const data = {
+            const submitButton = document.getElementById('btnSubmit');
+            submitButton.disabled = true;
+            submitButton.textContent = '正在保存...';
+
+            try {
+                const [photoFront, photoBack] = await Promise.all([
+                    uploadProductImage('front'),
+                    uploadProductImage('back')
+                ]);
+                const data = {
                 name: document.getElementById('formName').value.trim(),
                 spec: document.getElementById('formSpec').value.trim(),
                 packaging: document.getElementById('formPackaging').value,
@@ -483,15 +602,14 @@
                 shelf_z: parseInt(document.getElementById('formShelfZ').value) || 50,
                 price: parseFloat(document.getElementById('formPrice').value) || 0,
                 stock: parseInt(document.getElementById('formStock').value) || 0,
-                photo_front: document.getElementById('formPhotoFront').value.trim(),
-                photo_back: document.getElementById('formPhotoBack').value.trim(),
+                photo_front: photoFront,
+                photo_back: photoBack,
                 status: parseInt(document.getElementById('formStatus').value),
-            };
+                };
 
-            const method = id ? 'PUT' : 'POST';
-            const url = id ? `/api/products/${id}` : '/api/products';
+                const method = id ? 'PUT' : 'POST';
+                const url = id ? `/api/products/${id}` : '/api/products';
 
-            try {
                 const res = await adminFetch(url, {
                     method,
                     headers: { 'Content-Type': 'application/json' },
@@ -507,7 +625,12 @@
                     showToast('操作失败: ' + json.message, 'error');
                 }
             } catch (e) {
-                showToast('网络错误', 'error');
+                showToast(e.message || '网络错误', 'error');
+            } finally {
+                submitButton.disabled = false;
+                if (document.body.contains(submitButton)) {
+                    submitButton.textContent = document.getElementById('editId').value ? '💾 更新商品' : '💾 保存商品';
+                }
             }
         }
 
