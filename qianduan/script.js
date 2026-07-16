@@ -366,6 +366,14 @@ function updateCartUI() {
 
     if (totalPriceEl) totalPriceEl.textContent = '¥' + getTotalPrice().toFixed(2);
     if (cartQtyEl) cartQtyEl.textContent = getTotalQty();
+
+    // 更新浮窗徽章
+    const badge = document.getElementById('cartBadge');
+    const qty = getTotalQty();
+    if (badge) {
+        badge.textContent = qty;
+        badge.setAttribute('data-count', qty);
+    }
 }
 
 // ========== 提交订单 ==========

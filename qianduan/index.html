@@ -51,11 +51,12 @@
             </div>
         </main>
 
-        <!-- 右侧：购物车 -->
-        <aside class="cart-sidebar">
+        <!-- 右侧：购物车（悬浮浮窗，hover 展开） -->
+        <aside class="cart-sidebar" id="cartSidebar">
             <div class="cart-header">
-                <h2>🛒 购物车</h2>
-                <button class="btn-clear-cart" onclick="clearCart()">清空</button>
+                <span style="font-size:1.4rem;flex-shrink:0;">🛒</span>
+                <h2>购物车</h2>
+                <span class="cart-badge" id="cartBadge" data-count="0"></span>
             </div>
             <div class="cart-items" id="cartItems">
                 <div class="cart-empty">
@@ -75,6 +76,7 @@
                         <span class="total-price" id="totalPrice">¥0.00</span>
                     </div>
                 </div>
+                <button class="btn-clear-cart-footer" onclick="clearCart()">清空购物车</button>
                 <button class="btn-submit" id="btnSubmit" onclick="submitOrder()">
                     开始支付
                 </button>

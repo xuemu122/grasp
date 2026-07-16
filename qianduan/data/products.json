@@ -81,7 +81,7 @@
       "manufacturer": "可口可乐公司",
       "photo_front": "images/drinks/A_single_Sprite_500ml_plastic__2026-07-08T01-50-06.png",
       "photo_back": "",
-      "location": "饮料区A1货架",
+      "location": "饮料区A货架4层",
       "shelf_x": 100,
       "shelf_y": 100,
       "shelf_z": 50,
@@ -117,7 +117,7 @@
       "manufacturer": "农夫山泉股份有限公司",
       "photo_front": "images/drinks/A_single_Nongfu_Spring_mineral_2026-07-08T01-50-33.png",
       "photo_back": "",
-      "location": "饮料区A2货架",
+      "location": "饮料区A货架4层",
       "shelf_x": 100,
       "shelf_y": 200,
       "shelf_z": 50,
@@ -387,7 +387,7 @@
       "manufacturer": "",
       "photo_front": "images/drinks/shuirongc.svg",
       "photo_back": "",
-      "location": "饮料区A5货架",
+      "location": "饮料区A货架4层",
       "shelf_x": 100,
       "shelf_y": 500,
       "shelf_z": 50,
@@ -405,7 +405,7 @@
       "manufacturer": "",
       "photo_front": "images/drinks/coffee.svg",
       "photo_back": "",
-      "location": "饮料区A6货架",
+      "location": "饮料区A货架三层",
       "shelf_x": 100,
       "shelf_y": 600,
       "shelf_z": 50,
@@ -414,5 +414,6 @@
       "stock": 100,
       "status": 1
     }
-  ]
+  ],
+  "completedOrders": {}
 }
