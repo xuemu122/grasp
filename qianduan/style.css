@@ -500,7 +500,7 @@ body {
     flex-direction: column;
     position: fixed;
     top: 86px;
-    right: 24px;
+    right: max(24px, calc((100vw - 1440px) / 2 + 24px));
     width: 56px;
     max-height: 56px;
     overflow: hidden;
@@ -509,25 +509,34 @@ body {
 }
 
 /* hover 时展开 */
-.cart-sidebar:hover {
+.cart-sidebar:hover,
+.cart-sidebar.is-open {
     width: 320px;
     max-height: calc(100vh - 110px);
 }
 
-.cart-sidebar:hover .cart-header {
+.cart-sidebar:hover .cart-header,
+.cart-sidebar.is-open .cart-header {
     padding: 14px 18px;
     border-bottom: 1px solid var(--gray-200);
+    justify-content: flex-start;
+    gap: 8px;
 }
 
 .cart-sidebar:hover .cart-items,
-.cart-sidebar:hover .cart-footer {
+.cart-sidebar:hover .cart-footer,
+.cart-sidebar.is-open .cart-items,
+.cart-sidebar.is-open .cart-footer {
     opacity: 1;
     visibility: visible;
 }
 
 .cart-sidebar:hover .cart-header h2,
 .cart-sidebar:hover .cart-badge,
-.cart-sidebar:hover .btn-cart-toggle {
+.cart-sidebar:hover .btn-cart-toggle,
+.cart-sidebar.is-open .cart-header h2,
+.cart-sidebar.is-open .cart-badge,
+.cart-sidebar.is-open .btn-cart-toggle {
     opacity: 1;
 }
 
@@ -547,7 +556,7 @@ body {
     border-bottom: 1px solid transparent;
     cursor: default;
     user-select: none;
-    gap: 8px;
+    gap: 0;
     flex-shrink: 0;
     transition: padding 0.25s ease, border-color 0.25s ease, justify-content 0.25s ease;
 }
@@ -562,8 +571,14 @@ body {
     color: var(--gray-900);
     white-space: nowrap;
     opacity: 0;
+    max-width: 0;
     transition: opacity 0.15s ease 0.1s;
     overflow: hidden;
+}
+
+.cart-sidebar:hover .cart-header h2,
+.cart-sidebar.is-open .cart-header h2 {
+    max-width: 100px;
 }
 
 .cart-badge {
@@ -991,7 +1006,8 @@ body {
         grid-template-columns: 160px 1fr;
     }
 
-    .cart-sidebar:hover {
+    .cart-sidebar:hover,
+    .cart-sidebar.is-open {
         width: 280px;
     }
 }
@@ -1016,15 +1032,16 @@ body {
         top: auto;
         bottom: 16px;
         right: 16px;
-        left: 16px;
+        left: auto;
         width: 56px;
         max-height: 56px;
         border-radius: var(--radius-lg);
         margin-left: auto;
     }
 
-    .cart-sidebar:hover {
-        width: auto;
+    .cart-sidebar:hover,
+    .cart-sidebar.is-open {
+        width: min(360px, calc(100vw - 32px));
         max-height: 50vh;
         border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     }

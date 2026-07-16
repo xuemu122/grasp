@@ -304,6 +304,36 @@ function clearCart() {
     renderProducts();
 }
 
+function toggleCart(event) {
+    if (event) event.stopPropagation();
+    const sidebar = document.getElementById('cartSidebar');
+    if (!sidebar) return;
+    const expanded = sidebar.classList.toggle('is-open');
+    const header = sidebar.querySelector('.cart-header');
+    if (header) {
+        header.setAttribute('aria-expanded', String(expanded));
+        header.setAttribute('aria-label', expanded ? '收起购物车' : '展开购物车');
+    }
+}
+
+function handleCartKeydown(event) {
+    if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        toggleCart(event);
+    }
+}
+
+document.addEventListener('click', (event) => {
+    const sidebar = document.getElementById('cartSidebar');
+    if (!sidebar || sidebar.contains(event.target)) return;
+    sidebar.classList.remove('is-open');
+    const header = sidebar.querySelector('.cart-header');
+    if (header) {
+        header.setAttribute('aria-expanded', 'false');
+        header.setAttribute('aria-label', '展开购物车');
+    }
+});
+
 // ========== 获取购物车列表 ==========
 function getCartItems() {
     return Object.entries(cart).map(([id, qty]) => {

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>机器人智能点单平台</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=cloud-ws-6">
 </head>
 <body>
     <!-- 顶部导航 -->
@@ -53,7 +53,7 @@
 
         <!-- 右侧：购物车（悬浮浮窗，hover 展开） -->
         <aside class="cart-sidebar" id="cartSidebar">
-            <div class="cart-header">
+            <div class="cart-header" role="button" tabindex="0" aria-label="展开购物车" aria-expanded="false" onclick="toggleCart(event)" onkeydown="handleCartKeydown(event)">
                 <span style="font-size:1.4rem;flex-shrink:0;">🛒</span>
                 <h2>购物车</h2>
                 <span class="cart-badge" id="cartBadge" data-count="0"></span>
@@ -96,6 +96,6 @@
         <div class="toast-content" id="toastContent"></div>
     </div>
 
-    <script src="script.js?v=cloud-ws-5"></script>
+    <script src="script.js?v=cloud-ws-6"></script>
 </body>
 </html>
