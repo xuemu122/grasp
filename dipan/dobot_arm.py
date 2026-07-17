@@ -8,6 +8,7 @@ import time
 from typing import Optional, Tuple
 
 from self_collision_guard import Nova5SelfCollisionGuard, describe_self_collision
+from tool_geometry import camera_size_label_mm
 
 
 DOBOT_IP = os.getenv("DOBOT_IP", "192.168.5.1")
@@ -55,7 +56,8 @@ class DobotArm:
                 self.self_collision_guard = Nova5SelfCollisionGuard(margin_m=SELF_COLLISION_MARGIN_M)
                 print(
                     f"[自碰撞] Nova5 URDF 护栏已启用 "
-                    f"(margin={SELF_COLLISION_MARGIN_M*1000:.0f}mm, samples={SELF_COLLISION_PATH_SAMPLES})"
+                    f"(margin={SELF_COLLISION_MARGIN_M*1000:.0f}mm, "
+                    f"samples={SELF_COLLISION_PATH_SAMPLES}, camera={camera_size_label_mm()})"
                 )
             except Exception as e:
                 print(f"[自碰撞][警告] 初始化失败, 本次关闭自碰撞护栏: {e}")

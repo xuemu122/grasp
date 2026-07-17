@@ -39,6 +39,8 @@ def depth_to_robot_obstacles(
     self_hand_radius_m: float = 0.07,
     self_hand_radius_profile_m: Optional[Sequence[Tuple[float, float, float]]] = None,
     self_hand_backoff_m: float = 0.03,
+    self_camera_box_min_local_m: Optional[Sequence[float]] = None,
+    self_camera_box_max_local_m: Optional[Sequence[float]] = None,
     return_pixels: bool = False,
 ) -> np.ndarray:
     if depth_img is None:
@@ -95,18 +97,35 @@ def depth_to_robot_obstacles(
     base_pts = base_pts.astype(np.float32, copy=False)
     pixels = np.stack([u.astype(np.int32), v.astype(np.int32)], axis=1)
 
-    if exclude_self_hand and self_hand_dir_m is not None and base_pts.size:
-        hand_dir = np.asarray(self_hand_dir_m, dtype=np.float32)
-        hand_dir = hand_dir / max(float(np.linalg.norm(hand_dir)), 1e-9)
+    if exclude_self_hand and base_pts.size:
         flange_xyz = np.asarray(pose[:3], dtype=np.float32) / 1000.0
-        hand_start = flange_xyz - float(self_hand_backoff_m) * hand_dir
-        hand_end = flange_xyz + float(self_hand_length_m) * hand_dir
-        self_dist, self_closest = _point_segment_distances_and_closest(base_pts, hand_start, hand_end)
-        self_axial = (self_closest - flange_xyz[None, :]) @ hand_dir
-        self_radius = _radius_for_axial(self_axial, float(self_hand_radius_m), self_hand_radius_profile_m)
-        keep = self_dist > self_radius
-        base_pts = base_pts[keep]
-        pixels = pixels[keep]
+        if self_hand_dir_m is not None:
+            hand_dir = np.asarray(self_hand_dir_m, dtype=np.float32)
+            hand_dir = hand_dir / max(float(np.linalg.norm(hand_dir)), 1e-9)
+            hand_start = flange_xyz - float(self_hand_backoff_m) * hand_dir
+            hand_end = flange_xyz + float(self_hand_length_m) * hand_dir
+            self_dist, self_closest = _point_segment_distances_and_closest(base_pts, hand_start, hand_end)
+            self_axial = (self_closest - flange_xyz[None, :]) @ hand_dir
+            self_radius = _radius_for_axial(self_axial, float(self_hand_radius_m), self_hand_radius_profile_m)
+            keep = self_dist > self_radius
+            base_pts = base_pts[keep]
+            pixels = pixels[keep]
+
+        if (
+            base_pts.size
+            and self_camera_box_min_local_m is not None
+            and self_camera_box_max_local_m is not None
+        ):
+            camera_dist, _ = _point_oriented_box_distances_and_closest(
+                base_pts,
+                flange_xyz,
+                T_base_flange[:3, :3],
+                self_camera_box_min_local_m,
+                self_camera_box_max_local_m,
+            )
+            keep = camera_dist > 1e-6
+            base_pts = base_pts[keep]
+            pixels = pixels[keep]
 
     if return_pixels:
         return base_pts, pixels
@@ -128,6 +147,28 @@ def _point_segment_distances_and_closest(points: np.ndarray, a: np.ndarray, b: n
 def _point_segment_distances(points: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
     distances, _ = _point_segment_distances_and_closest(points, a, b)
     return distances
+
+
+def _point_oriented_box_distances_and_closest(
+    points: np.ndarray,
+    origin: np.ndarray,
+    rotation: np.ndarray,
+    box_min_local_m: Sequence[float],
+    box_max_local_m: Sequence[float],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return point-to-OBB surface distances and closest world points."""
+    points = np.asarray(points, dtype=np.float32)
+    origin = np.asarray(origin, dtype=np.float32)
+    rotation = np.asarray(rotation, dtype=np.float32).reshape(3, 3)
+    box_min = np.asarray(box_min_local_m, dtype=np.float32)
+    box_max = np.asarray(box_max_local_m, dtype=np.float32)
+    lo = np.minimum(box_min, box_max)
+    hi = np.maximum(box_min, box_max)
+    local = (points - origin[None, :]) @ rotation
+    closest_local = np.clip(local, lo, hi)
+    closest_world = origin[None, :] + closest_local @ rotation.T
+    distances = np.linalg.norm(points - closest_world, axis=1)
+    return distances.astype(np.float32), closest_world.astype(np.float32)
 
 
 def _radius_for_axial(
@@ -173,6 +214,9 @@ def check_hand_path(
     camera_depth_tolerance_m: Optional[float] = None,
     axis_min_m: Optional[float] = None,
     axis_max_m: Optional[float] = None,
+    flange_rotation_m: Optional[np.ndarray] = None,
+    camera_box_min_local_m: Optional[Sequence[float]] = None,
+    camera_box_max_local_m: Optional[Sequence[float]] = None,
 ) -> DepthGuardResult:
     points = np.asarray(obstacle_points_m, dtype=np.float32)
     if points.size == 0:
@@ -182,6 +226,12 @@ def check_hand_path(
     end = np.asarray(flange_end_m, dtype=np.float32)
     hand_dir = np.asarray(hand_dir_m, dtype=np.float32)
     hand_dir = hand_dir / max(float(np.linalg.norm(hand_dir)), 1e-9)
+    flange_rotation = (
+        np.asarray(flange_rotation_m, dtype=np.float32).reshape(3, 3)
+        if flange_rotation_m is not None
+        else np.eye(3, dtype=np.float32)
+    )
+    check_camera = camera_box_min_local_m is not None and camera_box_max_local_m is not None
 
     min_dist = float("inf")
     hit_count = 0
@@ -201,8 +251,32 @@ def check_hand_path(
             if np.any(depth_ok):
                 local_min = float(np.min(d[depth_ok]))
                 min_dist = min(min_dist, local_min)
-                radius = _radius_for_axial(closest_axial, float(hand_radius_m), hand_radius_profile_m)
-                hit_count += int(np.count_nonzero((d < radius) & depth_ok))
+            radius = _radius_for_axial(closest_axial, float(hand_radius_m), hand_radius_profile_m)
+            sample_hits = (d < radius) & depth_ok
+
+            if check_camera:
+                camera_d, camera_closest = _point_oriented_box_distances_and_closest(
+                    points,
+                    flange,
+                    flange_rotation,
+                    camera_box_min_local_m,
+                    camera_box_max_local_m,
+                )
+                camera_ok = _camera_depth_aligned(
+                    points,
+                    camera_closest,
+                    camera_depth_axis_m,
+                    camera_depth_tolerance_m,
+                )
+                if axis_min_m is not None:
+                    camera_ok &= point_axial >= float(axis_min_m)
+                if axis_max_m is not None:
+                    camera_ok &= point_axial <= float(axis_max_m)
+                if np.any(camera_ok):
+                    min_dist = min(min_dist, float(np.min(camera_d[camera_ok])))
+                sample_hits |= (camera_d <= 1e-6) & camera_ok
+
+            hit_count += int(np.count_nonzero(sample_hits))
 
     return DepthGuardResult(hit_count == 0, min_dist, hit_count, int(points.shape[0]))
 
@@ -220,6 +294,9 @@ def hand_path_hit_mask(
     camera_depth_tolerance_m: Optional[float] = None,
     axis_min_m: Optional[float] = None,
     axis_max_m: Optional[float] = None,
+    flange_rotation_m: Optional[np.ndarray] = None,
+    camera_box_min_local_m: Optional[Sequence[float]] = None,
+    camera_box_max_local_m: Optional[Sequence[float]] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     points = np.asarray(obstacle_points_m, dtype=np.float32)
     if points.size == 0:
@@ -229,6 +306,12 @@ def hand_path_hit_mask(
     end = np.asarray(flange_end_m, dtype=np.float32)
     hand_dir = np.asarray(hand_dir_m, dtype=np.float32)
     hand_dir = hand_dir / max(float(np.linalg.norm(hand_dir)), 1e-9)
+    flange_rotation = (
+        np.asarray(flange_rotation_m, dtype=np.float32).reshape(3, 3)
+        if flange_rotation_m is not None
+        else np.eye(3, dtype=np.float32)
+    )
+    check_camera = camera_box_min_local_m is not None and camera_box_max_local_m is not None
 
     min_dist = np.full((points.shape[0],), np.inf, dtype=np.float32)
     hit_mask = np.zeros((points.shape[0],), dtype=bool)
@@ -248,4 +331,24 @@ def hand_path_hit_mask(
         min_dist[depth_ok] = np.minimum(min_dist[depth_ok], d[depth_ok])
         radius = _radius_for_axial(closest_axial, float(hand_radius_m), hand_radius_profile_m)
         hit_mask |= (d < radius) & depth_ok
+        if check_camera:
+            camera_d, camera_closest = _point_oriented_box_distances_and_closest(
+                points,
+                flange,
+                flange_rotation,
+                camera_box_min_local_m,
+                camera_box_max_local_m,
+            )
+            camera_ok = _camera_depth_aligned(
+                points,
+                camera_closest,
+                camera_depth_axis_m,
+                camera_depth_tolerance_m,
+            )
+            if axis_min_m is not None:
+                camera_ok &= point_axial >= float(axis_min_m)
+            if axis_max_m is not None:
+                camera_ok &= point_axial <= float(axis_max_m)
+            min_dist[camera_ok] = np.minimum(min_dist[camera_ok], camera_d[camera_ok])
+            hit_mask |= (camera_d <= 1e-6) & camera_ok
     return hit_mask, min_dist

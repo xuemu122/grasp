@@ -14,6 +14,7 @@
 | `target_selection.py` | 检测结果融合、目标关键词匹配、类别列表显示、目标深度重采样 |
 | `depth_collision_guard.py` | 深度护栏：把当前深度图投到机器人坐标系，发动作前检查灵巧手路径是否扫到障碍 |
 | `self_collision_guard.py` | Nova5 自碰撞护栏：读取 URDF/SRDF，用胶囊近似在 MovL/MovJ 前检查自身连杆碰撞 |
+| `tool_geometry.py` | 末端共享几何：法兰坐标系下的灵巧手附属相机尺寸与碰撞近似 |
 | `hand_eye_calib.py` | ArUco 手眼标定，生成 `calib_eye_in_hand.json` |
 | `move_robot.py` | 底盘 TCP 控制，移动到药架/充电点/取消任务，并返回底盘电量 |
 | `test_aero_current_grasp.py` | Aero Hand 电流夹紧测试：0号固定，其余关节渐闭，电流上升后停止 |
@@ -78,13 +79,18 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `MAX_GRASP_DEPTH_M`：最大抓取深度，默认 `0.52` m；超过此深度的物品不抓取，避免机械臂伸太深导致货架层板碰撞相机。货架更浅时可调小。
 - `ALLOW_NO_DEPTH_GRASP`：无可信深度时是否仍按最右侧框兜底抓取，默认关闭；只建议离线调试时临时设为 `1`。
 - `TARGET_PRODUCT_QUERY`：目标商品/类别关键词，默认不指定；可匹配任意模型类别或检测身份字段，包括 `product_name`、`medicine_name`、`class_name`、`category`、`package_type`、`product_id`、`class_id`、`ocr_text`。
-- `SELF_COLLISION_ENABLE`：Nova5 自碰撞护栏开关，默认开启；基于 URDF/SRDF 做 FK，并用保守胶囊近似检查 MovL/MovJ 的关节路径。
+- `SELF_COLLISION_ENABLE`：Nova5 自碰撞护栏开关，默认开启；基于 URDF/SRDF 做 FK，并用保守胶囊近似检查连杆、灵巧手和相机的 MovL/MovJ 关节路径。
 - `SELF_COLLISION_MARGIN_M`：自碰撞安全余量，默认 `0.015` m；误拦可调小，担心擦碰可调大。
 - `SELF_COLLISION_PATH_SAMPLES`：自碰撞路径采样次数，默认 `8`；关节运动跨度大时可调大。
 - `SELF_COLLISION_REQUIRE_IK`：MovL 无法求近邻逆解时是否中止，默认关闭；开启后更保守，但 IK 返回异常会导致 MovL 被拒绝。
 - `SELF_COLLISION_VERBOSE`：自碰撞护栏通过时是否打印最近余量，默认关闭。
 - `DOBOT_IK_VERBOSE`：是否打印自碰撞检查用的 `InverseKin` 请求/响应，默认关闭；排查 IK 失败时可开启。
 - `DEPTH_GUARD_ENABLE`：深度护栏开关，默认开启；会排除当前画面中所有检测框，把其余深度点当成货架/障碍，检查对齐和探入路径。
+- `DEPTH_GUARD_CAMERA_ENABLE`：相机碰撞盒开关，默认开启；相机按法兰系 `X=-145..0mm`、`Y=-30..30mm`、`Z=0..25mm` 建模，并与手部一起检查整条路径。
+- `TOOL_CAMERA_LENGTH_X_M` / `TOOL_CAMERA_WIDTH_Y_M` / `TOOL_CAMERA_HEIGHT_Z_M`：相机外壳尺寸，默认分别为 `0.145/0.060/0.025` m。
+- `TOOL_CAMERA_Z_MIN_M`：相机盒在法兰 `Z` 方向的起点，默认 `0` m；实测安装位置有偏移时可调整。
+- `DEPTH_GUARD_CAMERA_CLEARANCE_M`：深度护栏对相机盒增加的安全余量，默认等于 `DEPTH_GUARD_CLEARANCE_M`，即 `0.002` m。
+- `DEPTH_GUARD_SELF_MASK_CAMERA_PADDING_M`：从深度点云剔除相机自身时的外扩量，默认 `0.01` m。
 - `HAND_PALM_LENGTH_M`：法兰到掌心前端长度，默认 `0.157` m；之后到指尖的部分按手指建模。
 - `HAND_FINGER_THICKNESS_M`：手指厚度，默认 `0.03` m。
 - `DEPTH_GUARD_CLEARANCE_M`：深度护栏额外安全余量，默认 `0.002` m。
