@@ -10,7 +10,7 @@
 | `dobot_arm.py` | DOBOT Nova5 TCP 控制：连接、使能、MovL/MovJ、报警恢复、关节安全过渡 |
 | `aero_gripper.py` | Aero Hand 控制：张开、普通抓、上端抓、瓶子抓 |
 | `hand_eye.py` | 手眼坐标转换：像素/深度到机器人基座坐标，含远距透视补偿 |
-| `grasp_planner.py` | 抓取目标选择和抓取点规划：ROI 过滤、深度分层、右侧优先、侧抓/上抓判定 |
+| `grasp_planner.py` | 抓取目标选择和抓取点规划：动态层板过滤、深度分层、右侧优先、侧抓/上抓判定 |
 | `target_selection.py` | 检测结果融合、目标关键词匹配、类别列表显示、目标深度重采样 |
 | `depth_collision_guard.py` | 深度护栏：把当前深度图投到机器人坐标系，发动作前检查灵巧手路径是否扫到障碍 |
 | `self_collision_guard.py` | Nova5 自碰撞护栏：读取 URDF/SRDF，用胶囊近似在 MovL/MovJ 前检查自身连杆碰撞 |
@@ -77,6 +77,16 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `SIDE_GRASP_MIN_HEIGHT_M`：侧面抓取点离物体底部的最小高度，默认 `0.06` m；物体高度不够时自动改为上面抓。
 - `SIDE_GRASP_MAX_HEIGHT_M`：侧面抓取点离物体底部的最大高度，默认 `0.11` m；防止抓手位置过高导致相机与前一层层板碰撞。
 - `LAYER_Z_TOLERANCE_M`：当前层世界 Z 过滤容差，默认 `0.16` m；如果误识别上一层会被剔除，现场层高/标定偏差大时可调大。
+- `SHELF_BOARD_FILTER_ENABLE`：是否启用基于当前深度帧的层板识别过滤，默认开启。识别不到可靠上下层板时自动回退旧的 ROI/Z 过滤。
+- `SHELF_BOARD_SAMPLE_STRIDE`：层板识别的深度采样步长，默认 `4` px；调小可提高稀疏/断裂层板的识别率，但会增加计算量。
+- `SHELF_BOARD_MIN_POINTS`：单个图像行形成层板候选所需的最少有效点数，默认 `24`。
+- `SHELF_BOARD_MIN_X_SPAN_M`：层板候选在机器人 X 方向的最小横向跨度，默认 `0.18` m；用于排除商品表面和小块背景。
+- `SHELF_BOARD_MAX_Z_SPREAD_M`：同一图像行允许的层板 Z 高度离散范围，默认 `0.045` m；深度噪声较大时可适当调大。
+- `SHELF_BOARD_CLUSTER_Z_M`：相邻采样行合并为同一层板的 Z 距离阈值，默认 `0.055` m。
+- `SHELF_BOARD_ROW_GAP`：相邻采样行合并为同一层板的最大行间距，默认 `12` px。
+- `SHELF_BOARD_MAX_REFERENCE_DISTANCE_M`：候选层板距离当前层参考 Z 的最大距离，默认 `0.75` m。
+- `SHELF_BOARD_OBJECT_MARGIN_M`：上下层板内侧留给商品的 Z 安全边距，默认 `0.018` m。
+- `SHELF_BOARD_ROW_MARGIN_PX`：上下层板图像行内侧留给商品的像素边距，默认 `8` px。
 - `MAX_GRASP_DEPTH_M`：最大抓取深度，默认 `0.52` m；超过此深度的物品不抓取，避免机械臂伸太深导致货架层板碰撞相机。货架更浅时可调小。
 - `ALLOW_NO_DEPTH_GRASP`：无可信深度时是否仍按最右侧框兜底抓取，默认关闭；只建议离线调试时临时设为 `1`。
 - `TARGET_PRODUCT_QUERY`：目标商品/类别关键词，默认不指定；可匹配任意模型类别或检测身份字段，包括 `product_name`、`medicine_name`、`class_name`、`category`、`package_type`、`product_id`、`class_id`、`ocr_text`。
@@ -126,6 +136,17 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 2. 先回 HOME。
 3. 加载 `shelf_layers.json`、`place_point.json`、`place_transition.json` 和 `stow_pose.json`。
 4. 固定默认回到第 2 层观察位，忽略上次退出时的 `current`，避免从第 3/4 层启动造成碰撞。
+
+## 代码测试
+
+层板过滤的合成深度图测试位于 `tests/test_grasp_planner.py`。盒子端安装好 `numpy` 后运行：
+
+```bash
+cd /home/nvidia/grasp
+python3 -m unittest dipan.tests.test_grasp_planner
+```
+
+测试覆盖上下层板识别、当前层边界生成和上下层候选过滤；不会连接相机、DOBOT 或驱动真实机械臂。
 
 ## 主菜单
 
@@ -327,12 +348,39 @@ TARGET_PRODUCT_QUERY=褪黑素 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 
 目标过滤命中后，`pick_target_box()` 当前规则：
 
-- 先按画面纵向 ROI 过滤上下层物品，默认只保留 `y=85~430` 的候选。
-- 再按当前层记录位姿的世界 Z 过滤上下层，默认容差 `±16cm`。
+- 优先从本次最佳深度帧识别横向跨度大、机器人 Z 高度稳定的层板行，并选出当前层的下板和上板。
+- 用上下板之间的图像行范围和机器人 Z 范围过滤上下层物品；层板本身不参与抓取目标生成。
+- 如果当前帧没有形成可靠的上下板边界，回退到固定画面 ROI（默认 `y=85~430`）和当前层世界 Z 容差（默认 `±16cm`）。
 - 在 ROI 内按深度分层，选最前层。
 - 在最前层从右往左选目标，始终从右侧边缘抓取。
 
-如果仍然识别到上下层，可以按现场画面调 ROI：
+识别日志示例：
+
+```text
+层板识别: 下板 Z=...mm(row=...), 上板 Z=...mm(row=...)
+层板行过滤: 跳过上下层/边缘候选 ...
+层板高度过滤: 跳过非当前层候选 ...
+```
+
+如果日志显示“未形成当前层上下边界”或完全没有“层板识别”，说明本帧已回退旧过滤。可以先保存 `/tmp/shelf_detection.jpg` 检查蓝线：动态识别时标注为“动态层板范围”，回退时标注为“回退ROI”。
+
+现场调参建议：
+
+```bash
+# 层板较窄或深度有断点时，提高采样密度并放宽点数门槛
+SHELF_BOARD_SAMPLE_STRIDE=2 SHELF_BOARD_MIN_POINTS=16 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
+
+# 深度噪声较大时放宽同一层板的 Z 离散范围
+SHELF_BOARD_MAX_Z_SPREAD_M=0.06 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
+```
+
+若要临时关闭动态层板过滤，可使用：
+
+```bash
+SHELF_BOARD_FILTER_ENABLE=0 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
+```
+
+只有在现场确认层板识别稳定后才建议恢复真实抓取。若仍使用旧规则，可以按现场画面调 ROI：
 
 ```bash
 TARGET_ROI_Y_MIN=170 TARGET_ROI_Y_MAX=320 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
@@ -345,7 +393,7 @@ LAYER_Z_TOLERANCE_M=0.22 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 LAYER_Z_FILTER_ENABLE=0 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 ```
 
-检测截图 `/tmp/shelf_detection.jpg` 会画蓝色 ROI 边界线。
+检测截图 `/tmp/shelf_detection.jpg` 会画蓝色动态层板/回退 ROI 边界线。
 
 每次抓取识别后还会保存 `/tmp/shelf_yolo_candidates.jpg`：绿色框表示达到 `DETECT_CONF_THRESHOLD`，橙色框表示 YOLO 有原始候选但置信度低于阈值；图左上角会写 raw/显示/低置信数量和光照评分。
 

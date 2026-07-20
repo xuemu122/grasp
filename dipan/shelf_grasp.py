@@ -26,6 +26,7 @@ from grasp_planner import (
     TARGET_ROI_Y_MIN,
     TARGET_ROI_Y_MAX,
     axis_aligned_approach_m,
+    detect_shelf_board_bounds,
     pick_target_box,
     plan_edge_grasp,
 )
@@ -1584,10 +1585,27 @@ def main():
                 worker_fail(f"未检测到目标: {target_query or '任意'}")
                 continue
 
-            # ── 选最靠边的盒子。先按当前层记录的世界 Z 过滤上下层，避免误抓上一层。 ──
+            # ── 从当前深度帧识别层板，按上下板边界过滤上下层，避免误抓相邻层。 ──
             current_layer_z_m = None
             if _current_layer_idx in _shelf_layer_poses:
                 current_layer_z_m = _shelf_layer_poses[_current_layer_idx][0][2] / 1000.0
+            shelf_board_bounds = detect_shelf_board_bounds(
+                best_depth,
+                camera,
+                transformer,
+                flange_pose,
+                reference_z_m=current_layer_z_m,
+                exclude_bboxes=[d.bbox for d in detections],
+            )
+            if shelf_board_bounds and shelf_board_bounds.get("lower") and shelf_board_bounds.get("upper"):
+                lower = shelf_board_bounds["lower"]
+                upper = shelf_board_bounds["upper"]
+                print(
+                    f"  层板识别: 下板 Z={lower['z']*1000:.0f}mm(row={lower['row']}), "
+                    f"上板 Z={upper['z']*1000:.0f}mm(row={upper['row']})"
+                )
+            elif shelf_board_bounds:
+                print(f"  层板识别: 找到 {len(shelf_board_bounds.get('boards', []))} 个候选板, 未形成当前层上下边界, 使用回退过滤")
             target_detections = _filter_detections_by_target_query(detections, target_query)
             _print_target_filter_result(target_query, detections, target_detections)
             if target_query and not target_detections:
@@ -1602,6 +1620,7 @@ def main():
                 transformer=transformer,
                 flange_pose=flange_pose,
                 layer_z_m=current_layer_z_m,
+                shelf_board_bounds=shelf_board_bounds,
             )
             if target is None:
                 print("无法确定目标")
@@ -1643,8 +1662,18 @@ def main():
 
             # 重新画正确的抓取点 (覆盖上面简单画的黄点)
             viz = best_img.copy()
-            cv2.line(viz, (0, TARGET_ROI_Y_MIN), (viz.shape[1] - 1, TARGET_ROI_Y_MIN), (255, 0, 0), 1)
-            cv2.line(viz, (0, TARGET_ROI_Y_MAX), (viz.shape[1] - 1, TARGET_ROI_Y_MAX), (255, 0, 0), 1)
+            if shelf_board_bounds and shelf_board_bounds.get("row_min") is not None:
+                filter_row_min = shelf_board_bounds["row_min"]
+                filter_row_max = shelf_board_bounds["row_max"]
+                filter_label = "动态层板范围"
+            else:
+                filter_row_min = TARGET_ROI_Y_MIN
+                filter_row_max = TARGET_ROI_Y_MAX
+                filter_label = "回退ROI"
+            cv2.line(viz, (0, filter_row_min), (viz.shape[1] - 1, filter_row_min), (255, 0, 0), 1)
+            cv2.line(viz, (0, filter_row_max), (viz.shape[1] - 1, filter_row_max), (255, 0, 0), 1)
+            cv2.putText(viz, filter_label, (8, max(18, int(filter_row_min) - 5)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 0), 1)
             for d in detections:
                 is_target_box = d.class_id == target.class_id and _bbox_iou(d.bbox, target.bbox) >= DETECTION_STABILITY_IOU
                 col = (0, 0, 255) if is_target_box else (0, 255, 0)
@@ -1659,7 +1688,7 @@ def main():
             cv2.putText(viz, "GRIP", (gx + 8, gy - 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
             cv2.imwrite("/tmp/shelf_detection.jpg", viz)
-            print(f"  → 检测画面已保存: /tmp/shelf_detection.jpg  (蓝线=ROI, 绿框=检测, 红框=目标, 黄点=抓取点)")
+            print(f"  → 检测画面已保存: /tmp/shelf_detection.jpg  (蓝线={filter_label}, 绿框=检测, 红框=目标, 黄点=抓取点)")
 
             # ── 用法兰局部轴计算法兰/悬停/抓取位姿 (世界坐标, 米) ──
             R_f = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])

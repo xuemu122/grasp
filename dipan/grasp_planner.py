@@ -12,6 +12,16 @@ SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv("SIDE_GRASP_MIN_HEIGHT_M", "0.052"))
 SIDE_GRASP_MAX_HEIGHT_M = float(os.getenv("SIDE_GRASP_MAX_HEIGHT_M", "0.11"))  # 侧抓点离底部最大高度，防止磕相机
 LAYER_Z_FILTER_ENABLE = os.getenv("LAYER_Z_FILTER_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 LAYER_Z_TOLERANCE_M = float(os.getenv("LAYER_Z_TOLERANCE_M", "0.16"))
+SHELF_BOARD_FILTER_ENABLE = os.getenv("SHELF_BOARD_FILTER_ENABLE", "1").lower() in ("1", "true", "yes", "on")
+SHELF_BOARD_SAMPLE_STRIDE = int(os.getenv("SHELF_BOARD_SAMPLE_STRIDE", "4"))
+SHELF_BOARD_MIN_POINTS = int(os.getenv("SHELF_BOARD_MIN_POINTS", "24"))
+SHELF_BOARD_MIN_X_SPAN_M = float(os.getenv("SHELF_BOARD_MIN_X_SPAN_M", "0.18"))
+SHELF_BOARD_MAX_Z_SPREAD_M = float(os.getenv("SHELF_BOARD_MAX_Z_SPREAD_M", "0.045"))
+SHELF_BOARD_CLUSTER_Z_M = float(os.getenv("SHELF_BOARD_CLUSTER_Z_M", "0.055"))
+SHELF_BOARD_ROW_GAP = int(os.getenv("SHELF_BOARD_ROW_GAP", "12"))
+SHELF_BOARD_MAX_REFERENCE_DISTANCE_M = float(os.getenv("SHELF_BOARD_MAX_REFERENCE_DISTANCE_M", "0.75"))
+SHELF_BOARD_OBJECT_MARGIN_M = float(os.getenv("SHELF_BOARD_OBJECT_MARGIN_M", "0.018"))
+SHELF_BOARD_ROW_MARGIN_PX = int(os.getenv("SHELF_BOARD_ROW_MARGIN_PX", "8"))
 MAX_GRASP_DEPTH_M = float(os.getenv("MAX_GRASP_DEPTH_M", "0.52"))  # 超过此深度的物品不抓取，避免碰撞
 ALLOW_NO_DEPTH_GRASP = os.getenv("ALLOW_NO_DEPTH_GRASP", "0").lower() in ("1", "true", "yes", "on")
 FORCE_SIDE_GRASP = os.getenv("FORCE_SIDE_GRASP", "0").lower() in ("1", "true", "yes", "on")
@@ -36,30 +46,196 @@ def _det_center_robot_z(det, transformer, flange_pose):
     return float(p_robot[2])
 
 
-def pick_target_box(detections, transformer=None, flange_pose=None, layer_z_m=None):
+def detect_shelf_board_bounds(
+    depth_img,
+    camera,
+    transformer,
+    flange_pose,
+    reference_z_m=None,
+    exclude_bboxes=(),
+):
+    """Estimate the current shelf's upper/lower boards from one depth frame.
+
+    A shelf board is treated as a horizontal, wide surface: sampled points on
+    the same image row have a small robot-Z spread and a meaningful robot-X
+    span. The result is only used to establish filtering bounds; it never
+    creates a motion target by itself.
+    """
+    if not SHELF_BOARD_FILTER_ENABLE or depth_img is None or transformer is None or flange_pose is None:
+        return None
+    depth = np.asarray(depth_img)
+    if depth.ndim != 2 or depth.size == 0:
+        return None
+
+    height, width = depth.shape
+    stride = max(1, int(SHELF_BOARD_SAMPLE_STRIDE))
+    rows = np.arange(0, height, stride, dtype=np.int32)
+    cols = np.arange(0, width, stride, dtype=np.int32)
+    grid_x, grid_y = np.meshgrid(cols, rows)
+    depth_scale = float(getattr(camera, "_depth_scale", None) or 0.001)
+    depth_m = depth[grid_y, grid_x].astype(np.float32) * depth_scale
+    valid = np.isfinite(depth_m) & (depth_m >= 0.08) & (depth_m <= 1.5)
+
+    for bbox in exclude_bboxes or ():
+        if bbox is None:
+            continue
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        valid &= ~(
+            (grid_x >= max(0, x1 - 8)) & (grid_x <= min(width - 1, x2 + 8)) &
+            (grid_y >= max(0, y1 - 8)) & (grid_y <= min(height - 1, y2 + 8))
+        )
+
+    if int(np.count_nonzero(valid)) < SHELF_BOARD_MIN_POINTS:
+        return None
+
+    u = grid_x.astype(np.float32)
+    v = grid_y.astype(np.float32)
+    z_cam = depth_m
+    x_cam = (u - float(transformer.cx)) * z_cam / float(transformer.fx)
+    y_cam = (v - float(transformer.cy)) * z_cam / float(transformer.fy)
+    cam_points = np.stack([x_cam, y_cam, z_cam, np.ones_like(z_cam)], axis=-1)
+    pose = tuple(float(value) for value in flange_pose)
+    transform = np.eye(4, dtype=np.float32)
+    transform[:3, :3] = transformer._rpy_to_rot(pose[3], pose[4], pose[5]).astype(np.float32)
+    transform[:3, 3] = np.asarray(pose[:3], dtype=np.float32) / 1000.0
+    transform = transform @ np.asarray(transformer.T_flange_to_cam, dtype=np.float32)
+    robot_points = (cam_points @ transform.T)[..., :3]
+
+    row_candidates = []
+    for row_index, row in enumerate(rows):
+        keep = valid[row_index]
+        if int(np.count_nonzero(keep)) < SHELF_BOARD_MIN_POINTS:
+            continue
+        points = robot_points[row_index, keep]
+        z_values = points[:, 2]
+        z_low, z_high = np.percentile(z_values, [10, 90])
+        if float(z_high - z_low) > SHELF_BOARD_MAX_Z_SPREAD_M:
+            continue
+        x_span = float(np.percentile(points[:, 0], 95) - np.percentile(points[:, 0], 5))
+        if x_span < SHELF_BOARD_MIN_X_SPAN_M:
+            continue
+        row_candidates.append({"row": int(row), "z": float(np.median(z_values)), "points": len(points)})
+
+    if not row_candidates:
+        return None
+    if reference_z_m is not None:
+        row_candidates = [
+            item for item in row_candidates
+            if abs(item["z"] - float(reference_z_m)) <= SHELF_BOARD_MAX_REFERENCE_DISTANCE_M
+        ]
+    if not row_candidates:
+        return None
+
+    row_candidates.sort(key=lambda item: item["row"])
+    groups = []
+    for candidate in row_candidates:
+        if (
+            groups and
+            candidate["row"] - groups[-1][-1]["row"] <= SHELF_BOARD_ROW_GAP and
+            abs(candidate["z"] - np.median([item["z"] for item in groups[-1]])) <= SHELF_BOARD_CLUSTER_Z_M
+        ):
+            groups[-1].append(candidate)
+        else:
+            groups.append([candidate])
+
+    boards = []
+    for group in groups:
+        weight = np.asarray([item["points"] for item in group], dtype=np.float32)
+        boards.append({
+            "z": float(np.average([item["z"] for item in group], weights=weight)),
+            "row": int(round(np.average([item["row"] for item in group], weights=weight))),
+            "rows": len(group),
+            "points": int(weight.sum()),
+        })
+    boards.sort(key=lambda item: item["z"])
+    if reference_z_m is None:
+        return {"boards": boards}
+
+    reference = float(reference_z_m)
+    lower = [board for board in boards if board["z"] <= reference + SHELF_BOARD_CLUSTER_Z_M]
+    upper = [board for board in boards if board["z"] > reference + SHELF_BOARD_CLUSTER_Z_M]
+    if not lower or not upper:
+        return {"boards": boards}
+    lower = max(lower, key=lambda board: board["z"])
+    upper = min(upper, key=lambda board: board["z"])
+    z_min = lower["z"] + SHELF_BOARD_OBJECT_MARGIN_M
+    z_max = upper["z"] - SHELF_BOARD_OBJECT_MARGIN_M
+    row_min = min(lower["row"], upper["row"]) + SHELF_BOARD_ROW_MARGIN_PX
+    row_max = max(lower["row"], upper["row"]) - SHELF_BOARD_ROW_MARGIN_PX
+    # A noisy frame can produce adjacent or inverted board estimates. Keep
+    # the result for diagnostics, but let the caller use the established
+    # fallback filters instead of rejecting every detection.
+    if z_min >= z_max or row_min >= row_max:
+        return {"boards": boards}
+    return {
+        "boards": boards,
+        "lower": lower,
+        "upper": upper,
+        "z_min": z_min,
+        "z_max": z_max,
+        "row_min": row_min,
+        "row_max": row_max,
+    }
+
+
+def pick_target_box(detections, transformer=None, flange_pose=None, layer_z_m=None, shelf_board_bounds=None):
     """
     货架分层抓取:
-      1. 先按画面纵向 ROI 过滤上下层
-      2. 按当前货架层世界 Z 过滤上下层
+      1. 优先按当前帧识别到的层板上下边界过滤上下层
+      2. 识别不到层板时回退到画面 ROI 和世界 Z 容差
       3. 按深度分组 (同层盒子深度差 < 0.15m)
       4. 选最前层 (深度最小)
       5. 在该层里从右往左选目标
     """
     roi_filtered = []
     roi_rejected = []
-    for d in detections:
-        y_center = (d.bbox[1] + d.bbox[3]) / 2
-        if TARGET_ROI_Y_MIN <= y_center <= TARGET_ROI_Y_MAX:
-            roi_filtered.append(d)
-        else:
-            roi_rejected.append(d)
-    if roi_rejected:
-        print(f"  ROI过滤: 跳过上下层/边缘候选 {len(roi_rejected)} 个, y范围={TARGET_ROI_Y_MIN}-{TARGET_ROI_Y_MAX}")
+    if shelf_board_bounds and shelf_board_bounds.get("row_min") is not None:
+        row_min = shelf_board_bounds["row_min"]
+        row_max = shelf_board_bounds["row_max"]
+        for d in detections:
+            y_center = (d.bbox[1] + d.bbox[3]) / 2
+            if row_min <= y_center <= row_max:
+                roi_filtered.append(d)
+            else:
+                roi_rejected.append(d)
+        if roi_rejected:
+            print(f"  层板行过滤: 跳过上下层/边缘候选 {len(roi_rejected)} 个, y范围={row_min}-{row_max}")
+    else:
+        for d in detections:
+            y_center = (d.bbox[1] + d.bbox[3]) / 2
+            if TARGET_ROI_Y_MIN <= y_center <= TARGET_ROI_Y_MAX:
+                roi_filtered.append(d)
+            else:
+                roi_rejected.append(d)
+        if roi_rejected:
+            print(f"  ROI过滤(回退): 跳过上下层/边缘候选 {len(roi_rejected)} 个, y范围={TARGET_ROI_Y_MIN}-{TARGET_ROI_Y_MAX}")
     if not roi_filtered:
         print("  [警告] ROI 内没有候选, 回退使用全部检测框")
         roi_filtered = list(detections)
 
-    if LAYER_Z_FILTER_ENABLE and transformer is not None and flange_pose is not None and layer_z_m is not None:
+    if (
+        shelf_board_bounds and
+        shelf_board_bounds.get("z_min") is not None and
+        transformer is not None and
+        flange_pose is not None
+    ):
+        z_min = shelf_board_bounds["z_min"]
+        z_max = shelf_board_bounds["z_max"]
+        z_filtered = []
+        z_rejected = []
+        for d in roi_filtered:
+            z = _det_center_robot_z(d, transformer, flange_pose)
+            if z is None or z_min <= z <= z_max:
+                z_filtered.append(d)
+            else:
+                z_rejected.append((d, z, z - layer_z_m if layer_z_m is not None else 0.0))
+        if z_rejected:
+            print(f"  层板高度过滤: 跳过非当前层候选 {len(z_rejected)} 个 (Z范围 {z_min*1000:.0f}..{z_max*1000:.0f}mm)")
+        if not z_filtered:
+            print("  [停止] 层板边界过滤后没有当前层候选, 本次不抓取")
+            return None, None
+        roi_filtered = z_filtered
+    elif LAYER_Z_FILTER_ENABLE and transformer is not None and flange_pose is not None and layer_z_m is not None:
         z_filtered = []
         z_rejected = []
         for d in roi_filtered:
