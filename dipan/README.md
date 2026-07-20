@@ -18,6 +18,7 @@
 | `hand_eye_calib.py` | ArUco 手眼标定，生成 `calib_eye_in_hand.json` |
 | `move_robot.py` | 底盘 TCP 控制，移动到药架/充电点/取消任务，并返回底盘电量 |
 | `test_aero_current_grasp.py` | Aero Hand 电流夹紧测试：0号固定，其余关节渐闭，电流上升后停止 |
+| `demo_aero_contact_states.py` | Aero Hand 接触状态识别 demo：空载、浅层接触、持续接触、饱和堆积、挤压溢出 |
 | `shelf_layers.json` | 货架层观察位姿，程序内 `l` 菜单维护 |
 | `place_point.json` | 放置点位姿，程序内 `p` 菜单维护 |
 | `place_transition.json` | 放置过渡点位姿，程序内 `p` 菜单维护 |
@@ -287,6 +288,33 @@ python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 80 --step 2
 
 这会把“正常弯曲/预紧造成的电流”从判断里扣掉，只在比空载曲线额外高出阈值时才停止。
 `--per-finger` 会让 active-joints 里的 3-6 号手指分开判断；某根手指触发后会再闭合 `--extra-close` 度并锁住，直到这些手指都抓紧/到上限才退出。`--thumb-follow` 让 1/2 号拇指继续随步进闭合，但不作为“四指都抓紧”的退出条件。需要强制指定等待哪些手指时可加 `--required-fingers 3,4`。
+
+## Aero 接触状态识别 demo
+
+`demo_aero_contact_states.py` 是独立的灵巧手实验程序，不会调用机械臂、订单服务或 `shelf_grasp.py`。它让选定关节逐步闭合，同时读取电流、实际位置和温度；默认用 `runtime/aero_empty.csv` 的同角度空载电流包络扣除绳腱/机构本身的负载。
+
+状态优先级为：`空载`、`浅层接触`、`持续接触`、`饱和堆积`、`挤压溢出`。普通状态默认连续 2 步确认，溢出和过温立即停止；结束时默认安全张开。默认不修改当前力矩上限，必须让空载曲线采集时的力矩设置和实验保持一致。
+
+首次建议从较小范围开始，并让手指周围保持空旷：
+
+```bash
+cd /home/nvidia/grasp/dipan
+python3 demo_aero_contact_states.py --max 35 --step 1 --release-after
+```
+
+确认空载运行正常后，用完整 0-90° 行程测试接触状态（90°也是默认上限）：
+
+```bash
+python3 demo_aero_contact_states.py --max 90 --step 1 --release-after
+```
+
+单指观察可以缩小驱动和感知范围：
+
+```bash
+python3 demo_aero_contact_states.py --drive-joints 3 --sense-joints 3 --max 45 --step 1
+```
+
+如需在识别到饱和堆积时停止，可使用 `--stop-on saturation`。默认只在挤压溢出、硬过流或过温时提前停止，这些安全停止不能关闭。每次运行会在 `/tmp/aero_contact_states_*.csv` 写逐步数据，并生成同名 `.summary.json`，其中包含状态切换、最大电流/残差和停止原因。阈值可通过 `--contact-extra-ma`、`--saturation-depth-deg`、`--overflow-extra-ma` 等参数调节。
 
 目标选择支持两层规则：先按目标关键词过滤，再由 `pick_target_box()` 做几何选择。主菜单里输入 `?` 可查看当前模型的全部 `class_id:class_name`；输入 `c` 可以设置任意目标商品/类别/id；也可以直接输入目标名开始抓取，例如 `雪碧`、`褪黑素`、`sprite`、`ths`、`class_id:63`。输入 `all` 或 `clear` 会清空目标，恢复任意候选抓取。
 
