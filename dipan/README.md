@@ -85,6 +85,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `SHELF_BOARD_CLUSTER_Z_M`：相邻采样行合并为同一层板的 Z 距离阈值，默认 `0.055` m。
 - `SHELF_BOARD_ROW_GAP`：相邻采样行合并为同一层板的最大行间距，默认 `12` px。
 - `SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX`：检测框上下外扩后禁止作为层板的图像行边距，默认 `6` px；用于避免把商品表面或商品框内部的背景行误识别为层板。
+- `SHELF_BOARD_MIN_ROW_SPAN_PX`：上下层板候选的最小图像行间距，默认 `100` px；用于排除相邻背景横线或同一平面产生的窄范围假边界。
 - `SHELF_BOARD_MAX_REFERENCE_DISTANCE_M`：候选层板距离当前层参考 Z 的最大距离，默认 `0.75` m。
 - `SHELF_BOARD_OBJECT_MARGIN_M`：上下层板内侧留给商品的 Z 安全边距，默认 `0.018` m。
 - `SHELF_BOARD_ROW_MARGIN_PX`：上下层板图像行内侧留给商品的像素边距，默认 `8` px。

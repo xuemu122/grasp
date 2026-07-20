@@ -20,6 +20,7 @@ SHELF_BOARD_MAX_Z_SPREAD_M = float(os.getenv("SHELF_BOARD_MAX_Z_SPREAD_M", "0.04
 SHELF_BOARD_CLUSTER_Z_M = float(os.getenv("SHELF_BOARD_CLUSTER_Z_M", "0.055"))
 SHELF_BOARD_ROW_GAP = int(os.getenv("SHELF_BOARD_ROW_GAP", "12"))
 SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX = int(os.getenv("SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX", "6"))
+SHELF_BOARD_MIN_ROW_SPAN_PX = int(os.getenv("SHELF_BOARD_MIN_ROW_SPAN_PX", "100"))
 SHELF_BOARD_MAX_REFERENCE_DISTANCE_M = float(os.getenv("SHELF_BOARD_MAX_REFERENCE_DISTANCE_M", "0.75"))
 SHELF_BOARD_OBJECT_MARGIN_M = float(os.getenv("SHELF_BOARD_OBJECT_MARGIN_M", "0.018"))
 SHELF_BOARD_ROW_MARGIN_PX = int(os.getenv("SHELF_BOARD_ROW_MARGIN_PX", "8"))
@@ -171,18 +172,30 @@ def detect_shelf_board_bounds(
 
     lower = [board for board in boards_near_reference if board["z"] <= reference + SHELF_BOARD_CLUSTER_Z_M]
     upper = [board for board in boards_near_reference if board["z"] > reference + SHELF_BOARD_CLUSTER_Z_M]
-    pair = None
+    pair_candidates = []
     if excluded_centers:
         reference_row = float(np.median(excluded_centers))
-        above = [board for board in boards_near_reference if board["row"] < reference_row]
-        below = [board for board in boards_near_reference if board["row"] > reference_row]
-        if above and below:
-            pair = (
-                max(above, key=lambda board: board["row"]),
-                min(below, key=lambda board: board["row"]),
-            )
-    if pair is not None:
-        first, second = pair
+        for first in boards_near_reference:
+            for second in boards_near_reference:
+                if first["row"] >= reference_row or second["row"] <= reference_row:
+                    continue
+                row_span = second["row"] - first["row"]
+                if row_span < SHELF_BOARD_MIN_ROW_SPAN_PX:
+                    continue
+                score = (reference_row - first["row"]) + (second["row"] - reference_row)
+                pair_candidates.append((score, first, second))
+    else:
+        by_row = sorted(boards_near_reference, key=lambda board: board["row"])
+        for index, first in enumerate(by_row):
+            for second in by_row[index + 1:]:
+                row_span = second["row"] - first["row"]
+                if row_span < SHELF_BOARD_MIN_ROW_SPAN_PX:
+                    continue
+                z_mid = (first["z"] + second["z"]) / 2.0
+                pair_candidates.append((abs(z_mid - reference), first, second))
+
+    if pair_candidates:
+        _, first, second = min(pair_candidates, key=lambda item: item[0])
         lower, upper = sorted((first, second), key=lambda board: board["z"])
     else:
         if not lower or not upper:
@@ -196,7 +209,11 @@ def detect_shelf_board_bounds(
     # A noisy frame can produce adjacent or inverted board estimates. Keep
     # the result for diagnostics, but let the caller use the established
     # fallback filters instead of rejecting every detection.
-    if z_min >= z_max or row_min >= row_max:
+    if (
+        z_min >= z_max or
+        row_min >= row_max or
+        abs(upper["row"] - lower["row"]) < SHELF_BOARD_MIN_ROW_SPAN_PX
+    ):
         return {"boards": boards}
     return {
         "boards": boards,
