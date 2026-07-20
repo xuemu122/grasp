@@ -460,14 +460,19 @@ async function submitOrder() {
     const payload = {
         type: 'grab',
         orderId: orderId,
-        items: items.map(i => ({
-            id: i.id,
-            name: i.name,
-            emoji: i.emoji || '📦',
-            qty: i.qty,
-            price: i.price,
-            shelf_layer: preparedItems.get(String(i.id))?.shelf_layer ?? parseLayerFromLocation(i.location)
-        })),
+        items: items.map(i => {
+            const preparedItem = preparedItems.get(String(i.id));
+            return {
+                id: i.id,
+                name: i.name,
+                emoji: i.emoji || '📦',
+                qty: i.qty,
+                price: i.price,
+                shelf_layer: preparedItem && preparedItem.shelf_layer != null
+                    ? preparedItem.shelf_layer
+                    : parseLayerFromLocation(i.location)
+            };
+        }),
         timestamp: Date.now()
     };
 
@@ -579,9 +584,9 @@ async function gotoProductXYZ(product, label) {
         Number(product.shelf_x || 0),
         Number(product.shelf_y || 0),
         Number(product.shelf_z || 50),
-        Number(product.shelf_rx ?? 135),
-        Number(product.shelf_ry ?? 82),
-        Number(product.shelf_rz ?? -52)
+        Number(product.shelf_rx == null ? 135 : product.shelf_rx),
+        Number(product.shelf_ry == null ? 82 : product.shelf_ry),
+        Number(product.shelf_rz == null ? -52 : product.shelf_rz)
     ];
 
     logWS(`📍 坐标兜底移动: [${pose.join(', ')}]`);
