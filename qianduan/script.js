@@ -70,6 +70,11 @@ function handleWSMessage(msg) {
                 updateRobotStatus('busy', msg.message || '机器人抓取中...');
             } else if (msg.status === 'grabbing') {
                 updateGrabProgress(msg);
+            } else if (msg.status === 'layer-moving') {
+                updateRobotStatus('busy', msg.message || `移动中: 第${msg.layer}层`);
+                updateGrabProgress(msg);
+            } else if (msg.status === 'layer-reached') {
+                updateRobotStatus('ready', msg.message || `已到达第${msg.layer}层`);
             } else if (msg.status === 'completed') {
                 if (msg.orderId && currentOrderId && msg.orderId === currentOrderId) {
                     onGrabCompleted(msg);
@@ -468,6 +473,41 @@ function stowRobot() {
     if (!confirm('确认让机器人回到收起姿态并关闭连接吗？')) return;
     updateRobotStatus('busy', '机器人收起中...');
     ws.send(JSON.stringify({ type: 'stow', timestamp: Date.now() }));
+}
+
+/**
+ * 发送 goto-layer 命令让机械臂移动到指定货架层
+ * @param {Object} opts - { productName?, productId?, layer? }
+ */
+async function gotoLayer(opts) {
+    if (!wsConnected && !opts.httpOnly) {
+        alert('后端服务未连接');
+        return;
+    }
+
+    // 优先使用 HTTP API（更通用）
+    try {
+        const res = await fetch('/api/robot/goto-layer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(opts)
+        });
+        const data = await res.json();
+        if (res.ok && data.code === 0) {
+            logWS(`✅ ${data.message}`);
+            updateRobotStatus('ready', data.message);
+            return data;
+        }
+        throw new Error(data.message || '移动失败');
+    } catch (e) {
+        console.error('goto-layer HTTP失败:', e.message);
+        // 回退到 WebSocket
+        if (wsConnected) {
+            ws.send(JSON.stringify({ type: 'goto-layer', ...opts, timestamp: Date.now() }));
+        } else {
+            throw e;
+        }
+    }
 }
 
 function onStowCompleted(msg) {

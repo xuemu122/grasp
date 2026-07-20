@@ -48,6 +48,72 @@ let robotWorkerStarting = null;
 let robotStowPromise = null;
 
 // 机器人初始位置
+const SHELF_LAYERS_FILE = process.env.SHELF_LAYERS_FILE || path.resolve(__dirname, '../dipan/shelf_layers.json');
+
+// ========== 货架层位姿管理 ==========
+function loadShelfLayers() {
+    try {
+        if (!fs.existsSync(SHELF_LAYERS_FILE)) {
+            log(`⚠️ 货架层位姿文件不存在: ${SHELF_LAYERS_FILE}`);
+            return { layers: {}, current: null };
+        }
+        const raw = JSON.parse(fs.readFileSync(SHELF_LAYERS_FILE, 'utf8'));
+        return {
+            layers: raw.layers || {},
+            current: raw.current || null
+        };
+    } catch (e) {
+        log(`⚠️ 货架层位姿读取失败: ${e.message}`);
+        return { layers: {}, current: null };
+    }
+}
+
+/**
+ * 从商品 location 字段中提取货架层号
+ * 支持格式: "饮料区A1货架", "饮料区A货架3层", "零食区B货架2层", "饮料区A货架三层", "饮料区A货架4层"
+ * 返回数字层号，如无法解析返回 null
+ */
+function parseLayerFromLocation(location) {
+    if (!location) return null;
+
+    // 匹配 "X层" 或 "X 层" 或 "第X层" 模式（支持中文数字 一 到 九）
+    const cnDigits = { '一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9 };
+
+    // 尝试匹配: "3层", "3 层", "三层", "第3层", "第三层"
+    let m = location.match(/第?(\d+|[一二三四五六七八九])\s*层/);
+    if (m) {
+        const val = m[1];
+        return cnDigits[val] !== undefined ? cnDigits[val] : parseInt(val, 10);
+    }
+
+    // 尝试匹配 "A3" 这种格式（3表示层号）
+    m = location.match(/[A-Za-z](\d+)/);
+    if (m) {
+        return parseInt(m[1], 10);
+    }
+
+    return null;
+}
+
+/**
+ * 根据商品查询对应货架层的机械臂位姿
+ * @returns {{ layer: number, name: string, pose: number[] } | null}
+ */
+function getShelfPoseForProduct(product) {
+    const layerIndex = parseLayerFromLocation(product.location);
+    if (layerIndex === null) return null;
+
+    const shelfData = loadShelfLayers();
+    const layer = shelfData.layers[String(layerIndex)];
+    if (!layer) return null;
+
+    return {
+        layer: layerIndex,
+        name: layer.name || `第${layerIndex}层`,
+        pose: layer.pose  // [x, y, z, rx, ry, rz] mm & deg
+    };
+}
+
 const ROBOT_HOME = { x: 0, y: 0, z: 100 };
 
 // ========== 日志 ==========
@@ -597,6 +663,91 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // GET /api/shelf/layers - 获取所有货架层位姿
+    if (pathname === '/api/shelf/layers' && req.method === 'GET') {
+        try {
+            const shelfData = loadShelfLayers();
+            sendJSON(res, { code: 0, data: shelfData.layers, current: shelfData.current });
+        } catch (e) {
+            sendJSON(res, { code: 1, message: e.message }, 500);
+        }
+        return;
+    }
+
+    // POST /api/robot/goto-layer - 让机械臂移动到指定货架层
+    // body: { productName, productId, layer }
+    if (pathname === '/api/robot/goto-layer' && req.method === 'POST') {
+        const body = await parseBody(req);
+        try {
+            const layerIndex = await resolveLayerIndex(body);
+            if (!layerIndex) {
+                sendJSON(res, { code: 1, message: '无法确定目标货架层，请提供 productName/productId 或 layer 参数' }, 400);
+                return;
+            }
+
+            const shelfData = loadShelfLayers();
+            const layer = shelfData.layers[String(layerIndex)];
+            if (!layer) {
+                sendJSON(res, { code: 1, message: `未找到货架层 ${layerIndex} 的位姿数据` }, 404);
+                return;
+            }
+
+            const pose = layer.pose;
+            log(`🎯 移动到货架层 ${layerIndex} (${layer.name}): [${pose.join(', ')}]`);
+
+            const result = await moveRobotToLayer(layerIndex, layer, pose);
+
+            sendJSON(res, {
+                code: 0,
+                message: `机械臂已到达第${layerIndex}层 (${layer.name})`,
+                data: {
+                    layer: layerIndex,
+                    name: layer.name,
+                    pose
+                },
+                ...result
+            });
+        } catch (e) {
+            log(`❌ 移动机械臂失败: ${e.message}`);
+            sendJSON(res, { code: 1, message: e.message }, 500);
+        }
+        return;
+    }
+
+    // POST /api/robot/movel - 直接控制机械臂移动到指定位姿
+    // body: { x, y, z, rx, ry, rz }
+    if (pathname === '/api/robot/movel' && req.method === 'POST') {
+        const body = await parseBody(req);
+        try {
+            if (!body || body.x === undefined || body.y === undefined || body.z === undefined) {
+                sendJSON(res, { code: 1, message: '缺少位姿参数 x, y, z' }, 400);
+                return;
+            }
+            const pose = [
+                Number(body.x),
+                Number(body.y),
+                Number(body.z),
+                Number(body.rx ?? 135),
+                Number(body.ry ?? 82),
+                Number(body.rz ?? -52)
+            ];
+            log(`🎯 移动到指定位姿: [${pose.join(', ')}]`);
+
+            const result = await moveRobotToLayer(null, null, pose);
+
+            sendJSON(res, {
+                code: 0,
+                message: '机械臂已移动到目标位姿',
+                data: { pose },
+                ...result
+            });
+        } catch (e) {
+            log(`❌ 移动机械臂失败: ${e.message}`);
+            sendJSON(res, { code: 1, message: e.message }, 500);
+        }
+        return;
+    }
+
     // ========== 静态文件服务 ==========
     let filePath = pathname === '/' ? '/index.html' : pathname;
     filePath = path.join(__dirname, filePath);
@@ -674,6 +825,8 @@ wss.on('connection', (ws) => {
             handleGrabCommand(ws, msg);
         } else if (msg.type === 'stow') {
             handleStowCommand(ws);
+        } else if (msg.type === 'goto-layer') {
+            handleGotoLayerCommand(ws, msg);
         } else if (msg.type === 'ping') {
             sendMessage(ws, { type: 'pong', time: Date.now() });
         } else {
@@ -818,6 +971,50 @@ async function handleStowCommand(ws) {
     }
 }
 
+// ========== 处理移动到层命令 ==========
+async function handleGotoLayerCommand(ws, msg) {
+    try {
+        const layerIndex = await resolveLayerIndex(msg);
+        if (!layerIndex) {
+            sendMessage(ws, { type: 'error', message: '请提供 productName/productId 或 layer 参数' });
+            return;
+        }
+
+        const shelfData = loadShelfLayers();
+        const layer = shelfData.layers[String(layerIndex)];
+        if (!layer) {
+            sendMessage(ws, { type: 'error', message: `未找到货架层 ${layerIndex} 的位姿数据` });
+            return;
+        }
+
+        const pose = layer.pose;
+        const layerName = layer.name || `第${layerIndex}层`;
+        log(`🎯 WebSocket 移动到层 ${layerIndex} (${layerName}): [${pose.join(', ')}]`);
+
+        sendStatus(ws, 'layer-moving', {
+            layer: layerIndex,
+            name: layerName,
+            pose,
+            message: `机械臂正在移动到第${layerIndex}层 (${layerName})...`
+        });
+
+        const result = await moveRobotToLayer(layerIndex, layer, pose);
+
+        sendStatus(ws, 'layer-reached', {
+            layer: layerIndex,
+            name: layerName,
+            pose,
+            message: `机械臂已到达第${layerIndex}层 (${layerName})`,
+            ...result
+        });
+
+        log(`✅ 已到达层 ${layerIndex} (${layerName})`);
+    } catch (e) {
+        log(`❌ 移动到层失败: ${e.message}`);
+        sendStatus(ws, 'error', { message: e.message });
+    }
+}
+
 // ========== 处理抓取命令 ==========
 async function handleGrabCommand(ws, msg) {
     const orderId = String(msg.orderId || '').trim();
@@ -882,18 +1079,22 @@ async function runSimulatedGrab(ws, orderId, item, progressBase, totalUnits, ite
     const progressStep = 100 / totalUnits;
     const pos = await getProductPosition(itemName, itemNo - 1);
 
-    log(`  📦 模拟抓取: ${label} (${pos.shelf})`);
+    const shelfInfo = pos.layer ? `第${pos.layer}层(${pos.layerName || ''})` : pos.shelf;
+    log(`  📦 模拟抓取: ${label} → ${shelfInfo} 位姿[${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}]`);
 
-    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'planning', progress: progressBase, message: `正在规划到 ${pos.shelf} 的路径...`, position: ROBOT_HOME, targetPosition: pos });
+    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'planning', progress: progressBase, message: `正在规划到 ${shelfInfo} 的路径...`, position: ROBOT_HOME, targetPosition: pos, shelfLayer: pos.layer });
     await sleep(600 * ROBOT_SIM_DELAY_SCALE);
 
-    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'moving', progress: progressBase + progressStep * 0.5, message: `机器人移动到 ${pos.shelf}`, position: { x: pos.x * 0.8, y: pos.y * 0.8, z: pos.z }, targetPosition: pos });
+    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'moving', progress: progressBase + progressStep * 0.35, message: `机器人移动到 ${shelfInfo}`, position: { x: pos.x * 0.8, y: pos.y * 0.8, z: pos.z }, targetPosition: pos, shelfLayer: pos.layer });
     await sleep(800 * ROBOT_SIM_DELAY_SCALE);
 
-    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'picking', progress: progressBase + progressStep * 0.8, message: `正在抓取 ${label}`, position: pos, targetPosition: pos });
+    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'arrived', progress: progressBase + progressStep * 0.5, message: `已到达 ${shelfInfo}`, position: pos, targetPosition: pos, shelfLayer: pos.layer });
+    await sleep(300 * ROBOT_SIM_DELAY_SCALE);
+
+    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'picking', progress: progressBase + progressStep * 0.8, message: `正在抓取 ${label} (${shelfInfo})`, position: pos, targetPosition: pos, shelfLayer: pos.layer });
     await sleep(1000 * ROBOT_SIM_DELAY_SCALE);
 
-    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'delivering', progress: progressBase + progressStep * 0.95, message: `${label} 正在运送至取货口`, position: { x: pos.x * 0.3, y: pos.y * 0.3, z: 50 }, targetPosition: { x: 0, y: 0, z: 50 } });
+    sendStatus(ws, 'grabbing', { orderId, item: itemStatus(item), stage: 'delivering', progress: progressBase + progressStep * 0.95, message: `${label} 正在运送至取货口`, position: { x: pos.x * 0.3, y: pos.y * 0.3, z: 50 }, targetPosition: { x: 0, y: 0, z: 50 }, shelfLayer: pos.layer });
     await sleep(700 * ROBOT_SIM_DELAY_SCALE);
 
     log(`  ✅ ${label} 模拟完成`);
@@ -997,9 +1198,31 @@ function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo) {
 async function getProductPosition(itemName, index) {
     const product = readProducts().find((item) => item.name === itemName || String(item.id) === String(itemName));
     if (product) {
-        return { x: product.shelf_x, y: product.shelf_y, z: product.shelf_z, shelf: product.location || '货架' };
+        // 优先使用 shelf_layers.json 中的层位姿
+        const shelfPose = getShelfPoseForProduct(product);
+        if (shelfPose) {
+            return {
+                x: shelfPose.pose[0],
+                y: shelfPose.pose[1],
+                z: shelfPose.pose[2],
+                rx: shelfPose.pose[3],
+                ry: shelfPose.pose[4],
+                rz: shelfPose.pose[5],
+                shelf: product.location || '货架',
+                layer: shelfPose.layer,
+                layerName: shelfPose.name
+            };
+        }
+        // 兜底：使用商品自身的 shelf_x/y/z
+        return {
+            x: product.shelf_x,
+            y: product.shelf_y,
+            z: product.shelf_z,
+            shelf: product.location || '货架',
+            layer: parseLayerFromLocation(product.location)
+        };
     }
-    return { x: 100, y: (index + 1) * 100, z: 50, shelf: '未知' };
+    return { x: 100, y: (index + 1) * 100, z: 50, shelf: '未知', layer: null };
 }
 
 function itemStatus(item) {
@@ -1009,6 +1232,138 @@ function itemStatus(item) {
         qty: item.qty,
         emoji: item.emoji
     };
+}
+
+/**
+ * 解析目标货架层索引
+ * 优先级: body.layer > body.productName > body.productId
+ */
+async function resolveLayerIndex(body) {
+    if (!body || typeof body !== 'object') return null;
+
+    // 直接指定层号
+    if (body.layer !== undefined && body.layer !== null) {
+        const layer = parseInt(body.layer, 10);
+        if (layer >= 1 && layer <= 10) return layer;
+    }
+
+    // 通过商品名查找
+    if (body.productName) {
+        const products = readProducts();
+        const product = products.find((p) =>
+            p.name === body.productName || String(p.id) === String(body.productName));
+        if (product) {
+            const idx = parseLayerFromLocation(product.location);
+            if (idx) {
+                log(`📦 商品"${product.name}" 位于 ${product.location} → 货架层 ${idx}`);
+                return idx;
+            }
+        }
+    }
+
+    // 通过商品ID查找
+    if (body.productId) {
+        const products = readProducts();
+        const product = products.find((p) => String(p.id) === String(body.productId));
+        if (product) {
+            const idx = parseLayerFromLocation(product.location);
+            if (idx) {
+                log(`📦 商品 id=${product.id} "${product.name}" 位于 ${product.location} → 货架层 ${idx}`);
+                return idx;
+            }
+        }
+    }
+
+    return null;
+}
+
+/**
+ * 移动机械臂到指定货架层
+ * @returns {{ mode: string }}
+ */
+async function moveRobotToLayer(layerIndex, layerInfo, pose) {
+    if (!ROBOT_GRASP_REAL) {
+        const name = layerInfo ? layerInfo.name : `位姿 [${pose.join(', ')}]`;
+        log(`  🟡 模拟模式: 机械臂移动到 ${name}`);
+        return { mode: 'simulated', detail: `模拟移动到 ${name}` };
+    }
+
+    // 真实模式: 通过 worker 发送层号移动命令
+    try {
+        const worker = await ensureRobotWorker();
+        if (!worker) {
+            throw new Error('机器人 worker 未启动');
+        }
+
+        // 构造移动到层的命令: __layer_N__
+        const layerCmd = layerIndex ? `__layer_${layerIndex}__` : `__movel_${pose.join(',')}__`;
+
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            let outputTail = '';
+
+            const cleanup = () => {
+                clearTimeout(timeout);
+                worker.stdout.off('data', onData);
+                worker.stderr.off('data', onData);
+                worker.off('close', onClose);
+            };
+
+            const finishOk = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve({ mode: 'real', detail: `已到达目标层/位姿` });
+            };
+
+            const finishError = (message) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                reject(new Error(message));
+            };
+
+            const timeout = setTimeout(() => {
+                finishError(`移动超时 (30s): ${summarizeOutput(outputTail) || '无输出'}`);
+            }, 30000);
+
+            const handleLines = createLineHandler((line) => {
+                if (settled) return;
+                const trimmed = line.trim();
+                if (!trimmed) return;
+                // shelf_grasp.py 输出格式: [前端常驻模式][完成] 或 [前端常驻模式][失败]
+                if (trimmed.includes('[前端常驻模式][完成]')) {
+                    finishOk();
+                    return;
+                }
+                if (trimmed.includes('[前端常驻模式][失败]')) {
+                    finishError(trimmed);
+                    return;
+                }
+            });
+
+            const onData = (chunk) => {
+                outputTail = (outputTail + chunk.toString()).slice(-4000);
+                handleLines(chunk);
+            };
+
+            const onClose = (code) => {
+                if (!settled) {
+                    finishError(`worker 已退出 code=${code}`);
+                }
+            };
+
+            worker.stdout.on('data', onData);
+            worker.stderr.on('data', onData);
+            worker.on('close', onClose);
+
+            worker.stdin.write(`${layerCmd}\n`, (error) => {
+                if (error) finishError(`无法写入 worker: ${error.message}`);
+            });
+        });
+    } catch (e) {
+        throw new Error(`真实模式移动失败: ${e.message}`);
+    }
 }
 
 function inferGrabStage(line) {

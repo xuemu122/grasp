@@ -10,6 +10,7 @@ import os
 import time
 import json
 import subprocess
+import re
 import cv2
 import numpy as np
 from typing import Optional
@@ -1355,6 +1356,27 @@ def main():
                 if cmd in ("__quit__", "__exit__"):
                     print("[前端常驻模式] 收到退出指令, 不自动收起")
                     break
+                # 层移动命令: __layer_N__ -> 移动到第N层
+                layer_match = re.match(r'^__layer_(\d+)__$', cmd)
+                if layer_match:
+                    target_layer = int(layer_match.group(1))
+                    print(f"[前端常驻模式][完成] 正在移动到第{target_layer}层...")
+                    if go_to_layer(arm, target_layer):
+                        _current_layer_idx = target_layer
+                        print(f"[前端常驻模式][完成] 已到达第{target_layer}层")
+                    else:
+                        print(f"[前端常驻模式][失败] 移动到第{target_layer}层失败")
+                    continue
+                # 直接位姿移动: __movel_x,y,z,rx,ry,rz__ 
+                movel_match = re.match(r'^__movel_([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+)__$', cmd)
+                if movel_match:
+                    vals = [float(v) for v in movel_match.groups()]
+                    print(f"[前端常驻模式][完成] 移动到指定位姿: {vals}")
+                    if arm.movel(vals[0], vals[1], vals[2], vals[3], vals[4], vals[5], speed=100):
+                        print(f"[前端常驻模式][完成] 已到达目标位姿")
+                    else:
+                        print(f"[前端常驻模式][失败] 移动到指定位姿失败")
+                    continue
                 if not cmd:
                     continue
                 target_query = cmd
