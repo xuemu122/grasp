@@ -147,7 +147,7 @@ class AeroGripper:
             thumb0 = float(os.getenv("AERO_FLEX_THUMB0", "80"))
             start = float(os.getenv("AERO_FLEX_START", "0"))
             max_cmd = float(os.getenv("AERO_FLEX_MAX", "80"))
-            step = float(os.getenv("AERO_FLEX_STEP", "2"))
+            step = float(os.getenv("AERO_FLEX_STEP", "3"))
             settle = float(os.getenv("AERO_FLEX_SETTLE", "0.05"))
             samples = int(os.getenv("AERO_FLEX_SAMPLES", "1"))
             sample_delay = float(os.getenv("AERO_FLEX_SAMPLE_DELAY", "0"))
