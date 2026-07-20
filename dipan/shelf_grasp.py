@@ -1238,6 +1238,8 @@ def _toggle_chassis_place():
 
 
 def main():
+    global _current_layer_idx
+
     print("=" * 60)
     print("  货架边缘抓取系统")
     print(
