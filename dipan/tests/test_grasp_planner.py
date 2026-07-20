@@ -48,7 +48,9 @@ class ShelfBoardFilterTests(unittest.TestCase):
         depth[68:76, :] = 500
         transformer = FakeTransformer()
         previous_min_row_span = grasp_planner.SHELF_BOARD_MIN_ROW_SPAN_PX
+        previous_min_z_span = grasp_planner.SHELF_BOARD_MIN_Z_SPAN_M
         grasp_planner.SHELF_BOARD_MIN_ROW_SPAN_PX = 30
+        grasp_planner.SHELF_BOARD_MIN_Z_SPAN_M = 0.1
         try:
             bounds = grasp_planner.detect_shelf_board_bounds(
                 depth,
@@ -60,6 +62,7 @@ class ShelfBoardFilterTests(unittest.TestCase):
             )
         finally:
             grasp_planner.SHELF_BOARD_MIN_ROW_SPAN_PX = previous_min_row_span
+            grasp_planner.SHELF_BOARD_MIN_Z_SPAN_M = previous_min_z_span
         self.assertIsNotNone(bounds)
         self.assertAlmostEqual(bounds["lower"]["z"], 0.3, places=3)
         self.assertAlmostEqual(bounds["upper"]["z"], 0.5, places=3)

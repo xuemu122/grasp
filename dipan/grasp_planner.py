@@ -20,9 +20,10 @@ SHELF_BOARD_MIN_X_SPAN_M = float(os.getenv("SHELF_BOARD_MIN_X_SPAN_M", "0.18"))
 SHELF_BOARD_MAX_Z_SPREAD_M = float(os.getenv("SHELF_BOARD_MAX_Z_SPREAD_M", "0.045"))
 SHELF_BOARD_MIN_DEPTH_EDGE_M = float(os.getenv("SHELF_BOARD_MIN_DEPTH_EDGE_M", "0.035"))
 SHELF_BOARD_CLUSTER_Z_M = float(os.getenv("SHELF_BOARD_CLUSTER_Z_M", "0.055"))
-SHELF_BOARD_ROW_GAP = int(os.getenv("SHELF_BOARD_ROW_GAP", "12"))
+SHELF_BOARD_ROW_GAP = int(os.getenv("SHELF_BOARD_ROW_GAP", "40"))
 SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX = int(os.getenv("SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX", "6"))
 SHELF_BOARD_MIN_ROW_SPAN_PX = int(os.getenv("SHELF_BOARD_MIN_ROW_SPAN_PX", "100"))
+SHELF_BOARD_MIN_Z_SPAN_M = float(os.getenv("SHELF_BOARD_MIN_Z_SPAN_M", "0.20"))
 SHELF_BOARD_MAX_REFERENCE_DISTANCE_M = float(os.getenv("SHELF_BOARD_MAX_REFERENCE_DISTANCE_M", "0.75"))
 SHELF_BOARD_OBJECT_MARGIN_M = float(os.getenv("SHELF_BOARD_OBJECT_MARGIN_M", "0.018"))
 SHELF_BOARD_ROW_MARGIN_PX = int(os.getenv("SHELF_BOARD_ROW_MARGIN_PX", "8"))
@@ -211,6 +212,8 @@ def detect_shelf_board_bounds(
                 row_span = second["row"] - first["row"]
                 if row_span < SHELF_BOARD_MIN_ROW_SPAN_PX:
                     continue
+                if abs(second["z"] - first["z"]) < SHELF_BOARD_MIN_Z_SPAN_M:
+                    continue
                 score = (reference_row - first["row"]) + (second["row"] - reference_row)
                 pair_candidates.append((score, first, second))
     else:
@@ -219,6 +222,8 @@ def detect_shelf_board_bounds(
             for second in by_row[index + 1:]:
                 row_span = second["row"] - first["row"]
                 if row_span < SHELF_BOARD_MIN_ROW_SPAN_PX:
+                    continue
+                if abs(second["z"] - first["z"]) < SHELF_BOARD_MIN_Z_SPAN_M:
                     continue
                 z_mid = (first["z"] + second["z"]) / 2.0
                 pair_candidates.append((abs(z_mid - reference), first, second))
@@ -231,6 +236,8 @@ def detect_shelf_board_bounds(
             return {"boards": boards}
         lower = max(lower, key=lambda board: board["z"])
         upper = min(upper, key=lambda board: board["z"])
+        if abs(upper["z"] - lower["z"]) < SHELF_BOARD_MIN_Z_SPAN_M:
+            return {"boards": boards}
     z_min = lower["z"] + SHELF_BOARD_OBJECT_MARGIN_M
     z_max = upper["z"] - SHELF_BOARD_OBJECT_MARGIN_M
     row_min = min(lower["row"], upper["row"]) + SHELF_BOARD_ROW_MARGIN_PX
