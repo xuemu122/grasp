@@ -28,6 +28,7 @@ const PRODUCT_UPLOAD_MAX_BYTES = Number(process.env.PRODUCT_UPLOAD_MAX_BYTES || 
 const ROBOT_WORKER_READY_TIMEOUT_MS = Number(process.env.ROBOT_WORKER_READY_TIMEOUT_MS || 90000);
 const ROBOT_GRAB_TIMEOUT_MS = Number(process.env.ROBOT_GRAB_TIMEOUT_MS || 120000);
 const ROBOT_STOW_TIMEOUT_MS = Number(process.env.ROBOT_STOW_TIMEOUT_MS || 120000);
+const ROBOT_FILTER_PREVIEW_TIMEOUT_MS = Number(process.env.ROBOT_FILTER_PREVIEW_TIMEOUT_MS || 30000);
 const ROBOT_STOW_COMMAND = process.env.ROBOT_STOW_COMMAND || '**stow**';
 const ROBOT_MAX_ITEM_QTY = Number(process.env.ROBOT_MAX_ITEM_QTY || 20);
 const ROBOT_MAX_ORDER_UNITS = Number(process.env.ROBOT_MAX_ORDER_UNITS || 50);
@@ -46,6 +47,7 @@ let robotWorker = null;
 let robotWorkerReady = false;
 let robotWorkerStarting = null;
 let robotStowPromise = null;
+let robotFilterPreviewPromise = null;
 
 // 机器人初始位置
 const SHELF_LAYERS_FILE = process.env.SHELF_LAYERS_FILE || path.resolve(__dirname, '../dipan/shelf_layers.json');
@@ -835,6 +837,8 @@ wss.on('connection', (ws) => {
             handleStowCommand(ws);
         } else if (msg.type === 'goto-layer') {
             handleGotoLayerCommand(ws, msg);
+        } else if (msg.type === 'filter-preview') {
+            handleFilterPreviewCommand(ws);
         } else if (msg.type === 'ping') {
             sendMessage(ws, { type: 'pong', time: Date.now() });
         } else {
@@ -851,6 +855,97 @@ wss.on('connection', (ws) => {
         robotStatus: currentRobotStatus()
     });
 });
+
+async function handleFilterPreviewCommand(ws) {
+    if (!ROBOT_GRASP_REAL) {
+        sendMessage(ws, { type: 'filter-preview', status: 'error', message: '模拟模式没有真实相机过滤预览' });
+        return;
+    }
+    if (activeOrderId) {
+        sendMessage(ws, { type: 'filter-preview', status: 'error', message: `订单 ${activeOrderId} 正在执行，请稍后再试` });
+        return;
+    }
+    if (robotStowPromise) {
+        sendMessage(ws, { type: 'filter-preview', status: 'error', message: '机械臂正在收起，请稍后再试' });
+        return;
+    }
+    if (robotFilterPreviewPromise) {
+        sendMessage(ws, { type: 'filter-preview', status: 'error', message: '已有过滤预览正在执行，请稍后再试' });
+        return;
+    }
+
+    let worker;
+    try {
+        worker = await ensureRobotWorker();
+    } catch (error) {
+        sendMessage(ws, { type: 'filter-preview', status: 'error', message: error.message });
+        return;
+    }
+    if (!worker) {
+        sendMessage(ws, { type: 'filter-preview', status: 'error', message: '机器人 worker 未启动' });
+        return;
+    }
+
+    sendMessage(ws, { type: 'filter-preview', status: 'started', message: '正在采集层板过滤预览' });
+    robotFilterPreviewPromise = new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (error, result) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            worker.stdout.off('data', onStdout);
+            worker.stderr.off('data', onStderr);
+            worker.off('close', onClose);
+            if (error) reject(error);
+            else resolve(result);
+        };
+        const onLine = (line) => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            const completed = trimmed.match(/\[过滤预览\]\[完成\] image=(\S+) report=(\S+)/);
+            if (completed) {
+                try {
+                    const imagePath = completed[1];
+                    const reportPath = completed[2];
+                    const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+                    const imageBase64 = fs.readFileSync(imagePath).toString('base64');
+                    finish(null, {
+                        type: 'filter-preview',
+                        status: 'completed',
+                        imageMime: 'image/jpeg',
+                        imageBase64,
+                        report
+                    });
+                } catch (error) {
+                    finish(error);
+                }
+                return;
+            }
+            if (trimmed.includes('[过滤预览][失败]')) finish(new Error(trimmed));
+        };
+        const stdoutLines = createLineHandler(onLine);
+        const stderrLines = createLineHandler(onLine);
+        const onStdout = (chunk) => stdoutLines(chunk);
+        const onStderr = (chunk) => stderrLines(chunk);
+        const onClose = (code) => finish(new Error(`过滤预览 worker 已退出 code=${code}`));
+        const timeout = setTimeout(() => finish(new Error(`过滤预览超时 (${ROBOT_FILTER_PREVIEW_TIMEOUT_MS}ms)`)), ROBOT_FILTER_PREVIEW_TIMEOUT_MS);
+        worker.stdout.on('data', onStdout);
+        worker.stderr.on('data', onStderr);
+        worker.once('close', onClose);
+        worker.stdin.write('__filter_preview__\n', (error) => {
+            if (error) finish(error);
+        });
+    });
+
+    try {
+        const result = await robotFilterPreviewPromise;
+        sendMessage(ws, result);
+    } catch (error) {
+        sendMessage(ws, { type: 'filter-preview', status: 'error', message: error.message });
+    } finally {
+        robotFilterPreviewPromise = null;
+    }
+}
 
 function ensureRobotWorker() {
     if (!ROBOT_GRASP_REAL) return Promise.resolve(null);
@@ -934,6 +1029,10 @@ async function handleStowCommand(ws) {
         sendMessage(ws, { type: 'error', message: '机械臂正在收起，请勿重复发送' });
         return;
     }
+    if (robotFilterPreviewPromise) {
+        sendMessage(ws, { type: 'error', message: '正在采集层板过滤预览，请稍后再试' });
+        return;
+    }
     if (!robotWorker || robotWorker.exitCode !== null) {
         sendStatus(ws, 'completed', { message: '机器人 worker 未启动，无需收起' });
         return;
@@ -982,6 +1081,9 @@ async function handleStowCommand(ws) {
 // ========== 处理移动到层命令 ==========
 async function handleGotoLayerCommand(ws, msg) {
     try {
+        if (robotFilterPreviewPromise) {
+            throw new Error('正在采集层板过滤预览，请稍后再试');
+        }
         const layerIndex = await resolveLayerIndex(msg);
         if (!layerIndex) {
             sendMessage(ws, { type: 'error', message: '请提供 productName/productId 或 layer 参数' });
@@ -1041,6 +1143,10 @@ async function handleGrabCommand(ws, msg) {
     }
     if (robotStowPromise) {
         sendMessage(ws, { type: 'error', message: '机械臂正在收起，请稍后再试' });
+        return;
+    }
+    if (robotFilterPreviewPromise) {
+        sendMessage(ws, { type: 'error', message: '正在采集层板过滤预览，请稍后再试' });
         return;
     }
     if (activeOrderId) {

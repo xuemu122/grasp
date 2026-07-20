@@ -27,6 +27,7 @@ from grasp_planner import (
     TARGET_ROI_Y_MAX,
     axis_aligned_approach_m,
     detect_shelf_board_bounds,
+    explain_target_filter,
     pick_target_box,
     plan_edge_grasp,
 )
@@ -1238,6 +1239,74 @@ def _toggle_chassis_place():
         print("  流程: 先回第2层 → 到收起姿态 → 调用 move_robot.py place → 等底盘到达 → 机械臂放置")
 
 
+def _save_filter_preview(camera, locator, transformer, flange_pose, layer_z_m, layer_idx=None):
+    """Capture one diagnostic frame showing dynamic layer filtering only."""
+    image_path = os.getenv("SHELF_FILTER_PREVIEW_IMAGE", "/tmp/shelf_filter_preview.jpg")
+    report_path = os.getenv("SHELF_FILTER_PREVIEW_REPORT", f"{image_path}.json")
+    color, depth = camera.read()
+    if color is None or depth is None:
+        print("[过滤预览][失败] 相机未返回 RGB-D 帧", flush=True)
+        return None
+
+    detections = locator.process_frame(color, depth) or []
+    bounds = detect_shelf_board_bounds(
+        depth,
+        camera,
+        transformer,
+        flange_pose,
+        reference_z_m=layer_z_m,
+        exclude_bboxes=[d.bbox for d in detections],
+    )
+    report = explain_target_filter(
+        detections,
+        transformer=transformer,
+        flange_pose=flange_pose,
+        layer_z_m=layer_z_m,
+        shelf_board_bounds=bounds,
+    )
+    report["image_path"] = image_path
+    report["report_path"] = report_path
+    report["current_layer_z_m"] = layer_z_m
+    report["current_layer"] = layer_idx
+    report["boards"] = bounds.get("boards", []) if bounds else []
+    report["dynamic_bounds"] = {
+        key: bounds[key] for key in ("row_min", "row_max", "z_min", "z_max")
+        if bounds and bounds.get(key) is not None
+    }
+
+    viz = color.copy()
+    row_min = report["row_min"]
+    row_max = report["row_max"]
+    cv2.line(viz, (0, int(round(row_min))), (viz.shape[1] - 1, int(round(row_min))), (255, 0, 0), 2)
+    cv2.line(viz, (0, int(round(row_max))), (viz.shape[1] - 1, int(round(row_max))), (255, 0, 0), 2)
+    cv2.putText(viz, f"{report['mode']} rows={row_min:.0f}..{row_max:.0f}", (8, 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 0), 1)
+    for item in report["detections"]:
+        x1, y1, x2, y2 = item["bbox"]
+        accepted = item["accepted"]
+        color_box = (0, 190, 0) if accepted else (0, 0, 255)
+        label = "KEEP" if accepted else "DROP:" + ",".join(item["reasons"])
+        depth_text = "" if item["depth_m"] is None else f" {item['depth_m']:.2f}m"
+        cv2.rectangle(viz, (x1, y1), (x2, y2), color_box, 2)
+        cv2.putText(viz, f"{item['class_name'] or '?'} {label}{depth_text}", (x1, max(38, y1 - 7)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, color_box, 1)
+    os.makedirs(os.path.dirname(image_path) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
+    if not cv2.imwrite(image_path, viz):
+        print(f"[过滤预览][失败] 无法写入图片: {image_path}", flush=True)
+        return None
+    with open(report_path, "w", encoding="utf-8") as handle:
+        json.dump(report, handle, ensure_ascii=False, indent=2)
+    accepted_count = sum(1 for item in report["detections"] if item["accepted"])
+    print(
+        f"[过滤预览][完成] image={image_path} report={report_path} "
+        f"mode={report['mode']} boards={len(report['boards'])} "
+        f"accepted={accepted_count}/{len(report['detections'])}",
+        flush=True,
+    )
+    return report
+
+
 def main():
     global _current_layer_idx
 
@@ -1325,6 +1394,7 @@ def main():
     print("  - 输入 c   ← 设置目标商品/类别/id")
     print("  - 输入 ?   ← 查看全部模型类别")
     print("  - 输入 v   ← 实时画面预览 (YOLO 检测)")
+    print("  - 输入 f   ← 保存当前层板过滤预览 (不移动/不抓取)")
     print("  - 输入 j   ← 手动点动 (wasd/e/r 微调法兰)")
     print("  - 也可直接输入目标名抓取；输入 all/clear 清空目标")
     print("  - 输入 q   ← 退出")
@@ -1359,6 +1429,12 @@ def main():
                 if cmd in ("__quit__", "__exit__"):
                     print("[前端常驻模式] 收到退出指令, 不自动收起")
                     break
+                if cmd in ("__filter_preview__", "__inspect_filter__"):
+                    current_layer_z_m = None
+                    if _current_layer_idx in _shelf_layer_poses:
+                        current_layer_z_m = _shelf_layer_poses[_current_layer_idx][0][2] / 1000.0
+                    _save_filter_preview(camera, locator, transformer, arm.get_pose(), current_layer_z_m, _current_layer_idx)
+                    continue
                 # 层移动命令: __layer_N__ -> 移动到第N层
                 layer_match = re.match(r'^__layer_(\d+)__$', cmd)
                 if layer_match:
@@ -1391,9 +1467,9 @@ def main():
             else:
                 if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
                     _, layer_name = _shelf_layer_poses[_current_layer_idx]
-                    prompt = f"\n[第{_current_layer_idx}层 {layer_name} | 目标:{target_state}] 按 Enter 抓取 | c 目标 | ? 类别 | l 层管理 | p 放置点 | u 收起 | b 底盘:{chassis_state} | v 预览 | j 点动 | q 退出 > "
+                    prompt = f"\n[第{_current_layer_idx}层 {layer_name} | 目标:{target_state}] 按 Enter 抓取 | c 目标 | ? 类别 | l 层管理 | p 放置点 | u 收起 | b 底盘:{chassis_state} | v 预览 | f 过滤预览 | j 点动 | q 退出 > "
                 else:
-                    prompt = f"\n[HOME | 目标:{target_state}] 按 Enter 抓取 | c 目标 | ? 类别 | l 层管理 | p 放置点 | u 收起 | b 底盘:{chassis_state} | v 预览 | j 点动 | q 退出 > "
+                    prompt = f"\n[HOME | 目标:{target_state}] 按 Enter 抓取 | c 目标 | ? 类别 | l 层管理 | p 放置点 | u 收起 | b 底盘:{chassis_state} | v 预览 | f 过滤预览 | j 点动 | q 退出 > "
                 cmd = input(prompt).strip()
             if cmd.lower() == "q":
                 break
@@ -1509,6 +1585,13 @@ def main():
                         break
                 cv2.destroyWindow("Live YOLO")
                 print("预览结束")
+                continue
+
+            if cmd.lower() == "f":
+                current_layer_z_m = None
+                if _current_layer_idx in _shelf_layer_poses:
+                    current_layer_z_m = _shelf_layer_poses[_current_layer_idx][0][2] / 1000.0
+                _save_filter_preview(camera, locator, transformer, arm.get_pose(), current_layer_z_m, _current_layer_idx)
                 continue
 
             if cmd:

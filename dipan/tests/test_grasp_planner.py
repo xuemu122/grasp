@@ -72,6 +72,16 @@ class ShelfBoardFilterTests(unittest.TestCase):
             grasp_planner.MAX_GRASP_DEPTH_M = previous_max_depth
         self.assertEqual(target.class_name, "target")
 
+        report = grasp_planner.explain_target_filter(
+            [detection("upper", 15, 0.6), detection("target", 50, 0.4), detection("lower", 85, 0.2)],
+            transformer=transformer,
+            flange_pose=(0, 0, 0, 0, 0, 0),
+            layer_z_m=0.3,
+            shelf_board_bounds=bounds,
+        )
+        self.assertEqual(report["mode"], "dynamic")
+        self.assertEqual([item["accepted"] for item in report["detections"]], [False, True, False])
+
 
 if __name__ == "__main__":
     unittest.main()

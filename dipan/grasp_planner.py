@@ -178,6 +178,82 @@ def detect_shelf_board_bounds(
     }
 
 
+def explain_target_filter(
+    detections,
+    transformer=None,
+    flange_pose=None,
+    layer_z_m=None,
+    shelf_board_bounds=None,
+):
+    """Return per-detection decisions used by the layer filter.
+
+    This is a read-only diagnostic API for preview tools. It intentionally
+    reports the strict row/Z decision without applying pick_target_box's
+    no-candidate fallback, so an operator can see exactly which detections
+    the dynamic bounds would reject.
+    """
+    dynamic = bool(shelf_board_bounds and shelf_board_bounds.get("row_min") is not None)
+    if dynamic:
+        row_min = shelf_board_bounds["row_min"]
+        row_max = shelf_board_bounds["row_max"]
+        z_min = shelf_board_bounds.get("z_min")
+        z_max = shelf_board_bounds.get("z_max")
+        mode = "dynamic"
+    else:
+        row_min = TARGET_ROI_Y_MIN
+        row_max = TARGET_ROI_Y_MAX
+        z_min = z_max = None
+        mode = "fallback_roi"
+
+    records = []
+    for det in detections:
+        x1, y1, x2, y2 = det.bbox
+        center_x = (float(x1) + float(x2)) / 2.0
+        center_y = (float(y1) + float(y2)) / 2.0
+        row_ok = row_min <= center_y <= row_max
+        z = _det_center_robot_z(det, transformer, flange_pose) if transformer is not None and flange_pose is not None else None
+        if dynamic and z_min is not None and z_max is not None and z is not None:
+            z_ok = z_min <= z <= z_max
+            z_reason = "" if z_ok else "z_outside_dynamic_bounds"
+        elif not dynamic and LAYER_Z_FILTER_ENABLE and layer_z_m is not None and z is not None:
+            z_ok = abs(z - layer_z_m) <= LAYER_Z_TOLERANCE_M
+            z_reason = "" if z_ok else "z_outside_layer_tolerance"
+        else:
+            z_ok = True
+            z_reason = ""
+        depth = float(det.depth_m) if det.depth_m and det.depth_m > 0 else None
+        depth_ok = depth is not None and depth <= MAX_GRASP_DEPTH_M
+        reasons = []
+        if not row_ok:
+            reasons.append("row_outside_bounds")
+        if not z_ok:
+            reasons.append(z_reason)
+        if not depth_ok:
+            reasons.append("missing_or_too_deep")
+        records.append({
+            "class_name": str(getattr(det, "class_name", "") or ""),
+            "class_id": getattr(det, "class_id", None),
+            "bbox": [int(round(float(v))) for v in det.bbox],
+            "center": [round(center_x, 1), round(center_y, 1)],
+            "depth_m": depth,
+            "robot_z_m": round(z, 5) if z is not None else None,
+            "row_ok": bool(row_ok),
+            "z_ok": bool(z_ok),
+            "depth_ok": bool(depth_ok),
+            "accepted": not reasons,
+            "reasons": reasons,
+        })
+    return {
+        "mode": mode,
+        "row_min": row_min,
+        "row_max": row_max,
+        "z_min": z_min,
+        "z_max": z_max,
+        "layer_z_m": layer_z_m,
+        "detections": records,
+    }
+
+
 def pick_target_box(detections, transformer=None, flange_pose=None, layer_z_m=None, shelf_board_bounds=None):
     """
     货架分层抓取:

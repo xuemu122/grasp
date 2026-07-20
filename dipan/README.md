@@ -148,6 +148,36 @@ python3 -m unittest dipan.tests.test_grasp_planner
 
 测试覆盖上下层板识别、当前层边界生成和上下层候选过滤；不会连接相机、DOBOT 或驱动真实机械臂。
 
+## 层板过滤预览接口
+
+程序提供只读的层板过滤预览，不会移动机械臂、闭合灵巧手或执行抓取。机械臂停在目标层观察位时：
+
+- 交互模式输入 `f`，保存一帧预览。
+- 常驻 worker 从 stdin 写入 `__filter_preview__`（兼容别名 `__inspect_filter__`）。
+
+默认输出：
+
+```text
+/tmp/shelf_filter_preview.jpg
+/tmp/shelf_filter_preview.jpg.json
+```
+
+图片中蓝线是当前过滤行范围，绿色框是严格过滤后保留的候选，红色框是被过滤的候选；JSON 报告包含当前层编号、上下层板 `boards`、动态 `row/z` 边界、每个检测框的机器人 Z 和过滤原因。输出路径可通过以下变量修改：
+
+```bash
+SHELF_FILTER_PREVIEW_IMAGE=/tmp/filter.jpg \
+SHELF_FILTER_PREVIEW_REPORT=/tmp/filter.json \
+SHELF_GRASP_WORKER=1 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
+```
+
+启动后向该进程 stdin 写入：
+
+```text
+__filter_preview__
+```
+
+终端会返回类似 `[过滤预览][完成] image=... report=... mode=dynamic boards=... accepted=.../...` 的结果。`mode=dynamic` 表示使用当前帧上下层板；`mode=fallback_roi` 表示本帧没有形成可靠上下层板，使用旧 ROI/Z 回退规则。
+
 ## 主菜单
 
 ```text

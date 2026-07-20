@@ -141,6 +141,7 @@ cd /home/nvidia/grasp/识别
 - 收起姿态保存在 `dipan/stow_pose.json`，退出程序时会主动回收起姿态。
 - 第 4 层允许低/负 Z，因为当前基座下方是可用空间；其他层仍保留低 Z 拒绝保护。
 - 抓取目标先按指定商品/类别过滤，再优先使用当前深度帧识别的上下层板边界过滤；识别失败时回退 ROI/当前层世界 Z，之后按深度分层和右侧优先规则选择。详细动态层板参数见 [`dipan/README.md`](dipan/README.md)。
+- `dipan/shelf_grasp.py` 支持只读层板过滤预览：交互模式输入 `f`，常驻 worker 写入 `__filter_preview__`，生成 `/tmp/shelf_filter_preview.jpg` 和对应 JSON 报告，不会移动或抓取。
 - 当前灵巧手使用 Aero Hand；侧抓默认瓶子手势，上抓使用上端手势。
 - 深度护栏会排除检测框、自手部深度点，并检查对齐/探入路径。
 - Nova5 自碰撞护栏默认开启，基于 URDF/SRDF 和胶囊近似在 MovL/MovJ 前检查。

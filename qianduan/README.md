@@ -190,6 +190,21 @@ sudo systemctl status frpc --no-pager
 {"type":"ping"}
 ```
 
+层板过滤只读预览：
+
+```json
+{"type":"filter-preview"}
+```
+
+真实模式下服务会向常驻 `shelf_grasp.py` worker 写入 `__filter_preview__`。该操作只采集当前帧，不移动机械臂、不闭合灵巧手、不执行抓取。服务返回：
+
+```json
+{"type":"filter-preview","status":"started","message":"正在采集层板过滤预览"}
+{"type":"filter-preview","status":"completed","imageMime":"image/jpeg","imageBase64":"...","report":{"mode":"dynamic","current_layer":2,"boards":[],"detections":[]}}
+```
+
+`imageBase64` 可拼成 `data:image/jpeg;base64,...` 显示；`report` 中 `mode=dynamic` 表示使用当前帧上下层板，`fallback_roi` 表示回退旧 ROI/Z 过滤。订单执行或机械臂收起时会返回 `status: "error"`。
+
 服务端连接响应：
 
 ```json
@@ -249,6 +264,12 @@ worker 输出包含“等待商品名”后，服务才将其标记为 ready。�
 
 `shelf_grasp.py` 同时兼容旧控制词 `__stow__`。服务等待 worker 真正退出后才返回收起完成。
 
+过滤预览时写入：
+
+```text
+__filter_preview__\n
+```
+
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
@@ -266,6 +287,7 @@ worker 输出包含“等待商品名”后，服务才将其标记为 ready。�
 | `ROBOT_WORKER_READY_TIMEOUT_MS` | `90000` | worker 启动超时 |
 | `ROBOT_GRAB_TIMEOUT_MS` | `120000` | 单件抓取超时 |
 | `ROBOT_STOW_TIMEOUT_MS` | `120000` | 收起超时 |
+| `ROBOT_FILTER_PREVIEW_TIMEOUT_MS` | `30000` | 层板过滤预览超时 |
 | `ROBOT_BROADCAST_LOGS` | 空 | 设为 `1` 时向前端广播内部日志 |
 
 ## 数据初始化与测试
