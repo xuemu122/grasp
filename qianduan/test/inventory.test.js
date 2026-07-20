@@ -32,12 +32,20 @@ test('completed orders decrement inventory once', async (t) => {
     const wsPort = await getFreePort();
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grasp-inventory-'));
     const dataFile = path.join(tempDir, 'products.json');
+    const shelfLayersFile = path.join(tempDir, 'shelf_layers.json');
     fs.writeFileSync(dataFile, JSON.stringify({
         products: [
             { id: 1, name: '测试咖啡', stock: 5, status: 1, price: 8 },
             { id: 2, name: '下架商品', stock: 5, status: 0, price: 5 },
             { id: 3, name: '售罄商品', stock: 0, status: 1, price: 6 }
         ]
+    }));
+    fs.writeFileSync(shelfLayersFile, JSON.stringify({
+        layers: {
+            1: { name: '第1层', pose: [1, 2, 3, 4, 5, 6] },
+            2: { name: '第2层', pose: [6, 5, 4, 3, 2, 1] }
+        },
+        current: 1
     }));
     t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
@@ -50,6 +58,7 @@ test('completed orders decrement inventory once', async (t) => {
             WS_HOST: '127.0.0.1',
             WS_PORT: String(wsPort),
             PRODUCTS_DB_FILE: dataFile,
+            SHELF_LAYERS_FILE: shelfLayersFile,
             ORDER_TOKEN_SECRET: 'inventory-test-secret'
         },
         stdio: ['ignore', 'pipe', 'pipe']
@@ -74,6 +83,12 @@ test('completed orders decrement inventory once', async (t) => {
     });
 
     const baseUrl = `http://127.0.0.1:${port}`;
+    const shelfLayersResponse = await fetch(`${baseUrl}/api/shelf/layers`);
+    const shelfLayers = await shelfLayersResponse.json();
+    assert.equal(shelfLayersResponse.status, 200);
+    assert.deepEqual(Object.keys(shelfLayers.data), ['1', '2']);
+    assert.equal(shelfLayers.current, 1);
+
     const publicProductsResponse = await fetch(`${baseUrl}/api/products?include_inactive=1`);
     const publicProducts = await publicProductsResponse.json();
     assert.deepEqual(publicProducts.data.map((item) => item.id).sort(), [1, 3]);

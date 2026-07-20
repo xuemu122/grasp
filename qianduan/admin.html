@@ -51,6 +51,7 @@
         .status-badge { padding: 3px 10px; border-radius: 12px; font-size: 0.78rem; font-weight: 600; display: inline-block; }
         .status-badge.on { background: var(--success-light); color: #065F46; }
         .status-badge.off { background: #FEE2E2; color: #991B1B; }
+        .status-badge.warn { background: var(--warning-light); color: #92400E; }
         .actions { display: flex; gap: 6px; }
         .form-group { margin-bottom: 14px; }
         .form-group label { display: block; font-size: 0.85rem; font-weight: 600; color: var(--gray-600); margin-bottom: 4px; }
@@ -127,7 +128,7 @@
         <!-- 左侧：商品列表 -->
         <div class="card">
             <div class="card-title">
-                <span>商品列表 <span class="count" id="totalCount">0 件</span></span>
+                <span>商品列表 <span class="count" id="totalCount">0 件</span> <span class="count" id="shelfLayerCount">0 层位姿</span></span>
                 <button class="btn btn-primary" onclick="openAddModal()">+ 新增商品</button>
             </div>
             <div class="toolbar">
@@ -147,6 +148,7 @@
                             <th>品类</th>
                             <th>生产商</th>
                             <th>位置</th>
+                            <th>货架层</th>
                             <th>坐标</th>
                             <th>价格</th>
                             <th>状态</th>
@@ -154,7 +156,7 @@
                         </tr>
                     </thead>
                     <tbody id="productTableBody">
-                        <tr><td colspan="11" class="loading">加载中...</td></tr>
+                        <tr><td colspan="12" class="loading">加载中...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -214,9 +216,17 @@
                     <div class="emoji-picker" id="emojiPicker"></div>
                     <input type="hidden" id="formEmoji" value="📦">
                 </div>
-                <div class="form-group">
-                    <label>货架位置</label>
-                    <input type="text" class="form-input" id="formLocation" placeholder="如：饮料区A1货架">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>货架位置</label>
+                        <input type="text" class="form-input" id="formLocation" placeholder="如：饮料区A货架">
+                    </div>
+                    <div class="form-group">
+                        <label>货架层</label>
+                        <select class="form-select" id="formShelfLayer">
+                            <option value="">未设置</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="form-row-3">
                     <div class="form-group">
@@ -290,6 +300,7 @@
             front: { value: 'formPhotoFront', file: 'formPhotoFrontFile', preview: 'formPhotoFrontPreview' },
             back: { value: 'formPhotoBack', file: 'formPhotoBackFile', preview: 'formPhotoBackPreview' }
         };
+        let shelfLayers = {};
 
         // ========== 登录与初始化 ==========
         document.addEventListener('DOMContentLoaded', async () => {
@@ -334,10 +345,10 @@
             }
         }
 
-        function showAdmin() {
+        async function showAdmin() {
             document.getElementById('loginOverlay').hidden = true;
-            loadProducts();
-            loadCategories();
+            await loadShelfLayers();
+            await Promise.all([loadProducts(), loadCategories()]);
         }
 
         function showLogin(message = '') {
@@ -377,6 +388,64 @@
             el.classList.add('selected');
         }
 
+        function parseShelfLayer(location) {
+            const value = String(location || '');
+            const chineseDigits = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
+            let match = value.match(/第?(\d+|[一二三四五六七八九])\s*层/);
+            if (match) return chineseDigits[match[1]] || Number(match[1]);
+            match = value.match(/[A-Za-z](\d+)/);
+            return match ? Number(match[1]) : null;
+        }
+
+        function locationWithShelfLayer(location, layer) {
+            const value = String(location || '').trim();
+            const target = Number(layer);
+            if (!target || parseShelfLayer(value) === target) return value;
+            if (/第?(\d+|[一二三四五六七八九])\s*层/.test(value)) {
+                return value.replace(/第?(\d+|[一二三四五六七八九])\s*层/, `第${target}层`);
+            }
+            if (/[A-Za-z]\d+货架/.test(value)) {
+                return value.replace(/([A-Za-z])\d+货架/, `$1货架第${target}层`);
+            }
+            if (value.includes('货架')) return `${value}第${target}层`;
+            return value ? `${value} 第${target}层` : `第${target}层`;
+        }
+
+        function shelfLayerLabel(location) {
+            const layer = parseShelfLayer(location);
+            if (!layer) return '未设置';
+            return shelfLayers[String(layer)]?.name || `第${layer}层（无位姿）`;
+        }
+
+        function shelfLayerClass(location) {
+            const layer = parseShelfLayer(location);
+            if (!layer) return 'off';
+            return shelfLayers[String(layer)] ? 'on' : 'warn';
+        }
+
+        async function loadShelfLayers() {
+            try {
+                const res = await fetch('/api/shelf/layers', { cache: 'no-store' });
+                const json = await res.json();
+                shelfLayers = res.ok && json.code === 0 ? (json.data || {}) : {};
+            } catch (error) {
+                shelfLayers = {};
+            }
+            document.getElementById('shelfLayerCount').textContent = `${Object.keys(shelfLayers).length} 层位姿`;
+            const select = document.getElementById('formShelfLayer');
+            const selected = select.value;
+            const configured = Object.keys(shelfLayers).map(Number).filter(Number.isFinite);
+            const layers = [...new Set([...configured, 1, 2, 3, 4, 5, 6, 7, 8, 9])].sort((a, b) => a - b);
+            select.innerHTML = '<option value="">未设置</option>';
+            for (const layer of layers) {
+                const option = document.createElement('option');
+                option.value = String(layer);
+                option.textContent = shelfLayers[String(layer)]?.name || `第${layer}层（无位姿）`;
+                select.appendChild(option);
+            }
+            select.value = selected;
+        }
+
         // ========== 加载商品列表 ==========
         async function loadProducts() {
             const search = document.getElementById('searchInput').value.trim();
@@ -395,7 +464,7 @@
                 const tbody = document.getElementById('productTableBody');
 
                 if (json.data.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="11"><div class="empty-state"><span class="icon">📭</span><p>暂无商品数据</p></div></td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="12"><div class="empty-state"><span class="icon">📭</span><p>暂无商品数据</p></div></td></tr>';
                     return;
                 }
 
@@ -408,6 +477,7 @@
                         <td>${esc(p.category) || '-'}</td>
                         <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(p.manufacturer)}">${esc(p.manufacturer) || '-'}</td>
                         <td>${esc(p.location) || '-'}</td>
+                        <td><span class="status-badge ${shelfLayerClass(p.location)}">${esc(shelfLayerLabel(p.location))}</span></td>
                         <td style="font-size:0.8rem;color:var(--gray-500);">(${p.shelf_x}, ${p.shelf_y}, ${p.shelf_z})</td>
                         <td style="color:var(--primary);font-weight:700;">¥${p.price}</td>
                         <td><span class="status-badge ${p.status==1?'on':'off'}">${p.status==1?'在售':'下架'}</span></td>
@@ -540,6 +610,7 @@
                 document.getElementById('formManufacturer').value = p.manufacturer || '';
                 document.getElementById('formEmoji').value = p.emoji || '📦';
                 document.getElementById('formLocation').value = p.location || '';
+                document.getElementById('formShelfLayer').value = String(parseShelfLayer(p.location) || '');
                 document.getElementById('formShelfX').value = p.shelf_x || 0;
                 document.getElementById('formShelfY').value = p.shelf_y || 0;
                 document.getElementById('formShelfZ').value = p.shelf_z || 50;
@@ -567,6 +638,7 @@
             document.getElementById('productForm').reset();
             document.getElementById('formEmoji').value = '📦';
             document.getElementById('formShelfZ').value = 50;
+            document.getElementById('formShelfLayer').value = '';
             document.getElementById('formStock').value = 100;
             document.getElementById('formStatus').value = 1;
             document.getElementById('formTitle').textContent = '➕ 新增商品';
@@ -596,7 +668,10 @@
                 category: document.getElementById('formCategory').value,
                 manufacturer: document.getElementById('formManufacturer').value.trim(),
                 emoji: document.getElementById('formEmoji').value,
-                location: document.getElementById('formLocation').value.trim(),
+                location: locationWithShelfLayer(
+                    document.getElementById('formLocation').value,
+                    document.getElementById('formShelfLayer').value
+                ),
                 shelf_x: parseInt(document.getElementById('formShelfX').value) || 0,
                 shelf_y: parseInt(document.getElementById('formShelfY').value) || 0,
                 shelf_z: parseInt(document.getElementById('formShelfZ').value) || 50,
