@@ -1,7 +1,9 @@
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
+const fs = require('node:fs');
 const net = require('node:net');
 const { once } = require('node:events');
+const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const WebSocket = require('ws');
@@ -49,9 +51,24 @@ function createMessageCollector(ws) {
     };
 }
 
-test('WebSocket real mode trusts cloud items, repeats qty, and stows', async (t) => {
+test('WebSocket real mode moves to the mapped layer before each grab and stows', async (t) => {
     const port = await getFreePort();
     const wsPort = await getFreePort();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grasp-ws-'));
+    const dataFile = path.join(tempDir, 'products.json');
+    const shelfLayersFile = path.join(tempDir, 'shelf_layers.json');
+    fs.writeFileSync(dataFile, JSON.stringify({
+        products: [
+            { id: 999999, name: '云端咖啡', location: '饮料区A货架3层', stock: 5, status: 1 }
+        ]
+    }));
+    fs.writeFileSync(shelfLayersFile, JSON.stringify({
+        layers: {
+            3: { name: '第3层', pose: [1, 2, 3, 4, 5, 6] }
+        },
+        current: 2
+    }));
+    t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
     const child = spawn(process.execPath, ['server.js'], {
         cwd: __dirname + '/..',
         env: {
@@ -60,6 +77,8 @@ test('WebSocket real mode trusts cloud items, repeats qty, and stows', async (t)
             WS_PORT: String(wsPort),
             ROBOT_GRASP_MODE: 'real',
             GRASP_SCRIPT: path.join(__dirname, 'fixtures', 'fake_shelf_grasp.py'),
+            PRODUCTS_DB_FILE: dataFile,
+            SHELF_LAYERS_FILE: shelfLayersFile,
             ROBOT_WORKER_READY_TIMEOUT_MS: '5000',
             ROBOT_GRAB_TIMEOUT_MS: '5000',
             ROBOT_STOW_TIMEOUT_MS: '5000'
@@ -128,6 +147,9 @@ test('WebSocket real mode trusts cloud items, repeats qty, and stows', async (t)
         collector.messages.filter((message) => message.orderId === orderId && message.stage === 'picking').length,
         2
     );
+    const commands = [...serverOutput.matchAll(/\[fake-worker-command\] (.+)/g)]
+        .map((match) => match[1].trim());
+    assert.deepEqual(commands, ['__layer_3__', '云端咖啡', '__layer_3__', '云端咖啡']);
     assert.equal(collector.messages.some((message) => message.type === 'robot_log'), false);
 
     ws.send(JSON.stringify({ type: 'stow' }));

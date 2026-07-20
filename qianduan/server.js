@@ -1100,22 +1100,61 @@ async function runSimulatedGrab(ws, orderId, item, progressBase, totalUnits, ite
     log(`  ✅ ${label} 模拟完成`);
 }
 
-function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo) {
-    return ensureRobotWorker().then((worker) => new Promise((resolve, reject) => {
-        const itemName = item.name;
-        const label = item.qty > 1 ? `${itemName} (${itemNo}/${item.qty})` : itemName;
-        const progressStep = 100 / totalUnits;
-        let outputTail = '';
-        let settled = false;
+async function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo) {
+    const itemName = item.name;
+    const label = item.qty > 1 ? `${itemName} (${itemNo}/${item.qty})` : itemName;
+    const progressStep = 100 / totalUnits;
 
-        log(`  📦 真实抓取(worker): ${label}`);
+    log(`  📦 真实抓取(worker): ${label}`);
+    sendStatus(ws, 'grabbing', {
+        orderId,
+        item: itemStatus(item),
+        stage: 'planning',
+        progress: progressBase,
+        message: `正在查询 ${label} 的货架位置...`
+    });
+
+    const product = readProducts().find((candidate) => String(candidate.id) === String(item.id));
+    if (product) {
+        const shelfPose = getShelfPoseForProduct(product);
+        if (!shelfPose) {
+            throw new Error(`${label}: 库位“${product.location || '未设置'}”没有对应的货架层位姿`);
+        }
+
+        log(`  🎯 ${label} → 第${shelfPose.layer}层 (${shelfPose.name})，先移动再抓取`);
         sendStatus(ws, 'grabbing', {
             orderId,
             item: itemStatus(item),
-            stage: 'planning',
-            progress: progressBase,
-            message: `正在识别并抓取 ${label}...`
+            stage: 'moving',
+            progress: progressBase + progressStep * 0.1,
+            message: `正在移动到第${shelfPose.layer}层 (${shelfPose.name})...`,
+            targetPosition: {
+                x: shelfPose.pose[0],
+                y: shelfPose.pose[1],
+                z: shelfPose.pose[2],
+                rx: shelfPose.pose[3],
+                ry: shelfPose.pose[4],
+                rz: shelfPose.pose[5]
+            },
+            shelfLayer: shelfPose.layer
         });
+        await moveRobotToLayer(shelfPose.layer, shelfPose, shelfPose.pose);
+        sendStatus(ws, 'grabbing', {
+            orderId,
+            item: itemStatus(item),
+            stage: 'arrived',
+            progress: progressBase + progressStep * 0.2,
+            message: `已到达第${shelfPose.layer}层，开始识别 ${label}`,
+            shelfLayer: shelfPose.layer
+        });
+    } else {
+        log(`  ⚠️ 商品 id=${item.id ?? '未提供'} 不在本地商品库，保持当前层执行兼容抓取`);
+    }
+
+    const worker = await ensureRobotWorker();
+    return new Promise((resolve, reject) => {
+        let outputTail = '';
+        let settled = false;
 
         let stdoutData;
         let stderrData;
@@ -1192,7 +1231,7 @@ function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo) {
         worker.stdin.write(`${itemName}\n`, (error) => {
             if (error) finishError(`无法写入抓取 worker: ${error.message}`);
         });
-    }));
+    });
 }
 
 async function getProductPosition(itemName, index) {
@@ -1331,12 +1370,17 @@ async function moveRobotToLayer(layerIndex, layerInfo, pose) {
                 if (settled) return;
                 const trimmed = line.trim();
                 if (!trimmed) return;
-                // shelf_grasp.py 输出格式: [前端常驻模式][完成] 或 [前端常驻模式][失败]
-                if (trimmed.includes('[前端常驻模式][完成]')) {
+                // “正在移动”日志也带有[完成]前缀，只在明确到达后才放行抓取。
+                const moveCompleted = layerIndex
+                    ? trimmed.includes(`[前端常驻模式][完成] 已到达第${layerIndex}层`)
+                    : trimmed.includes('[前端常驻模式][完成] 已到达目标位姿');
+                if (moveCompleted) {
                     finishOk();
                     return;
                 }
-                if (trimmed.includes('[前端常驻模式][失败]')) {
+                const moveFailed = trimmed.includes('[前端常驻模式][失败]')
+                    && (trimmed.includes('移动到第') || trimmed.includes('移动到指定位姿'));
+                if (moveFailed) {
                     finishError(trimmed);
                     return;
                 }
