@@ -456,6 +456,7 @@ async function submitOrder() {
 
     showModal(orderId, items);
 
+    const preparedItems = new Map((prepared.items || []).map(item => [String(item.id), item]));
     const payload = {
         type: 'grab',
         orderId: orderId,
@@ -464,7 +465,8 @@ async function submitOrder() {
             name: i.name,
             emoji: i.emoji || '📦',
             qty: i.qty,
-            price: i.price
+            price: i.price,
+            shelf_layer: preparedItems.get(String(i.id))?.shelf_layer ?? parseLayerFromLocation(i.location)
         })),
         timestamp: Date.now()
     };

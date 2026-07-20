@@ -58,13 +58,11 @@ test('WebSocket real mode moves to the mapped layer before each grab and stows',
     const dataFile = path.join(tempDir, 'products.json');
     const shelfLayersFile = path.join(tempDir, 'shelf_layers.json');
     fs.writeFileSync(dataFile, JSON.stringify({
-        products: [
-            { id: 999999, name: '云端咖啡', location: '饮料区A货架3层', stock: 5, status: 1 }
-        ]
+        products: []
     }));
     fs.writeFileSync(shelfLayersFile, JSON.stringify({
         layers: {
-            3: { name: '第3层', pose: [1, 2, 3, 4, 5, 6] }
+            2: { name: '第2层', pose: [1, 2, 3, 4, 5, 6] }
         },
         current: 2
     }));
@@ -122,6 +120,16 @@ test('WebSocket real mode moves to the mapped layer before each grab and stows',
     );
     assert.equal(protocolError.message, '缺少 orderId 或 items');
 
+    ws.send(JSON.stringify({
+        type: 'grab',
+        orderId: 'ORD-BAD-LAYER',
+        items: [{ id: 1, name: '错误层商品', qty: 1, shelf_layer: 99 }]
+    }));
+    const layerError = await collector.waitFor(
+        (message) => message.type === 'error' && /shelf_layer/.test(message.message)
+    );
+    assert.match(layerError.message, /1\.\.10/);
+
     ws.send('null');
     const objectError = await collector.waitFor(
         (message) => message.type === 'error' && message.message === 'JSON 指令必须是对象'
@@ -132,7 +140,7 @@ test('WebSocket real mode moves to the mapped layer before each grab and stows',
     ws.send(JSON.stringify({
         type: 'grab',
         orderId,
-        items: [{ id: 999999, name: '云端咖啡', qty: 2, emoji: 'coffee' }]
+        items: [{ id: 999999, name: '云端咖啡', qty: 2, emoji: 'coffee', shelf_layer: 2 }]
     }));
     const started = await collector.waitFor(
         (message) => message.type === 'status' && message.status === 'started' && message.orderId === orderId
@@ -149,7 +157,7 @@ test('WebSocket real mode moves to the mapped layer before each grab and stows',
     );
     const commands = [...serverOutput.matchAll(/\[fake-worker-command\] (.+)/g)]
         .map((match) => match[1].trim());
-    assert.deepEqual(commands, ['__layer_3__', '云端咖啡', '__layer_3__', '云端咖啡']);
+    assert.deepEqual(commands, ['__layer_2__', '云端咖啡', '__layer_2__', '云端咖啡']);
     assert.equal(collector.messages.some((message) => message.type === 'robot_log'), false);
 
     ws.send(JSON.stringify({ type: 'stow' }));

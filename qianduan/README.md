@@ -171,14 +171,17 @@ sudo systemctl status frpc --no-pager
       "name": "咖啡",
       "emoji": "coffee",
       "qty": 2,
-      "price": 8
+      "price": 8,
+      "shelf_layer": 2
     }
   ],
   "timestamp": 1784010000000
 }
 ```
 
-约束：`orderId` 必填，`items` 不得为空，商品 `name` 必填，`qty` 必须是整数。默认单项最多 `20` 件，整单最多 `50` 件。
+约束：`orderId` 必填，`items` 不得为空，商品 `name` 必填，`qty` 必须是整数。`shelf_layer` 可选，提供时必须是 `1..10` 的整数。默认单项最多 `20` 件，整单最多 `50` 件。
+
+云端订单准备接口会根据商品 `location` 返回规范化的 `shelf_layer`。盒子真实模式优先使用订单中的层号，在抓取前发送 `__layer_N__` 并等待 worker 确认真正到层，随后才发送商品名。盒子仍兼容未携带层号的旧客户端，并在本地商品库存在时回退到本地映射。
 
 收起与心跳：
 

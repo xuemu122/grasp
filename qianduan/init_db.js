@@ -53,7 +53,7 @@ const DEFAULT_EXTRA_PRODUCTS = [
         packaging: '瓶装',
         category: '运动饮料',
         manufacturer: '',
-        location: '饮料区A5货架',
+        location: '饮料区A货架第2层',
         shelf_x: 100,
         shelf_y: 500,
         shelf_z: 50,

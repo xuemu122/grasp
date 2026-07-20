@@ -357,7 +357,14 @@ function normalizeOrderItems(items) {
         if (!Number.isInteger(qty) || qty < 1 || qty > ROBOT_MAX_ITEM_QTY) {
             throw new Error(`商品 ${name} 的 qty 必须是 1..${ROBOT_MAX_ITEM_QTY} 的整数`);
         }
-        return { ...item, name, qty };
+        const rawShelfLayer = item.shelf_layer ?? item.shelfLayer;
+        const shelfLayer = rawShelfLayer === undefined || rawShelfLayer === null || rawShelfLayer === ''
+            ? null
+            : Number(rawShelfLayer);
+        if (shelfLayer !== null && (!Number.isInteger(shelfLayer) || shelfLayer < 1 || shelfLayer > 10)) {
+            throw new Error(`商品 ${name} 的 shelf_layer 必须是 1..10 的整数`);
+        }
+        return { ...item, name, qty, shelf_layer: shelfLayer };
     });
 
     const totalUnits = normalized.reduce((sum, item) => sum + item.qty, 0);
@@ -511,9 +518,10 @@ const server = http.createServer(async (req, res) => {
                 if (!product || Number(product.status) !== 1) throw new Error(`商品不可用: ${item.name || item.id}`);
                 if (Number(product.stock) < item.qty) throw new Error(`${product.name} 库存不足，当前库存 ${product.stock}`);
                 item.name = product.name;
+                item.shelf_layer = parseLayerFromLocation(product.location);
             }
             const orderId = `ORD-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-            sendJSON(res, { code: 0, orderId, completionToken: createOrderToken(orderId, items) });
+            sendJSON(res, { code: 0, orderId, items, completionToken: createOrderToken(orderId, items) });
         } catch (error) {
             sendJSON(res, { code: 1, message: error.message }, 400);
         }
@@ -1115,12 +1123,26 @@ async function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo) 
     });
 
     const product = readProducts().find((candidate) => String(candidate.id) === String(item.id));
-    if (product) {
-        const shelfPose = getShelfPoseForProduct(product);
+    let shelfPose = null;
+    if (item.shelf_layer) {
+        const shelfData = loadShelfLayers();
+        const layerInfo = shelfData.layers[String(item.shelf_layer)];
+        if (!layerInfo || !Array.isArray(layerInfo.pose)) {
+            throw new Error(`${label}: 第${item.shelf_layer}层没有对应的货架层位姿`);
+        }
+        shelfPose = {
+            layer: item.shelf_layer,
+            name: layerInfo.name || `第${item.shelf_layer}层`,
+            pose: layerInfo.pose
+        };
+    } else if (product) {
+        shelfPose = getShelfPoseForProduct(product);
         if (!shelfPose) {
             throw new Error(`${label}: 库位“${product.location || '未设置'}”没有对应的货架层位姿`);
         }
+    }
 
+    if (shelfPose) {
         log(`  🎯 ${label} → 第${shelfPose.layer}层 (${shelfPose.name})，先移动再抓取`);
         sendStatus(ws, 'grabbing', {
             orderId,
@@ -1148,7 +1170,7 @@ async function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo) 
             shelfLayer: shelfPose.layer
         });
     } else {
-        log(`  ⚠️ 商品 id=${item.id ?? '未提供'} 不在本地商品库，保持当前层执行兼容抓取`);
+        log(`  ⚠️ 订单未携带货架层且商品 id=${item.id ?? '未提供'} 不在本地商品库，保持当前层执行兼容抓取`);
     }
 
     const worker = await ensureRobotWorker();

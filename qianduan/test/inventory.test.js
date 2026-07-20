@@ -35,7 +35,7 @@ test('completed orders decrement inventory once', async (t) => {
     const shelfLayersFile = path.join(tempDir, 'shelf_layers.json');
     fs.writeFileSync(dataFile, JSON.stringify({
         products: [
-            { id: 1, name: '测试咖啡', stock: 5, status: 1, price: 8 },
+            { id: 1, name: '测试咖啡', stock: 5, status: 1, price: 8, location: '测试区A货架第2层' },
             { id: 2, name: '下架商品', stock: 5, status: 0, price: 5 },
             { id: 3, name: '售罄商品', stock: 0, status: 1, price: 6 }
         ]
@@ -98,6 +98,7 @@ test('completed orders decrement inventory once', async (t) => {
     });
     assert.equal(prepared.response.status, 200);
     assert.equal(prepared.json.code, 0);
+    assert.equal(prepared.json.items[0].shelf_layer, 2);
 
     const completionUrl = `${baseUrl}/api/orders/${encodeURIComponent(prepared.json.orderId)}/complete`;
     const completed = await postJson(completionUrl, { completionToken: prepared.json.completionToken });

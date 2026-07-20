@@ -15,7 +15,7 @@ for raw in sys.stdin:
     layer_match = re.fullmatch(r"__layer_(\d+)__", command)
     if layer_match:
         layer = layer_match.group(1)
-        print(f"[前端常驻模式][完成] 正在移动到第{layer}层...", flush=True)
+        print(f"[前端常驻模式] 正在移动到第{layer}层...", flush=True)
         print(f"[前端常驻模式][完成] 已到达第{layer}层", flush=True)
         print("[前端常驻模式] 等待商品名 (**stow**=收起并退出) ...", flush=True)
         continue

@@ -1362,7 +1362,7 @@ def main():
                 layer_match = re.match(r'^__layer_(\d+)__$', cmd)
                 if layer_match:
                     target_layer = int(layer_match.group(1))
-                    print(f"[前端常驻模式][完成] 正在移动到第{target_layer}层...")
+                    print(f"[前端常驻模式] 正在移动到第{target_layer}层...", flush=True)
                     if go_to_layer(arm, target_layer):
                         _current_layer_idx = target_layer
                         print(f"[前端常驻模式][完成] 已到达第{target_layer}层")
