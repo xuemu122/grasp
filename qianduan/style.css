@@ -327,6 +327,7 @@ body {
     display: flex;
     flex-direction: column;
     position: relative;
+    cursor: pointer;
 }
 
 .product-card:hover {
@@ -423,10 +424,35 @@ body {
 .product-manufacturer {
     font-size: 0.75rem;
     color: var(--gray-400);
-    margin-bottom: 12px;
+    margin-bottom: 6px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.product-location {
+    font-size: 0.73rem;
+    color: var(--primary);
+    background: var(--primary-light);
+    padding: 2px 10px;
+    border-radius: 10px;
+    display: inline-block;
+    align-self: flex-start;
+    margin-bottom: 8px;
+    white-space: nowrap;
+    opacity: 0;
+    transform: translateY(2px);
+    transition: opacity 0.2s, transform 0.2s;
+}
+
+.product-card:hover .product-location,
+.product-card:focus-within .product-location {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.product-location:empty {
+    display: none;
 }
 
 .product-footer {

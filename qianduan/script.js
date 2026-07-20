@@ -7,6 +7,7 @@ let searchKeyword = '';      // 搜索关键词
 let currentOrderId = null;
 let currentOrderToken = null;
 let currentOrderItems = [];
+let shelfLayers = {};        // 货架层位姿缓存 { "1": {pose:[...], name:"第1层"}, ... }
 
 // ========== WebSocket 连接 ==========
 let ws = null;
@@ -98,6 +99,7 @@ function handleWSMessage(msg) {
 // ========== 初始化 ==========
 async function init() {
     connectWebSocket();
+    await loadShelfLayers();
     await loadCategories();
     await loadProducts();
     bindSearch();
@@ -111,7 +113,7 @@ async function init() {
 }
 
 async function refreshCatalog() {
-    await Promise.all([loadCategories(), loadProducts()]);
+    await Promise.all([loadShelfLayers(), loadCategories(), loadProducts()]);
 }
 
 // ========== 加载分类 ==========
@@ -248,8 +250,13 @@ function renderProducts() {
         const qty = cart[p.id] || 0;
         const soldOut = Number(p.stock) <= 0;
         const code = p.location ? String(p.location).replace(/\s/g, '') : ('#' + String(p.id).padStart(12, '0'));
+        const layerIndex = parseLayerFromLocation(p.location);
+        const locationLabel = layerIndex
+            ? (shelfLayers[String(layerIndex)] ? '📍 第' + layerIndex + '层' : '📍 层' + layerIndex)
+            : (p.location || '');
         return `
-            <div class="product-card ${qty > 0 ? 'selected' : ''} ${soldOut ? 'sold-out' : ''}" id="card-${p.id}">
+            <div class="product-card ${qty > 0 ? 'selected' : ''} ${soldOut ? 'sold-out' : ''}" id="card-${p.id}"
+                 title="${p.location ? '货架：' + p.location : p.name}">
                 <div class="product-image">
                     ${p.photo_front ? `<img src="${p.photo_front}" alt="${p.name}" loading="lazy">` : `<span class="product-emoji">${p.emoji || '📦'}</span>`}
                     ${qty > 0 ? `<span class="product-badge">${qty}</span>` : ''}
@@ -258,6 +265,7 @@ function renderProducts() {
                 <div class="product-name" title="${p.name}">${p.name}</div>
                 <div class="product-spec">${p.spec || ''}</div>
                 <div class="product-manufacturer">${p.manufacturer || ''}</div>
+                <div class="product-location">${locationLabel}</div>
                 <div class="product-footer">
                     <div class="product-price">
                         <span class="price-symbol">¥</span>${Number(p.price || 0).toFixed(2)}
@@ -473,6 +481,122 @@ function stowRobot() {
     if (!confirm('确认让机器人回到收起姿态并关闭连接吗？')) return;
     updateRobotStatus('busy', '机器人收起中...');
     ws.send(JSON.stringify({ type: 'stow', timestamp: Date.now() }));
+}
+
+// ========== 货架层缓存加载 ==========
+async function loadShelfLayers() {
+    try {
+        const res = await fetch('/api/shelf/layers');
+        const data = await res.json();
+        if (data.code === 0) {
+            shelfLayers = data.data || {};
+            logWS(`📋 货架层加载完成: ${Object.keys(shelfLayers).length} 层`);
+        }
+    } catch (e) {
+        console.error('加载货架层数据失败:', e);
+    }
+}
+
+// ========== 前端版 location 解析（与后端一致）==========
+function parseLayerFromLocation(location) {
+    if (!location) return null;
+    const cnDigits = { '一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9 };
+    // "3层" / "三层" / "第3层"
+    let m = location.match(/第?(\d+|[一二三四五六七八九])\s*层/);
+    if (m) {
+        const val = m[1];
+        return cnDigits[val] !== undefined ? cnDigits[val] : parseInt(val, 10);
+    }
+    // "A3货架" → 3
+    m = location.match(/[A-Za-z](\d+)/);
+    if (m) return parseInt(m[1], 10);
+    return null;
+}
+
+// ========== 点击商品卡片 → 导航机械臂到对应货架位置 ==========
+async function onProductClick(productId, event) {
+    // 如果点的是按钮（添加/移除等），不触发导航
+    if (event && (event.target.closest('button') || event.target.tagName === 'BUTTON')) return;
+
+    const product = products.find(p => String(p.id) === String(productId));
+    if (!product) return;
+
+    if (!wsConnected) {
+        alert('后端服务未连接，无法移动机械臂');
+        return;
+    }
+
+    const layerIndex = parseLayerFromLocation(product.location);
+    const hasLayer = layerIndex && shelfLayers[String(layerIndex)];
+
+    const label = hasLayer
+        ? `${shelfLayers[String(layerIndex)].name} (${product.location || ''})`
+        : (layerIndex ? `第${layerIndex}层（无精确位姿）` : (product.location || product.name));
+
+    logWS(`📍 点击导航: ${product.name} → ${label}`);
+    updateRobotStatus('busy', `正在移动到 ${label}...`);
+
+    if (hasLayer) {
+        // 有精确货架层位姿，直接 goto-layer
+        try {
+            await gotoLayerDirect(product.id, layerIndex);
+            return;
+        } catch (e) {
+            console.error('goto-layer 失败, 尝试坐标兜底:', e.message);
+        }
+    }
+
+    // 兜底：使用商品自身 shelf_x/y/z 坐标
+    if (product.shelf_x !== undefined || product.shelf_y !== undefined) {
+        await gotoProductXYZ(product, label);
+    } else {
+        alert(`商品 "${product.name}" 没有货架位置信息，请在管理后台设置。`);
+        updateRobotStatus('ready', '机器人就绪');
+    }
+}
+
+// ========== 直接 HTTP 调用 goto-layer（返回 Promise，失败抛异常）==========
+async function gotoLayerDirect(productId, layerIndex) {
+    const res = await fetch('/api/robot/goto-layer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId })
+    });
+    const data = await res.json();
+    if (!res.ok || data.code !== 0) throw new Error(data.message || '移动失败');
+
+    const layerName = data.data ? data.data.name : ('第' + layerIndex + '层');
+    logWS(`✅ ${layerName} 已到达`);
+    updateRobotStatus('ready', `${layerName} 已到达`);
+    return data;
+}
+
+// ========== 使用商品自身坐标移动（兜底方案）==========
+async function gotoProductXYZ(product, label) {
+    const pose = [
+        Number(product.shelf_x || 0),
+        Number(product.shelf_y || 0),
+        Number(product.shelf_z || 50),
+        Number(product.shelf_rx ?? 135),
+        Number(product.shelf_ry ?? 82),
+        Number(product.shelf_rz ?? -52)
+    ];
+
+    logWS(`📍 坐标兜底移动: [${pose.join(', ')}]`);
+
+    const res = await fetch('/api/robot/movel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            x: pose[0], y: pose[1], z: pose[2],
+            rx: pose[3], ry: pose[4], rz: pose[5]
+        })
+    });
+    const data = await res.json();
+    if (!res.ok || data.code !== 0) throw new Error(data.message || '坐标移动失败');
+
+    logWS(`✅ ${data.message || '已到达目标位姿'}`);
+    updateRobotStatus('ready', `已到达 ${label}`);
 }
 
 /**
