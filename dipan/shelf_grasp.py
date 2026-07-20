@@ -1269,6 +1269,10 @@ def _save_filter_preview(camera, locator, transformer, flange_pose, layer_z_m, l
     report["current_layer_z_m"] = layer_z_m
     report["current_layer"] = layer_idx
     report["boards"] = bounds.get("boards", []) if bounds else []
+    report["selected_boards"] = {
+        key: bounds[key] for key in ("lower", "upper")
+        if bounds and bounds.get(key) is not None
+    }
     report["dynamic_bounds"] = {
         key: bounds[key] for key in ("row_min", "row_max", "z_min", "z_max")
         if bounds and bounds.get(key) is not None

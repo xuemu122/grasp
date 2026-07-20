@@ -53,6 +53,7 @@ class ShelfBoardFilterTests(unittest.TestCase):
             transformer,
             (0, 0, 0, 0, 0, 0),
             reference_z_m=0.3,
+            exclude_bboxes=[(35, 45, 65, 55)],
         )
         self.assertIsNotNone(bounds)
         self.assertAlmostEqual(bounds["lower"]["z"], 0.3, places=3)

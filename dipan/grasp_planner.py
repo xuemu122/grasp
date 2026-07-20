@@ -19,6 +19,7 @@ SHELF_BOARD_MIN_X_SPAN_M = float(os.getenv("SHELF_BOARD_MIN_X_SPAN_M", "0.18"))
 SHELF_BOARD_MAX_Z_SPREAD_M = float(os.getenv("SHELF_BOARD_MAX_Z_SPREAD_M", "0.045"))
 SHELF_BOARD_CLUSTER_Z_M = float(os.getenv("SHELF_BOARD_CLUSTER_Z_M", "0.055"))
 SHELF_BOARD_ROW_GAP = int(os.getenv("SHELF_BOARD_ROW_GAP", "12"))
+SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX = int(os.getenv("SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX", "6"))
 SHELF_BOARD_MAX_REFERENCE_DISTANCE_M = float(os.getenv("SHELF_BOARD_MAX_REFERENCE_DISTANCE_M", "0.75"))
 SHELF_BOARD_OBJECT_MARGIN_M = float(os.getenv("SHELF_BOARD_OBJECT_MARGIN_M", "0.018"))
 SHELF_BOARD_ROW_MARGIN_PX = int(os.getenv("SHELF_BOARD_ROW_MARGIN_PX", "8"))
@@ -76,10 +77,17 @@ def detect_shelf_board_bounds(
     depth_m = depth[grid_y, grid_x].astype(np.float32) * depth_scale
     valid = np.isfinite(depth_m) & (depth_m >= 0.08) & (depth_m <= 1.5)
 
+    excluded_row_ranges = []
+    excluded_centers = []
     for bbox in exclude_bboxes or ():
         if bbox is None:
             continue
         x1, y1, x2, y2 = [int(v) for v in bbox]
+        excluded_row_ranges.append((
+            y1 - SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX,
+            y2 + SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX,
+        ))
+        excluded_centers.append((y1 + y2) / 2.0)
         valid &= ~(
             (grid_x >= max(0, x1 - 8)) & (grid_x <= min(width - 1, x2 + 8)) &
             (grid_y >= max(0, y1 - 8)) & (grid_y <= min(height - 1, y2 + 8))
@@ -103,6 +111,8 @@ def detect_shelf_board_bounds(
 
     row_candidates = []
     for row_index, row in enumerate(rows):
+        if any(row_min <= int(row) <= row_max for row_min, row_max in excluded_row_ranges):
+            continue
         keep = valid[row_index]
         if int(np.count_nonzero(keep)) < SHELF_BOARD_MIN_POINTS:
             continue
@@ -152,12 +162,33 @@ def detect_shelf_board_bounds(
         return {"boards": boards}
 
     reference = float(reference_z_m)
-    lower = [board for board in boards if board["z"] <= reference + SHELF_BOARD_CLUSTER_Z_M]
-    upper = [board for board in boards if board["z"] > reference + SHELF_BOARD_CLUSTER_Z_M]
-    if not lower or not upper:
+    boards_near_reference = [
+        board for board in boards
+        if abs(board["z"] - reference) <= SHELF_BOARD_MAX_REFERENCE_DISTANCE_M
+    ]
+    if not boards_near_reference:
         return {"boards": boards}
-    lower = max(lower, key=lambda board: board["z"])
-    upper = min(upper, key=lambda board: board["z"])
+
+    lower = [board for board in boards_near_reference if board["z"] <= reference + SHELF_BOARD_CLUSTER_Z_M]
+    upper = [board for board in boards_near_reference if board["z"] > reference + SHELF_BOARD_CLUSTER_Z_M]
+    pair = None
+    if excluded_centers:
+        reference_row = float(np.median(excluded_centers))
+        above = [board for board in boards_near_reference if board["row"] < reference_row]
+        below = [board for board in boards_near_reference if board["row"] > reference_row]
+        if above and below:
+            pair = (
+                max(above, key=lambda board: board["row"]),
+                min(below, key=lambda board: board["row"]),
+            )
+    if pair is not None:
+        first, second = pair
+        lower, upper = sorted((first, second), key=lambda board: board["z"])
+    else:
+        if not lower or not upper:
+            return {"boards": boards}
+        lower = max(lower, key=lambda board: board["z"])
+        upper = min(upper, key=lambda board: board["z"])
     z_min = lower["z"] + SHELF_BOARD_OBJECT_MARGIN_M
     z_max = upper["z"] - SHELF_BOARD_OBJECT_MARGIN_M
     row_min = min(lower["row"], upper["row"]) + SHELF_BOARD_ROW_MARGIN_PX
