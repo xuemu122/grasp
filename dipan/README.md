@@ -80,8 +80,10 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `SHELF_BOARD_FILTER_ENABLE`：是否启用基于当前深度帧的层板识别过滤，默认开启。识别不到可靠上下层板时自动回退旧的 ROI/Z 过滤。
 - `SHELF_BOARD_SAMPLE_STRIDE`：层板识别的深度采样步长，默认 `4` px；调小可提高稀疏/断裂层板的识别率，但会增加计算量。
 - `SHELF_BOARD_MIN_POINTS`：单个图像行形成层板候选所需的最少有效点数，默认 `24`。
+- `SHELF_BOARD_MIN_EDGE_POINTS`：深度边缘型层板候选所需的最少连续边缘点数，默认 `12`。
 - `SHELF_BOARD_MIN_X_SPAN_M`：层板候选在机器人 X 方向的最小横向跨度，默认 `0.18` m；用于排除商品表面和小块背景。
 - `SHELF_BOARD_MAX_Z_SPREAD_M`：同一图像行允许的层板 Z 高度离散范围，默认 `0.045` m；深度噪声较大时可适当调大。
+- `SHELF_BOARD_MIN_DEPTH_EDGE_M`：相邻采样行的最小深度跳变，默认 `0.035` m；用于识别被商品遮挡、没有完整平面点的层板前沿。
 - `SHELF_BOARD_CLUSTER_Z_M`：相邻采样行合并为同一层板的 Z 距离阈值，默认 `0.055` m。
 - `SHELF_BOARD_ROW_GAP`：相邻采样行合并为同一层板的最大行间距，默认 `12` px。
 - `SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX`：检测框上下外扩后禁止作为层板的图像行边距，默认 `6` px；用于避免把商品表面或商品框内部的背景行误识别为层板。

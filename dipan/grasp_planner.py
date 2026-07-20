@@ -15,8 +15,10 @@ LAYER_Z_TOLERANCE_M = float(os.getenv("LAYER_Z_TOLERANCE_M", "0.16"))
 SHELF_BOARD_FILTER_ENABLE = os.getenv("SHELF_BOARD_FILTER_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 SHELF_BOARD_SAMPLE_STRIDE = int(os.getenv("SHELF_BOARD_SAMPLE_STRIDE", "4"))
 SHELF_BOARD_MIN_POINTS = int(os.getenv("SHELF_BOARD_MIN_POINTS", "24"))
+SHELF_BOARD_MIN_EDGE_POINTS = int(os.getenv("SHELF_BOARD_MIN_EDGE_POINTS", "12"))
 SHELF_BOARD_MIN_X_SPAN_M = float(os.getenv("SHELF_BOARD_MIN_X_SPAN_M", "0.18"))
 SHELF_BOARD_MAX_Z_SPREAD_M = float(os.getenv("SHELF_BOARD_MAX_Z_SPREAD_M", "0.045"))
+SHELF_BOARD_MIN_DEPTH_EDGE_M = float(os.getenv("SHELF_BOARD_MIN_DEPTH_EDGE_M", "0.035"))
 SHELF_BOARD_CLUSTER_Z_M = float(os.getenv("SHELF_BOARD_CLUSTER_Z_M", "0.055"))
 SHELF_BOARD_ROW_GAP = int(os.getenv("SHELF_BOARD_ROW_GAP", "12"))
 SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX = int(os.getenv("SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX", "6"))
@@ -115,17 +117,43 @@ def detect_shelf_board_bounds(
         if any(row_min <= int(row) <= row_max for row_min, row_max in excluded_row_ranges):
             continue
         keep = valid[row_index]
-        if int(np.count_nonzero(keep)) < SHELF_BOARD_MIN_POINTS:
+        valid_count = int(np.count_nonzero(keep))
+        if valid_count < SHELF_BOARD_MIN_EDGE_POINTS:
             continue
         points = robot_points[row_index, keep]
         z_values = points[:, 2]
         z_low, z_high = np.percentile(z_values, [10, 90])
-        if float(z_high - z_low) > SHELF_BOARD_MAX_Z_SPREAD_M:
-            continue
         x_span = float(np.percentile(points[:, 0], 95) - np.percentile(points[:, 0], 5))
-        if x_span < SHELF_BOARD_MIN_X_SPAN_M:
-            continue
-        row_candidates.append({"row": int(row), "z": float(np.median(z_values)), "points": len(points)})
+        flat_surface = (
+            valid_count >= SHELF_BOARD_MIN_POINTS and
+            float(z_high - z_low) <= SHELF_BOARD_MAX_Z_SPREAD_M and
+            x_span >= SHELF_BOARD_MIN_X_SPAN_M
+        )
+        source = "surface"
+        selected_points = points
+        if not flat_surface:
+            if row_index == 0 or row_index == len(rows) - 1:
+                continue
+            edge_keep = valid[row_index - 1] & valid[row_index + 1]
+            edge_delta = np.abs(depth_m[row_index - 1] - depth_m[row_index + 1])
+            edge_keep &= edge_delta >= SHELF_BOARD_MIN_DEPTH_EDGE_M
+            if int(np.count_nonzero(edge_keep)) < SHELF_BOARD_MIN_EDGE_POINTS:
+                continue
+            selected_points = robot_points[row_index, edge_keep]
+            edge_x_span = float(
+                np.percentile(selected_points[:, 0], 95) -
+                np.percentile(selected_points[:, 0], 5)
+            )
+            if edge_x_span < SHELF_BOARD_MIN_X_SPAN_M:
+                continue
+            z_values = selected_points[:, 2]
+            source = "depth_edge"
+        row_candidates.append({
+            "row": int(row),
+            "z": float(np.median(z_values)),
+            "points": len(selected_points),
+            "source": source,
+        })
 
     if not row_candidates:
         return None
@@ -157,6 +185,7 @@ def detect_shelf_board_bounds(
             "row": int(round(np.average([item["row"] for item in group], weights=weight))),
             "rows": len(group),
             "points": int(weight.sum()),
+            "source": "depth_edge" if any(item["source"] == "depth_edge" for item in group) else "surface",
         })
     boards.sort(key=lambda item: item["z"])
     if reference_z_m is None:
