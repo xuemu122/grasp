@@ -25,6 +25,55 @@ grasp/
 点单前端、云端 Nginx、FRP、盒子 WebSocket 协议和排障说明见
 [`qianduan/README.md`](qianduan/README.md)。
 
+## 当前推荐启动方式
+
+盒子上的订单服务、机械臂 worker、底盘导航和管理页地图统一由 `qianduan/server.js` 启动。管理员账号和共享会话密钥从 `/etc/grasp-qianduan.env` 加载，不要把真实密钥直接写进命令或仓库。
+
+先确认没有旧服务占用端口：
+
+```bash
+ss -ltnp | grep -E ':3000|:3001'
+```
+
+没有输出时，在盒子上前台启动：
+
+```bash
+cd /home/nvidia/grasp/qianduan
+
+set -a
+source /etc/grasp-qianduan.env
+set +a
+
+PORT=3000 \
+WS_PORT=3001 \
+ROBOT_GRASP_MODE=real \
+DOBOT_IP=192.168.5.1 \
+CHASSIS_HOST=192.168.124.90 \
+CHASSIS_PORT=31001 \
+CHASSIS_MAP_HTTP_HOST=192.168.124.90 \
+CHASSIS_MAP_HTTP_PORT=9001 \
+CHASSIS_PLACE_MARKER=yaojia1 \
+node server.js
+```
+
+该命令前台运行，终端不能关闭；按 `Ctrl+C` 停止。看到以下两行表示 HTTP 和 WebSocket 已启动：
+
+```text
+HTTP 服务已启动: http://0.0.0.0:3000
+WebSocket 服务已启动: ws://0.0.0.0:3001
+```
+
+本机管理页是 `http://localhost:3000/admin.html`。通过云端访问时，Nginx/FRP 仍分别把 `/api/chassis/` 和 `/ws/` 转发到盒子 `3000/3001`。管理员账号是 `admin`，当前内网密码是 `admin123`。
+
+启动后可在另一个终端检查：
+
+```bash
+curl http://127.0.0.1:3000/api/admin/session
+curl http://192.168.124.90:9001/maps/shiyanshi_01/1/map.yaml
+```
+
+第一条返回 JSON 说明盒子 HTTP 服务正常；第二条返回 `origin`、`resolution` 等 YAML 字段说明桥接后的底盘地图服务正常。管理页中的“抓取/放置前导航”默认关闭，放置点默认 `yaojia1`，开启后配置会保存到 `qianduan/data/chassis_settings.json`。
+
 历史/实验目录：
 
 ```text
@@ -78,10 +127,20 @@ TARGET_PRODUCT_QUERY=class_id:63 DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 
 ```bash
 cd /home/nvidia/grasp/qianduan
+
+set -a
+source /etc/grasp-qianduan.env
+set +a
+
 PORT=3000 \
 WS_PORT=3001 \
 ROBOT_GRASP_MODE=real \
 DOBOT_IP=192.168.5.1 \
+CHASSIS_HOST=192.168.124.90 \
+CHASSIS_PORT=31001 \
+CHASSIS_MAP_HTTP_HOST=192.168.124.90 \
+CHASSIS_MAP_HTTP_PORT=9001 \
+CHASSIS_PLACE_MARKER=yaojia1 \
 node server.js
 ```
 

@@ -110,10 +110,24 @@ Cookie 使用 `HttpOnly`、`Secure` 和 `SameSite=Strict`，默认有效期为 8
 
 ## 盒子部署
 
-盒子运行真实模式：
+### 当前启动命令
+
+管理员账号、密码和云端共享会话密钥保存在 `/etc/grasp-qianduan.env`。不要把真实 `ADMIN_SESSION_SECRET` 写入仓库。当前文件应当允许 `nvidia` 用户通过所属组读取，例如权限为 `640` 且组为 `nvidia`。
+
+启动前先检查端口，避免同时运行两个服务：
+
+```bash
+ss -ltnp | grep -E ':3000|:3001'
+```
+
+没有旧服务占用时，在盒子上运行：
 
 ```bash
 cd /home/nvidia/grasp/qianduan
+
+set -a
+source /etc/grasp-qianduan.env
+set +a
 
 PORT=3000 \
 WS_PORT=3001 \
@@ -123,11 +137,40 @@ CHASSIS_HOST=192.168.124.90 \
 CHASSIS_PORT=31001 \
 CHASSIS_MAP_HTTP_HOST=192.168.124.90 \
 CHASSIS_MAP_HTTP_PORT=9001 \
-ADMIN_USERNAME=admin \
-ADMIN_PASSWORD=admin123 \
-ADMIN_SESSION_SECRET='<与云端完全相同的会话密钥>' \
+CHASSIS_PLACE_MARKER=yaojia1 \
 node server.js
 ```
+
+这条命令前台运行，保持终端打开；按 `Ctrl+C` 停止。正常启动日志应包含：
+
+```text
+HTTP 服务已启动: http://0.0.0.0:3000
+商品管理页面: http://localhost:3000/admin.html
+抓取模式: 真实机械臂 (real)
+WebSocket 服务已启动: ws://0.0.0.0:3001
+```
+
+若 `source /etc/grasp-qianduan.env` 报 `Permission denied`，修正文件所属组和权限后重新加载：
+
+```bash
+sudo chown root:nvidia /etc/grasp-qianduan.env
+sudo chmod 640 /etc/grasp-qianduan.env
+```
+
+### 启动后验证
+
+在另一个终端执行：
+
+```bash
+curl http://127.0.0.1:3000/api/admin/session
+curl http://192.168.124.90:9001/maps/shiyanshi_01/1/map.yaml
+```
+
+第一条无需登录也会返回会话状态 JSON，用于确认盒子 HTTP 服务可达。第二条应返回 `origin` 和 `resolution` 等 YAML 字段，用于确认桥接网络下的底盘地图服务可达。管理页刷新地图时，盒子会从相同地址读取 `map.png`。
+
+本机管理页地址为 `http://localhost:3000/admin.html`，内网管理员账号为 `admin`、密码为 `admin123`。云端页面出现“盒子端管理员会话配置不一致”时，需要确认云端和盒子使用完全相同的 `ADMIN_USERNAME` 与 `ADMIN_SESSION_SECRET`，重启两端服务后退出管理页并重新登录。
+
+“抓取/放置前导航”默认关闭，默认放置 marker 为 `yaojia1`。在管理页开启并修改点位后，配置写入 `data/chassis_settings.json`；常驻 worker 在每次放置前重新读取，无需重启 worker。
 
 `server.js` 在收到第一单时懒启动常驻 `../dipan/shelf_grasp.py` worker。worker 准备完成后保持 DOBOT 和 Aero Hand 连接及使能，后续订单直接向其标准输入写入商品名。
 
