@@ -470,7 +470,10 @@ async function submitOrder() {
                 price: i.price,
                 shelf_layer: preparedItem && preparedItem.shelf_layer != null
                     ? preparedItem.shelf_layer
-                    : parseLayerFromLocation(i.location)
+                    : parseLayerFromLocation(i.location),
+                chassis_marker: preparedItem && preparedItem.chassis_marker
+                    ? preparedItem.chassis_marker
+                    : (i.chassis_marker || null)
             };
         }),
         timestamp: Date.now()

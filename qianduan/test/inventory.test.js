@@ -33,9 +33,10 @@ test('completed orders decrement inventory once', async (t) => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grasp-inventory-'));
     const dataFile = path.join(tempDir, 'products.json');
     const shelfLayersFile = path.join(tempDir, 'shelf_layers.json');
+    const chassisSettingsFile = path.join(tempDir, 'chassis_settings.json');
     fs.writeFileSync(dataFile, JSON.stringify({
         products: [
-            { id: 1, name: '测试咖啡', stock: 5, status: 1, price: 8, location: '测试区A货架第2层' },
+            { id: 1, name: '测试咖啡', stock: 5, status: 1, price: 8, location: '测试区A货架第2层', chassis_marker: 'shelf-a' },
             { id: 2, name: '下架商品', stock: 5, status: 0, price: 5 },
             { id: 3, name: '售罄商品', stock: 0, status: 1, price: 6 }
         ]
@@ -59,7 +60,11 @@ test('completed orders decrement inventory once', async (t) => {
             WS_PORT: String(wsPort),
             PRODUCTS_DB_FILE: dataFile,
             SHELF_LAYERS_FILE: shelfLayersFile,
-            ORDER_TOKEN_SECRET: 'inventory-test-secret'
+            CHASSIS_SETTINGS_FILE: chassisSettingsFile,
+            ORDER_TOKEN_SECRET: 'inventory-test-secret',
+            ADMIN_USERNAME: 'inventory-admin',
+            ADMIN_PASSWORD: 'inventory-password',
+            ADMIN_SESSION_SECRET: 'inventory-admin-session-secret-32-bytes'
         },
         stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -83,6 +88,28 @@ test('completed orders decrement inventory once', async (t) => {
     });
 
     const baseUrl = `http://127.0.0.1:${port}`;
+    const chassisMapUnauthorized = await fetch(`${baseUrl}/api/chassis/map`);
+    assert.equal(chassisMapUnauthorized.status, 401);
+
+    const loginResponse = await fetch(`${baseUrl}/api/admin/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'inventory-admin', password: 'inventory-password' })
+    });
+    const adminCookie = loginResponse.headers.get('set-cookie').split(';', 1)[0];
+    const navigationConfigResponse = await fetch(`${baseUrl}/api/chassis/navigation-config`, {
+        headers: { Cookie: adminCookie }
+    });
+    const navigationConfig = await navigationConfigResponse.json();
+    assert.equal(navigationConfig.data.navigation_enabled, false);
+    const updateNavigationResponse = await fetch(`${baseUrl}/api/chassis/navigation-config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+        body: JSON.stringify({ enabled: true })
+    });
+    const updatedNavigationConfig = await updateNavigationResponse.json();
+    assert.equal(updatedNavigationConfig.data.navigation_enabled, true);
+
     const shelfLayersResponse = await fetch(`${baseUrl}/api/shelf/layers`);
     const shelfLayers = await shelfLayersResponse.json();
     assert.equal(shelfLayersResponse.status, 200);
@@ -92,6 +119,7 @@ test('completed orders decrement inventory once', async (t) => {
     const publicProductsResponse = await fetch(`${baseUrl}/api/products?include_inactive=1`);
     const publicProducts = await publicProductsResponse.json();
     assert.deepEqual(publicProducts.data.map((item) => item.id).sort(), [1, 3]);
+    assert.equal(publicProducts.data.find((item) => item.id === 1).chassis_marker, 'shelf-a');
 
     const prepared = await postJson(`${baseUrl}/api/orders/prepare`, {
         items: [{ id: 1, name: '测试咖啡', qty: 2 }]
@@ -99,6 +127,7 @@ test('completed orders decrement inventory once', async (t) => {
     assert.equal(prepared.response.status, 200);
     assert.equal(prepared.json.code, 0);
     assert.equal(prepared.json.items[0].shelf_layer, 2);
+    assert.equal(prepared.json.items[0].chassis_marker, 'shelf-a');
 
     const completionUrl = `${baseUrl}/api/orders/${encodeURIComponent(prepared.json.orderId)}/complete`;
     const completed = await postJson(completionUrl, { completionToken: prepared.json.completionToken });

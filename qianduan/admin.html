@@ -86,6 +86,27 @@
         .empty-state { text-align: center; padding: 40px; color: var(--gray-400); }
         .empty-state .icon { font-size: 3rem; display: block; margin-bottom: 10px; }
         .loading { text-align: center; padding: 40px; color: var(--gray-400); }
+        .chassis-map-card { grid-column: 1 / -1; }
+        .map-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+        .map-toolbar .map-status { flex: 1; min-width: 220px; color: var(--gray-500); font-size: 0.84rem; }
+        .toggle-control { display: inline-flex; align-items: center; gap: 8px; color: var(--gray-700); font-size: 0.86rem; font-weight: 600; cursor: pointer; }
+        .toggle-control input { position: absolute; opacity: 0; pointer-events: none; }
+        .toggle-track { width: 38px; height: 22px; border-radius: 11px; background: var(--gray-300); padding: 3px; transition: background 0.2s; }
+        .toggle-track::after { content: ''; display: block; width: 16px; height: 16px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.22); transition: transform 0.2s; }
+        .toggle-control input:checked + .toggle-track { background: var(--success); }
+        .toggle-control input:checked + .toggle-track::after { transform: translateX(16px); }
+        .toggle-control input:disabled + .toggle-track { opacity: 0.55; }
+        .chassis-map { position: relative; width: 100%; height: 360px; overflow: hidden; border: 1px solid var(--gray-200); border-radius: 8px; background: #F8FAFC; }
+        .chassis-map svg { display: block; width: 100%; height: 100%; }
+        .map-grid-line { stroke: #E5E7EB; stroke-width: 1; }
+        .map-axis-label { fill: #6B7280; font-size: 11px; }
+        .map-marker { cursor: pointer; }
+        .map-marker circle { fill: var(--primary); stroke: white; stroke-width: 3; }
+        .map-marker line { stroke: var(--primary); stroke-width: 3; stroke-linecap: round; }
+        .map-marker text { fill: var(--gray-800); font-size: 12px; font-weight: 600; paint-order: stroke; stroke: white; stroke-width: 4px; stroke-linejoin: round; }
+        .map-marker:hover circle { fill: var(--success); }
+        .map-marker.selected circle { fill: var(--success); stroke: #065F46; }
+        .map-empty { height: 100%; display: flex; align-items: center; justify-content: center; color: var(--gray-400); }
         .login-overlay { position: fixed; inset: 0; z-index: 3000; display: flex; align-items: center; justify-content: center; padding: 24px; background: #F0F2F5; }
         .login-panel { width: min(380px, 100%); background: white; border-radius: 8px; padding: 28px; box-shadow: var(--shadow-lg); }
         .login-panel h1 { font-size: 1.3rem; margin-bottom: 6px; }
@@ -125,6 +146,25 @@
     </header>
 
     <div class="container">
+        <div class="card chassis-map-card">
+            <div class="card-title">
+                <span>底盘地图与点位 <span class="count" id="chassisMarkerCount">0 个点位</span></span>
+                <button class="btn btn-primary btn-sm" type="button" onclick="loadChassisMap()">刷新地图</button>
+            </div>
+            <div class="map-toolbar">
+                <select class="select-box" id="chassisMapFloor" onchange="renderChassisMap()">
+                    <option value="">当前楼层</option>
+                </select>
+                <label class="toggle-control">
+                    <input type="checkbox" id="chassisNavigationToggle" onchange="updateChassisNavigationConfig()">
+                    <span class="toggle-track"></span>
+                    <span>抓取前导航</span>
+                </label>
+                <span class="map-status" id="chassisMapStatus">尚未读取底盘地图</span>
+            </div>
+            <div class="chassis-map" id="chassisMap"><div class="map-empty">暂无地图数据</div></div>
+        </div>
+
         <!-- 左侧：商品列表 -->
         <div class="card">
             <div class="card-title">
@@ -149,6 +189,7 @@
                             <th>生产商</th>
                             <th>位置</th>
                             <th>货架层</th>
+                            <th>底盘点位</th>
                             <th>坐标</th>
                             <th>价格</th>
                             <th>状态</th>
@@ -156,7 +197,7 @@
                         </tr>
                     </thead>
                     <tbody id="productTableBody">
-                        <tr><td colspan="12" class="loading">加载中...</td></tr>
+                        <tr><td colspan="13" class="loading">加载中...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -227,6 +268,12 @@
                             <option value="">未设置</option>
                         </select>
                     </div>
+                </div>
+                <div class="form-group">
+                    <label>底盘导航点位</label>
+                    <select class="form-select" id="formChassisMarker" onchange="renderChassisMap()">
+                        <option value="">未设置</option>
+                    </select>
                 </div>
                 <div class="form-row-3">
                     <div class="form-group">
@@ -301,6 +348,7 @@
             back: { value: 'formPhotoBack', file: 'formPhotoBackFile', preview: 'formPhotoBackPreview' }
         };
         let shelfLayers = {};
+        let chassisMapData = { map: {}, markers: [] };
 
         // ========== 登录与初始化 ==========
         document.addEventListener('DOMContentLoaded', async () => {
@@ -347,7 +395,7 @@
 
         async function showAdmin() {
             document.getElementById('loginOverlay').hidden = true;
-            await loadShelfLayers();
+            await Promise.all([loadShelfLayers(), loadChassisMap(), loadChassisNavigationConfig()]);
             await Promise.all([loadProducts(), loadCategories()]);
         }
 
@@ -423,6 +471,160 @@
             return shelfLayers[String(layer)] ? 'on' : 'warn';
         }
 
+        function updateChassisMarkerOptions(selected = '') {
+            const select = document.getElementById('formChassisMarker');
+            const markers = [...(chassisMapData.markers || [])].sort((a, b) =>
+                a.floor - b.floor || a.name.localeCompare(b.name, 'zh-CN'));
+            select.innerHTML = '<option value="">未设置</option>';
+            const floors = new Map();
+            for (const marker of markers) {
+                const floor = marker.floor || 0;
+                if (!floors.has(floor)) floors.set(floor, []);
+                floors.get(floor).push(marker);
+            }
+            for (const [floor, floorMarkers] of floors) {
+                const group = document.createElement('optgroup');
+                group.label = floor ? `第${floor}层` : '未指定楼层';
+                for (const marker of floorMarkers) {
+                    const option = document.createElement('option');
+                    option.value = marker.name;
+                    option.textContent = `${marker.name} (${marker.x.toFixed(2)}, ${marker.y.toFixed(2)})`;
+                    group.appendChild(option);
+                }
+                select.appendChild(group);
+            }
+            if (selected && !markers.some(marker => marker.name === selected)) {
+                const option = document.createElement('option');
+                option.value = selected;
+                option.textContent = `${selected}（底盘当前未返回）`;
+                select.appendChild(option);
+            }
+            select.value = selected;
+        }
+
+        async function loadChassisMap() {
+            const status = document.getElementById('chassisMapStatus');
+            status.textContent = '正在读取底盘地图...';
+            try {
+                const res = await adminFetch('/api/chassis/map', { cache: 'no-store' });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '地图读取失败');
+                chassisMapData = json.data || { map: {}, markers: [] };
+                const map = chassisMapData.map || {};
+                const markers = chassisMapData.markers || [];
+                document.getElementById('chassisMarkerCount').textContent = `${markers.length} 个点位`;
+                status.textContent = `${map.map_name || map.hotel_id || '当前地图'} · 第${map.floor || '-'}层 · ${chassisMapData.host}:${chassisMapData.port}`;
+
+                const floorSelect = document.getElementById('chassisMapFloor');
+                const floors = [...new Set(markers.map(marker => marker.floor).filter(Boolean))].sort((a, b) => a - b);
+                floorSelect.innerHTML = floors.length
+                    ? floors.map(floor => `<option value="${floor}">第${floor}层</option>`).join('')
+                    : '<option value="">当前楼层</option>';
+                if (floors.includes(Number(map.floor))) floorSelect.value = String(map.floor);
+                updateChassisMarkerOptions(document.getElementById('formChassisMarker').value);
+                renderChassisMap();
+            } catch (error) {
+                chassisMapData = { map: {}, markers: [] };
+                document.getElementById('chassisMarkerCount').textContent = '0 个点位';
+                status.textContent = error.message;
+                document.getElementById('chassisMap').innerHTML = '<div class="map-empty">底盘地图暂不可用</div>';
+                updateChassisMarkerOptions(document.getElementById('formChassisMarker').value);
+            }
+        }
+
+        async function loadChassisNavigationConfig() {
+            const toggle = document.getElementById('chassisNavigationToggle');
+            toggle.disabled = true;
+            try {
+                const res = await adminFetch('/api/chassis/navigation-config', { cache: 'no-store' });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '底盘导航设置读取失败');
+                toggle.checked = Boolean(json.data?.navigation_enabled);
+            } catch (error) {
+                toggle.checked = false;
+            } finally {
+                toggle.disabled = false;
+            }
+        }
+
+        async function updateChassisNavigationConfig() {
+            const toggle = document.getElementById('chassisNavigationToggle');
+            const enabled = toggle.checked;
+            toggle.disabled = true;
+            try {
+                const res = await adminFetch('/api/chassis/navigation-config', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled })
+                });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '设置保存失败');
+                showToast(`抓取前底盘导航已${enabled ? '开启' : '关闭'}`, 'success');
+            } catch (error) {
+                toggle.checked = !enabled;
+                showToast(error.message, 'error');
+            } finally {
+                toggle.disabled = false;
+            }
+        }
+
+        function renderChassisMap() {
+            const container = document.getElementById('chassisMap');
+            const floor = Number(document.getElementById('chassisMapFloor').value || chassisMapData.map?.floor || 0);
+            const markers = (chassisMapData.markers || []).filter(marker => !floor || marker.floor === floor);
+            if (!markers.length) {
+                container.innerHTML = '<div class="map-empty">当前楼层没有点位</div>';
+                return;
+            }
+
+            const width = 1000;
+            const height = 360;
+            const padding = 42;
+            const info = chassisMapData.map?.info || {};
+            const hasMapBounds = Number(info.resolution) > 0 && Number(info.width) > 0 && Number(info.height) > 0;
+            let minX = hasMapBounds ? Number(info.origin_x) : Math.min(...markers.map(marker => marker.x)) - 0.5;
+            let maxX = hasMapBounds ? minX + Number(info.width) * Number(info.resolution) : Math.max(...markers.map(marker => marker.x)) + 0.5;
+            let minY = hasMapBounds ? Number(info.origin_y) : Math.min(...markers.map(marker => marker.y)) - 0.5;
+            let maxY = hasMapBounds ? minY + Number(info.height) * Number(info.resolution) : Math.max(...markers.map(marker => marker.y)) + 0.5;
+            if (maxX - minX < 0.1) { minX -= 0.5; maxX += 0.5; }
+            if (maxY - minY < 0.1) { minY -= 0.5; maxY += 0.5; }
+            const projectX = x => padding + (x - minX) / (maxX - minX) * (width - padding * 2);
+            const projectY = y => height - padding - (y - minY) / (maxY - minY) * (height - padding * 2);
+
+            const grid = [];
+            for (let index = 0; index <= 8; index += 1) {
+                const x = padding + index / 8 * (width - padding * 2);
+                const y = padding + index / 8 * (height - padding * 2);
+                const worldX = minX + index / 8 * (maxX - minX);
+                const worldY = maxY - index / 8 * (maxY - minY);
+                grid.push(`<line class="map-grid-line" x1="${x}" y1="${padding}" x2="${x}" y2="${height - padding}"/>`);
+                grid.push(`<line class="map-grid-line" x1="${padding}" y1="${y}" x2="${width - padding}" y2="${y}"/>`);
+                grid.push(`<text class="map-axis-label" x="${x}" y="${height - 12}" text-anchor="middle">${worldX.toFixed(1)}</text>`);
+                grid.push(`<text class="map-axis-label" x="8" y="${y + 4}">${worldY.toFixed(1)}</text>`);
+            }
+
+            const selected = document.getElementById('formChassisMarker').value;
+            const markerNodes = markers.map((marker, index) => {
+                const x = projectX(marker.x);
+                const y = projectY(marker.y);
+                const directionX = x + Math.cos(marker.theta) * 16;
+                const directionY = y - Math.sin(marker.theta) * 16;
+                const labelY = y - 15 - (index % 3) * 14;
+                return `<g class="map-marker${selected === marker.name ? ' selected' : ''}" data-marker="${esc(marker.name)}">
+                    <line x1="${x}" y1="${y}" x2="${directionX}" y2="${directionY}"/>
+                    <circle cx="${x}" cy="${y}" r="7"/>
+                    <text x="${x + 10}" y="${labelY}">${esc(marker.name)}</text>
+                </g>`;
+            }).join('');
+            container.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="底盘点位地图">${grid.join('')}${markerNodes}</svg>`;
+            container.querySelectorAll('.map-marker').forEach(node => {
+                node.addEventListener('click', () => {
+                    document.getElementById('formChassisMarker').value = node.dataset.marker;
+                    renderChassisMap();
+                });
+            });
+        }
+
         async function loadShelfLayers() {
             try {
                 const res = await fetch('/api/shelf/layers', { cache: 'no-store' });
@@ -464,7 +666,7 @@
                 const tbody = document.getElementById('productTableBody');
 
                 if (json.data.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="12"><div class="empty-state"><span class="icon">📭</span><p>暂无商品数据</p></div></td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="13"><div class="empty-state"><span class="icon">📭</span><p>暂无商品数据</p></div></td></tr>';
                     return;
                 }
 
@@ -478,6 +680,7 @@
                         <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(p.manufacturer)}">${esc(p.manufacturer) || '-'}</td>
                         <td>${esc(p.location) || '-'}</td>
                         <td><span class="status-badge ${shelfLayerClass(p.location)}">${esc(shelfLayerLabel(p.location))}</span></td>
+                        <td>${esc(p.chassis_marker) || '-'}</td>
                         <td style="font-size:0.8rem;color:var(--gray-500);">(${p.shelf_x}, ${p.shelf_y}, ${p.shelf_z})</td>
                         <td style="color:var(--primary);font-weight:700;">¥${p.price}</td>
                         <td><span class="status-badge ${p.status==1?'on':'off'}">${p.status==1?'在售':'下架'}</span></td>
@@ -611,6 +814,7 @@
                 document.getElementById('formEmoji').value = p.emoji || '📦';
                 document.getElementById('formLocation').value = p.location || '';
                 document.getElementById('formShelfLayer').value = String(parseShelfLayer(p.location) || '');
+                updateChassisMarkerOptions(p.chassis_marker || '');
                 document.getElementById('formShelfX').value = p.shelf_x || 0;
                 document.getElementById('formShelfY').value = p.shelf_y || 0;
                 document.getElementById('formShelfZ').value = p.shelf_z || 50;
@@ -639,6 +843,7 @@
             document.getElementById('formEmoji').value = '📦';
             document.getElementById('formShelfZ').value = 50;
             document.getElementById('formShelfLayer').value = '';
+            updateChassisMarkerOptions('');
             document.getElementById('formStock').value = 100;
             document.getElementById('formStatus').value = 1;
             document.getElementById('formTitle').textContent = '➕ 新增商品';
@@ -672,6 +877,7 @@
                     document.getElementById('formLocation').value,
                     document.getElementById('formShelfLayer').value
                 ),
+                chassis_marker: document.getElementById('formChassisMarker').value,
                 shelf_x: parseInt(document.getElementById('formShelfX').value) || 0,
                 shelf_y: parseInt(document.getElementById('formShelfY').value) || 0,
                 shelf_z: parseInt(document.getElementById('formShelfZ').value) || 50,

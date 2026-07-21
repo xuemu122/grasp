@@ -42,6 +42,10 @@
 ```nginx
 client_max_body_size 5m;
 
+location ^~ /api/chassis/ {
+    proxy_pass http://127.0.0.1:5060;
+}
+
 location ^~ /api/ {
     proxy_pass http://127.0.0.1:3100;
 }
@@ -94,6 +98,10 @@ ADMIN_SESSION_TTL_MS=28800000
 ```
 
 Cookie 使用 `HttpOnly`、`Secure` 和 `SameSite=Strict`，默认有效期为 8 小时。同一来源 15 分钟内连续登录失败 5 次后会被临时限制。修改账号、密码或密钥后需要重启云端商品服务；修改密钥会使现有会话立即失效。
+
+管理页的底盘地图接口通过 `/api/chassis/` 转发到盒子。云端和盒子必须设置相同的 `ADMIN_USERNAME` 与 `ADMIN_SESSION_SECRET`，盒子才能验证云端登录签发的管理员 Cookie。底盘手册没有提供栅格地图图片下载接口，管理页根据当前地图的尺寸、原点、分辨率和 marker 坐标绘制点位图。
+
+管理页顶部的“抓取前导航”开关保存在盒子的 `chassis_settings.json`。首次没有设置文件时默认关闭；开启后，订单会先根据商品绑定的 `chassis_marker` 检查当前位置，已在距离和角度容差内时不重复移动，否则等待底盘导航成功后再执行机械臂抓取。
 
 ## 盒子部署
 
@@ -172,14 +180,15 @@ sudo systemctl status frpc --no-pager
       "emoji": "coffee",
       "qty": 2,
       "price": 8,
-      "shelf_layer": 2
+      "shelf_layer": 2,
+      "chassis_marker": "shelf-a"
     }
   ],
   "timestamp": 1784010000000
 }
 ```
 
-约束：`orderId` 必填，`items` 不得为空，商品 `name` 必填，`qty` 必须是整数。`shelf_layer` 可选，提供时必须是 `1..10` 的整数。默认单项最多 `20` 件，整单最多 `50` 件。
+约束：`orderId` 必填，`items` 不得为空，商品 `name` 必填，`qty` 必须是整数。`shelf_layer` 可选，提供时必须是 `1..10` 的整数。`chassis_marker` 可选，对应底盘当前地图中的 marker 名称。默认单项最多 `20` 件，整单最多 `50` 件。
 
 云端订单准备接口会根据商品 `location` 返回规范化的 `shelf_layer`。盒子真实模式优先使用订单中的层号，在抓取前发送 `__layer_N__` 并等待 worker 确认真正到层，随后才发送商品名。盒子仍兼容未携带层号的旧客户端，并在本地商品库存在时回退到本地映射。
 
@@ -280,6 +289,15 @@ __filter_preview__\n
 | `WS_PORT` | `3001` | WebSocket 端口 |
 | `ROBOT_GRASP_MODE` | `sim` | `real`/`robot`/`hardware` 启用真实抓取 |
 | `DOBOT_IP` | `192.168.5.1` | DOBOT 地址 |
+| `CHASSIS_HOST` | `192.168.124.90` | 底盘 TCP 地址 |
+| `CHASSIS_PORT` | `31001` | 底盘 TCP 端口 |
+| `CHASSIS_NAVIGATION_ENABLE` | 空/关闭 | 设为 `1` 时在抓取前导航到商品绑定的 marker |
+| `CHASSIS_SETTINGS_FILE` | 商品 JSON 同目录下的 `chassis_settings.json` | 管理页底盘导航开关持久化文件 |
+| `CHASSIS_REQUEST_TIMEOUT_MS` | `10000` | 单次底盘 TCP 请求超时 |
+| `CHASSIS_NAVIGATION_TIMEOUT_MS` | `180000` | 抓取前导航任务总超时 |
+| `CHASSIS_NAVIGATION_DISTANCE_TOLERANCE_M` | `0.15` | 判断已在目标点的距离容差（米） |
+| `CHASSIS_NAVIGATION_THETA_TOLERANCE_RAD` | `0.25` | 判断已在目标点的角度容差（弧度） |
+| `CHASSIS_NAVIGATION_POLL_MS` | `1000` | 导航状态轮询间隔 |
 | `GRASP_SCRIPT` | `../dipan/shelf_grasp.py` | 抓取脚本路径 |
 | `PRODUCTS_DB_FILE` | `data/products.json` | 商品 JSON 路径 |
 | `ROBOT_MAX_ITEM_QTY` | `20` | 单项最大数量 |

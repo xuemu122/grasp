@@ -12,6 +12,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { WebSocket, WebSocketServer } = require('ws');
+const { ChassisClient } = require('./chassis_client');
 
 const PORT = Number(process.env.PORT || 3000);
 const WS_PORT = Number(process.env.WS_PORT || 3001);
@@ -22,7 +23,16 @@ const ROBOT_GRASP_REAL = ['real', 'robot', 'hardware'].includes(ROBOT_GRASP_MODE
 const GRASP_SCRIPT = process.env.GRASP_SCRIPT || path.resolve(__dirname, '../dipan/shelf_grasp.py');
 const GRASP_CWD = path.dirname(GRASP_SCRIPT);
 const DOBOT_IP = process.env.DOBOT_IP || '192.168.5.1';
+const CHASSIS_HOST = process.env.CHASSIS_HOST || process.env.MOVE_ROBOT_HOST || '192.168.124.90';
+const CHASSIS_PORT = Number(process.env.CHASSIS_PORT || process.env.MOVE_ROBOT_PORT || 31001);
+const CHASSIS_NAVIGATION_DEFAULT_ENABLE = /^(1|true|yes|on)$/i.test(process.env.CHASSIS_NAVIGATION_ENABLE || '');
+const CHASSIS_REQUEST_TIMEOUT_MS = Number(process.env.CHASSIS_REQUEST_TIMEOUT_MS || 10000);
+const CHASSIS_NAVIGATION_TIMEOUT_MS = Number(process.env.CHASSIS_NAVIGATION_TIMEOUT_MS || 180000);
+const CHASSIS_NAVIGATION_DISTANCE_TOLERANCE_M = Number(process.env.CHASSIS_NAVIGATION_DISTANCE_TOLERANCE_M || 0.15);
+const CHASSIS_NAVIGATION_THETA_TOLERANCE_RAD = Number(process.env.CHASSIS_NAVIGATION_THETA_TOLERANCE_RAD || 0.25);
+const CHASSIS_NAVIGATION_POLL_MS = Number(process.env.CHASSIS_NAVIGATION_POLL_MS || 1000);
 const PRODUCTS_DB_FILE = process.env.PRODUCTS_DB_FILE || path.join(__dirname, 'data', 'products.json');
+const CHASSIS_SETTINGS_FILE = process.env.CHASSIS_SETTINGS_FILE || path.join(path.dirname(PRODUCTS_DB_FILE), 'chassis_settings.json');
 const PRODUCT_UPLOAD_DIR = process.env.PRODUCT_UPLOAD_DIR || path.join(path.dirname(PRODUCTS_DB_FILE), 'uploads');
 const PRODUCT_UPLOAD_MAX_BYTES = Number(process.env.PRODUCT_UPLOAD_MAX_BYTES || 5 * 1024 * 1024);
 const ROBOT_WORKER_READY_TIMEOUT_MS = Number(process.env.ROBOT_WORKER_READY_TIMEOUT_MS || 90000);
@@ -287,6 +297,7 @@ function normalizeProduct(raw, fallbackId = 1) {
         photo_front: raw.photo_front || '',
         photo_back: raw.photo_back || '',
         location: raw.location || '',
+        chassis_marker: raw.chassis_marker || raw.marker_name || '',
         shelf_x: Number(raw.shelf_x || 0),
         shelf_y: Number(raw.shelf_y || 0),
         shelf_z: Number(raw.shelf_z || 50),
@@ -337,7 +348,7 @@ function filterProducts(products, { search = '', category = '' } = {}) {
         .filter((item) => {
             if (category && item.category !== category) return false;
             if (!keyword) return true;
-            return [item.name, item.spec, item.manufacturer, item.location]
+            return [item.name, item.spec, item.manufacturer, item.location, item.chassis_marker]
                 .some((value) => String(value || '').toLowerCase().includes(keyword));
         })
         .sort((a, b) => Number(b.id) - Number(a.id));
@@ -366,7 +377,9 @@ function normalizeOrderItems(items) {
         if (shelfLayer !== null && (!Number.isInteger(shelfLayer) || shelfLayer < 1 || shelfLayer > 10)) {
             throw new Error(`商品 ${name} 的 shelf_layer 必须是 1..10 的整数`);
         }
-        return { ...item, name, qty, shelf_layer: shelfLayer };
+        const marker = String(item.chassis_marker || item.marker_name || '').trim();
+        if (/\r|\n/.test(marker)) throw new Error(`商品 ${name} 的底盘点位不能包含换行`);
+        return { ...item, name, qty, shelf_layer: shelfLayer, chassis_marker: marker || null };
     });
 
     const totalUnits = normalized.reduce((sum, item) => sum + item.qty, 0);
@@ -521,6 +534,7 @@ const server = http.createServer(async (req, res) => {
                 if (Number(product.stock) < item.qty) throw new Error(`${product.name} 库存不足，当前库存 ${product.stock}`);
                 item.name = product.name;
                 item.shelf_layer = parseLayerFromLocation(product.location);
+                item.chassis_marker = product.chassis_marker || null;
             }
             const orderId = `ORD-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
             sendJSON(res, { code: 0, orderId, items, completionToken: createOrderToken(orderId, items) });
@@ -626,7 +640,7 @@ const server = http.createServer(async (req, res) => {
             const products = readProducts();
             const index = products.findIndex((item) => String(item.id) === updateMatch[1]);
             if (index < 0) { sendJSON(res, { code: 1, message: '商品不存在' }, 404); return; }
-            const allowed = ['name','spec','packaging','category','manufacturer','photo_front','photo_back','location','shelf_x','shelf_y','shelf_z','emoji','price','stock','status'];
+            const allowed = ['name','spec','packaging','category','manufacturer','photo_front','photo_back','location','chassis_marker','shelf_x','shelf_y','shelf_z','emoji','price','stock','status'];
             const patch = {};
             for (const key of allowed) {
                 if (body[key] !== undefined) {
@@ -669,6 +683,42 @@ const server = http.createServer(async (req, res) => {
             sendJSON(res, { code: 0, data: categories });
         } catch (e) {
             sendJSON(res, { code: 1, message: e.message }, 500);
+        }
+        return;
+    }
+
+    // GET/PUT /api/chassis/navigation-config - 抓取前底盘导航开关
+    if (pathname === '/api/chassis/navigation-config' && req.method === 'GET') {
+        if (!requireAdmin(req, res)) return;
+        sendJSON(res, { code: 0, data: readChassisSettings() });
+        return;
+    }
+    if (pathname === '/api/chassis/navigation-config' && req.method === 'PUT') {
+        if (!requireAdmin(req, res)) return;
+        const body = await parseBody(req);
+        if (!body || typeof body.enabled !== 'boolean') {
+            sendJSON(res, { code: 1, message: 'enabled 必须是布尔值' }, 400);
+            return;
+        }
+        try {
+            const settings = { navigation_enabled: body.enabled };
+            writeChassisSettings(settings);
+            log(`🚙 抓取前底盘导航已${body.enabled ? '开启' : '关闭'}`);
+            sendJSON(res, { code: 0, data: settings });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 500);
+        }
+        return;
+    }
+
+    // GET /api/chassis/map - 获取当前地图元数据和 marker 坐标
+    if (pathname === '/api/chassis/map' && req.method === 'GET') {
+        if (!requireAdmin(req, res)) return;
+        try {
+            sendJSON(res, { code: 0, data: await fetchChassisMap() });
+        } catch (error) {
+            log(`⚠️ 底盘地图读取失败: ${error.message}`);
+            sendJSON(res, { code: 1, message: error.message }, 502);
         }
         return;
     }
@@ -861,6 +911,7 @@ async function handleFilterPreviewCommand(ws) {
         sendMessage(ws, { type: 'filter-preview', status: 'error', message: '模拟模式没有真实相机过滤预览' });
         return;
     }
+
     if (activeOrderId) {
         sendMessage(ws, { type: 'filter-preview', status: 'error', message: `订单 ${activeOrderId} 正在执行，请稍后再试` });
         return;
@@ -945,6 +996,167 @@ async function handleFilterPreviewCommand(ws) {
     } finally {
         robotFilterPreviewPromise = null;
     }
+}
+
+function readChassisSettings() {
+    try {
+        if (!fs.existsSync(CHASSIS_SETTINGS_FILE)) {
+            return { navigation_enabled: CHASSIS_NAVIGATION_DEFAULT_ENABLE };
+        }
+        const data = JSON.parse(fs.readFileSync(CHASSIS_SETTINGS_FILE, 'utf8'));
+        return { navigation_enabled: Boolean(data.navigation_enabled) };
+    } catch (error) {
+        log(`⚠️ 底盘设置读取失败: ${error.message}`);
+        return { navigation_enabled: CHASSIS_NAVIGATION_DEFAULT_ENABLE };
+    }
+}
+
+function writeChassisSettings(settings) {
+    fs.mkdirSync(path.dirname(CHASSIS_SETTINGS_FILE), { recursive: true });
+    const tempFile = `${CHASSIS_SETTINGS_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tempFile, JSON.stringify(settings, null, 2), 'utf8');
+    fs.renameSync(tempFile, CHASSIS_SETTINGS_FILE);
+}
+
+function chassisClient() {
+    return new ChassisClient({ host: CHASSIS_HOST, port: CHASSIS_PORT, timeoutMs: CHASSIS_REQUEST_TIMEOUT_MS });
+}
+
+function chassisResults(response) {
+    return response && response.results && typeof response.results === 'object' ? response.results : {};
+}
+
+function chassisResponseError(response) {
+    const status = response && response.status ? response.status : 'UNKNOWN';
+    const message = response && response.error_message ? `: ${response.error_message}` : '';
+    return `status=${status}${message}`;
+}
+
+function normalizeAngle(angle) {
+    let value = Number(angle) || 0;
+    while (value > Math.PI) value -= Math.PI * 2;
+    while (value < -Math.PI) value += Math.PI * 2;
+    return value;
+}
+
+function markerTheta(orientation = {}) {
+    return normalizeAngle(2 * Math.atan2(Number(orientation.z) || 0, Number(orientation.w) || 1));
+}
+
+function normalizeMarkers(results) {
+    if (!results || typeof results !== 'object') return [];
+    return Object.entries(results).map(([name, marker]) => {
+        const position = marker && marker.pose && marker.pose.position ? marker.pose.position : {};
+        const orientation = marker && marker.pose && marker.pose.orientation ? marker.pose.orientation : {};
+        return {
+            name: (marker && marker.marker_name) || name,
+            marker_name: (marker && marker.marker_name) || name,
+            floor: Number((marker && marker.floor) || 0),
+            type: Number(marker && (marker.key ?? marker.type) || 0),
+            x: Number(position.x || 0),
+            y: Number(position.y || 0),
+            z: Number(position.z || 0),
+            theta: markerTheta(orientation),
+            orientation,
+            raw: marker || {}
+        };
+    });
+}
+
+async function fetchChassisMap() {
+    const client = chassisClient();
+    const [mapResponse, markerResponse] = await Promise.all([
+        client.request('/api/map/get_current_map'),
+        client.request('/api/markers/query_list')
+    ]);
+    if (mapResponse.status !== 'OK') throw new Error(`获取当前地图失败 (${chassisResponseError(mapResponse)})`);
+    if (markerResponse.status !== 'OK') throw new Error(`获取 marker 失败 (${chassisResponseError(markerResponse)})`);
+    return {
+        map: chassisResults(mapResponse),
+        markers: normalizeMarkers(chassisResults(markerResponse)),
+        host: CHASSIS_HOST,
+        port: CHASSIS_PORT,
+        fetchedAt: new Date().toISOString()
+    };
+}
+
+function currentPoseAtMarker(statusInfo, marker) {
+    const pose = statusInfo && statusInfo.current_pose;
+    if (!pose || !Number.isFinite(Number(pose.x)) || !Number.isFinite(Number(pose.y))) return false;
+    const currentFloor = Number(statusInfo.current_floor || 0);
+    if (marker.floor && currentFloor && marker.floor !== currentFloor) return false;
+    const distance = Math.hypot(Number(pose.x) - marker.x, Number(pose.y) - marker.y);
+    const thetaDistance = Math.abs(normalizeAngle(Number(pose.theta || 0) - marker.theta));
+    return distance <= CHASSIS_NAVIGATION_DISTANCE_TOLERANCE_M
+        && thetaDistance <= CHASSIS_NAVIGATION_THETA_TOLERANCE_RAD;
+}
+
+async function navigateChassisToMarker(markerName) {
+    const client = chassisClient();
+    const [markerResponse, statusResponse] = await Promise.all([
+        client.request('/api/markers/query_list'),
+        client.request('/api/robot_status')
+    ]);
+    if (markerResponse.status !== 'OK') throw new Error(`查询底盘点位失败 (${chassisResponseError(markerResponse)})`);
+    if (statusResponse.status !== 'OK') throw new Error(`查询底盘状态失败 (${chassisResponseError(statusResponse)})`);
+
+    const marker = normalizeMarkers(chassisResults(markerResponse))
+        .find((item) => item.name === markerName);
+    if (!marker) throw new Error(`底盘点位不存在: ${markerName}`);
+
+    const initialStatus = chassisResults(statusResponse);
+    if (currentPoseAtMarker(initialStatus, marker)) {
+        log(`  🚙 底盘已在点位 ${markerName} 容差范围内，跳过导航`);
+        return { skipped: true, marker };
+    }
+
+    const params = new URLSearchParams({
+        marker: markerName,
+        distance_tolerance: String(CHASSIS_NAVIGATION_DISTANCE_TOLERANCE_M),
+        theta_tolerance: String(CHASSIS_NAVIGATION_THETA_TOLERANCE_RAD)
+    });
+    const moveResponse = await client.request(`/api/move?${params.toString()}`);
+    if (moveResponse.status !== 'OK') throw new Error(`底盘导航任务下发失败 (${chassisResponseError(moveResponse)})`);
+
+    log(`  🚙 底盘开始前往 ${markerName}`);
+    const deadline = Date.now() + CHASSIS_NAVIGATION_TIMEOUT_MS;
+    let seenCurrentTask = false;
+    let lastState = '';
+    while (Date.now() < deadline) {
+        await sleep(CHASSIS_NAVIGATION_POLL_MS);
+        let response;
+        try {
+            response = await client.request('/api/robot_status');
+        } catch (error) {
+            log(`  [底盘] 状态查询暂时失败: ${error.message}`);
+            continue;
+        }
+        if (response.status !== 'OK') continue;
+        const info = chassisResults(response);
+        const moveStatus = info.move_status;
+        const moveTarget = info.move_target;
+        const targetMatches = moveTarget === markerName;
+        if (targetMatches && moveStatus === 'running') seenCurrentTask = true;
+        const state = `${moveStatus}/${info.running_status || ''}/${moveTarget || ''}`;
+        if (state !== lastState) {
+            log(`  [底盘] ${state}`);
+            lastState = state;
+        }
+        if (moveStatus === 'succeeded' && (targetMatches || seenCurrentTask)) {
+            log(`  ✅ 底盘已到达 ${markerName}`);
+            return { skipped: false, marker, taskId: moveResponse.task_id || chassisResults(moveResponse).task_id || null };
+        }
+        if (['failed', 'canceled'].includes(moveStatus) && (targetMatches || seenCurrentTask)) {
+            throw new Error(`底盘前往 ${markerName} 未成功: ${moveStatus}`);
+        }
+    }
+
+    try {
+        await client.request('/api/move/cancel');
+    } catch (error) {
+        log(`  [底盘] 导航超时后取消失败: ${error.message}`);
+    }
+    throw new Error(`底盘前往 ${markerName} 超时 (${CHASSIS_NAVIGATION_TIMEOUT_MS}ms)`);
 }
 
 function ensureRobotWorker() {
@@ -1229,6 +1441,21 @@ async function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo) 
     });
 
     const product = readProducts().find((candidate) => String(candidate.id) === String(item.id));
+    const chassisMarker = item.chassis_marker || (product && product.chassis_marker) || '';
+    const chassisNavigationEnabled = readChassisSettings().navigation_enabled;
+    if (chassisNavigationEnabled && chassisMarker) {
+        sendStatus(ws, 'grabbing', {
+            orderId,
+            item: itemStatus(item),
+            stage: 'moving',
+            progress: progressBase + progressStep * 0.03,
+            message: `底盘正在前往 ${chassisMarker}...`,
+            chassisMarker
+        });
+        await navigateChassisToMarker(chassisMarker);
+    } else if (chassisMarker) {
+        log(`  🚙 抓取前底盘导航已关闭，跳过点位 ${chassisMarker}`);
+    }
     let shelfPose = null;
     if (item.shelf_layer) {
         const shelfData = loadShelfLayers();
@@ -1397,7 +1624,8 @@ function itemStatus(item) {
         id: item.id,
         name: item.name,
         qty: item.qty,
-        emoji: item.emoji
+        emoji: item.emoji,
+        chassis_marker: item.chassis_marker || null
     };
 }
 

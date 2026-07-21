@@ -51,9 +51,80 @@ function createMessageCollector(ws) {
     };
 }
 
+async function startFakeChassisServer(port) {
+    const commands = [];
+    let moveStarted = false;
+    let statusPolls = 0;
+    const marker = {
+        floor: 1,
+        marker_name: 'shelf-a',
+        key: 0,
+        pose: {
+            position: { x: 1.0, y: 2.0, z: 0 },
+            orientation: { x: 0, y: 0, z: 0, w: 1 }
+        }
+    };
+    const server = net.createServer((socket) => {
+        let pending = '';
+        socket.on('data', (chunk) => {
+            pending += chunk.toString();
+            if (!pending.includes('\n')) return;
+            const command = pending.split(/\r?\n/, 1)[0];
+            commands.push(command);
+            let response;
+            if (command === '/api/map/get_current_map') {
+                response = {
+                    status: 'OK',
+                    results: {
+                        map_name: 'test-map',
+                        floor: 1,
+                        info: { resolution: 0.05, width: 200, height: 100, origin_x: -5, origin_y: -2.5 }
+                    }
+                };
+            } else if (command === '/api/markers/query_list') {
+                response = { status: 'OK', results: { 'shelf-a': marker } };
+            } else if (command === '/api/robot_status') {
+                statusPolls += 1;
+                const arrived = moveStarted && statusPolls >= 3;
+                response = {
+                    status: 'OK',
+                    results: {
+                        move_status: moveStarted ? (arrived ? 'succeeded' : 'running') : 'idle',
+                        running_status: moveStarted && !arrived ? 'running' : 'idle',
+                        move_target: moveStarted ? 'shelf-a' : '',
+                        current_floor: 1,
+                        current_pose: arrived
+                            ? { x: 1.0, y: 2.0, theta: 0 }
+                            : { x: 0, y: 0, theta: 0 }
+                    }
+                };
+            } else if (command.startsWith('/api/move?')) {
+                moveStarted = true;
+                response = { status: 'OK', task_id: 'task-1' };
+            } else if (command === '/api/move/cancel') {
+                response = { status: 'OK' };
+            } else {
+                response = { status: 'INVALID_REQUEST', error_message: command };
+            }
+            const payload = JSON.stringify(response);
+            const split = Math.max(1, Math.floor(payload.length / 2));
+            socket.write(payload.slice(0, split));
+            setImmediate(() => socket.end(payload.slice(split)));
+        });
+    });
+    await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(port, '127.0.0.1', resolve);
+    });
+    return { server, commands };
+}
+
 test('WebSocket real mode moves to the mapped layer before each grab and stows', async (t) => {
     const port = await getFreePort();
     const wsPort = await getFreePort();
+    const chassisPort = await getFreePort();
+    const fakeChassis = await startFakeChassisServer(chassisPort);
+    t.after(() => fakeChassis.server.close());
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grasp-ws-'));
     const dataFile = path.join(tempDir, 'products.json');
     const shelfLayersFile = path.join(tempDir, 'shelf_layers.json');
@@ -79,7 +150,15 @@ test('WebSocket real mode moves to the mapped layer before each grab and stows',
             SHELF_LAYERS_FILE: shelfLayersFile,
             ROBOT_WORKER_READY_TIMEOUT_MS: '5000',
             ROBOT_GRAB_TIMEOUT_MS: '5000',
-            ROBOT_STOW_TIMEOUT_MS: '5000'
+            ROBOT_STOW_TIMEOUT_MS: '5000',
+            CHASSIS_NAVIGATION_ENABLE: '1',
+            CHASSIS_HOST: '127.0.0.1',
+            CHASSIS_PORT: String(chassisPort),
+            CHASSIS_NAVIGATION_POLL_MS: '10',
+            CHASSIS_NAVIGATION_TIMEOUT_MS: '2000',
+            ADMIN_USERNAME: 'test-admin',
+            ADMIN_PASSWORD: 'test-password',
+            ADMIN_SESSION_SECRET: 'test-admin-session-secret-32-bytes'
         },
         stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -101,6 +180,21 @@ test('WebSocket real mode moves to the mapped layer before each grab and stows',
         child.stderr.on('data', inspect);
         child.once('exit', (code) => reject(new Error(`服务提前退出 ${code}: ${serverOutput}`)));
     });
+
+    const loginResponse = await fetch(`http://127.0.0.1:${port}/api/admin/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'test-admin', password: 'test-password' })
+    });
+    assert.equal(loginResponse.status, 200);
+    const cookie = loginResponse.headers.get('set-cookie').split(';', 1)[0];
+    const mapResponse = await fetch(`http://127.0.0.1:${port}/api/chassis/map`, {
+        headers: { Cookie: cookie }
+    });
+    const mapPayload = await mapResponse.json();
+    assert.equal(mapResponse.status, 200);
+    assert.equal(mapPayload.data.map.map_name, 'test-map');
+    assert.equal(mapPayload.data.markers[0].name, 'shelf-a');
 
     const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
     const collector = createMessageCollector(ws);
@@ -140,7 +234,7 @@ test('WebSocket real mode moves to the mapped layer before each grab and stows',
     ws.send(JSON.stringify({
         type: 'grab',
         orderId,
-        items: [{ id: 999999, name: '云端咖啡', qty: 2, emoji: 'coffee', shelf_layer: 2 }]
+        items: [{ id: 999999, name: '云端咖啡', qty: 2, emoji: 'coffee', shelf_layer: 2, chassis_marker: 'shelf-a' }]
     }));
     const started = await collector.waitFor(
         (message) => message.type === 'status' && message.status === 'started' && message.orderId === orderId
@@ -158,6 +252,7 @@ test('WebSocket real mode moves to the mapped layer before each grab and stows',
     const commands = [...serverOutput.matchAll(/\[fake-worker-command\] (.+)/g)]
         .map((match) => match[1].trim());
     assert.deepEqual(commands, ['__layer_2__', '云端咖啡', '__layer_2__', '云端咖啡']);
+    assert.equal(fakeChassis.commands.filter((command) => command.startsWith('/api/move?')).length, 1);
     assert.equal(collector.messages.some((message) => message.type === 'robot_log'), false);
 
     ws.send(JSON.stringify({ type: 'stow' }));
