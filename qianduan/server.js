@@ -27,7 +27,7 @@ const DOBOT_IP = process.env.DOBOT_IP || '192.168.5.1';
 const CHASSIS_HOST = process.env.CHASSIS_HOST || process.env.MOVE_ROBOT_HOST || '192.168.124.90';
 const CHASSIS_PORT = Number(process.env.CHASSIS_PORT || process.env.MOVE_ROBOT_PORT || 31001);
 const CHASSIS_MAP_HTTP_PROTOCOL = String(process.env.CHASSIS_MAP_HTTP_PROTOCOL || 'http').replace(/:$/, '');
-const CHASSIS_MAP_HTTP_HOST = process.env.CHASSIS_MAP_HTTP_HOST || '192.168.10.10';
+const CHASSIS_MAP_HTTP_HOST = process.env.CHASSIS_MAP_HTTP_HOST || CHASSIS_HOST;
 const CHASSIS_MAP_HTTP_PORT = Number(process.env.CHASSIS_MAP_HTTP_PORT || 9001);
 const CHASSIS_PLACE_MARKER_DEFAULT = process.env.CHASSIS_PLACE_MARKER || 'yaojia1';
 const CHASSIS_NAVIGATION_DEFAULT_ENABLE = /^(1|true|yes|on)$/i.test(process.env.CHASSIS_NAVIGATION_ENABLE || '');
@@ -693,7 +693,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // GET/PUT /api/chassis/navigation-config - 抓取前底盘导航开关
+    // GET/PUT /api/chassis/navigation-config - 抓取/放置导航开关与放置点
     if (pathname === '/api/chassis/navigation-config' && req.method === 'GET') {
         if (!requireAdmin(req, res)) return;
         sendJSON(res, { code: 0, data: readChassisSettings() });
@@ -716,7 +716,7 @@ const server = http.createServer(async (req, res) => {
                 place_marker: placeMarker
             };
             writeChassisSettings(settings);
-            log(`🚙 抓取前底盘导航已${body.enabled ? '开启' : '关闭'}`);
+            log(`🚙 底盘导航已${settings.navigation_enabled ? '开启' : '关闭'}，放置点=${settings.place_marker}`);
             sendJSON(res, { code: 0, data: settings });
         } catch (error) {
             sendJSON(res, { code: 1, message: error.message }, 500);

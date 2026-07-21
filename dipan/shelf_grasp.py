@@ -165,6 +165,11 @@ _stow_pose = None  # ([x,y,z,rx,ry,rz], name)
 # 放置前是否先让底盘去固定点。默认关闭, 现场确认 marker 后可用环境变量或主菜单 b 开启。
 USE_CHASSIS_PLACE = os.getenv("USE_CHASSIS_PLACE", "0").lower() in ("1", "true", "yes", "on")
 MOVE_ROBOT_SCRIPT = os.path.join(os.path.dirname(__file__), "move_robot.py")
+CHASSIS_SETTINGS_FILE = os.getenv(
+    "CHASSIS_SETTINGS_FILE",
+    os.path.join(os.path.dirname(__file__), "..", "qianduan", "data", "chassis_settings.json"),
+)
+DEFAULT_CHASSIS_PLACE_MARKER = os.getenv("CHASSIS_PLACE_MARKER", os.getenv("MARKER_PLACE", "yaojia1"))
 
 
 def _layer_allows_low_z(layer_idx: Optional[int]) -> bool:
@@ -907,13 +912,50 @@ def go_to_stow_pose(arm: "DobotArm"):
     return True
 
 
-def move_chassis_to_place():
+def load_chassis_place_settings():
+    """每次放置前读取管理页配置，允许常驻 worker 不重启即可切换点位。"""
+    enabled = USE_CHASSIS_PLACE
+    marker = DEFAULT_CHASSIS_PLACE_MARKER
+    try:
+        if os.path.exists(CHASSIS_SETTINGS_FILE):
+            with open(CHASSIS_SETTINGS_FILE, "r", encoding="utf-8") as file:
+                settings = json.load(file)
+            enabled = bool(settings.get("navigation_enabled", enabled))
+            marker = str(settings.get("place_marker") or marker).strip()
+    except Exception as exc:
+        print(f"  [底盘放置][警告] 配置读取失败，使用默认值: {exc}")
+    return enabled, marker or "yaojia1"
+
+
+def chassis_at_place(marker):
+    """检查底盘是否已在放置点。True 表示可直接放置，False 表示需要导航。"""
+    env = os.environ.copy()
+    env["MARKER_PLACE"] = marker
+    try:
+        result = subprocess.run(
+            [sys.executable, MOVE_ROBOT_SCRIPT, "place", "--check-only"],
+            cwd=os.path.dirname(__file__),
+            env=env,
+            text=True,
+            capture_output=False,
+            check=False,
+        )
+    except Exception as exc:
+        print(f"  [底盘] 检查放置点失败，将按需要导航处理: {exc}")
+        return False
+    return result.returncode == 0
+
+
+def move_chassis_to_place(marker):
     """复用 move_robot.py, 让底盘去放置固定点。"""
-    print("\n[底盘] 前往放置固定点 ...")
+    print(f"\n[底盘] 前往放置固定点 {marker} ...")
+    env = os.environ.copy()
+    env["MARKER_PLACE"] = marker
     try:
         result = subprocess.run(
             [sys.executable, MOVE_ROBOT_SCRIPT, "place"],
             cwd=os.path.dirname(__file__),
+            env=env,
             text=True,
             capture_output=False,
             check=False,
@@ -958,13 +1000,17 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
                 print(f"  [停止] 回第{layer_idx}层中转失败, 停在当前位置, 不继续放置流程")
                 return False
 
-    if USE_CHASSIS_PLACE:
-        if not go_to_stow_pose(arm):
-            print("  [停止] 底盘移动前未能到达收起姿态, 不调用底盘")
-            return False
-        if not move_chassis_to_place():
-            print("  [停止] 底盘未能前往放置固定点, 不继续机械臂放置")
-            return False
+    use_chassis_place, place_marker = load_chassis_place_settings()
+    if use_chassis_place:
+        if chassis_at_place(place_marker):
+            print(f"\n[底盘] 已在放置点 {place_marker}，直接执行机械臂放置")
+        else:
+            if not go_to_stow_pose(arm):
+                print("  [停止] 底盘移动前未能到达收起姿态, 不调用底盘")
+                return False
+            if not move_chassis_to_place(place_marker):
+                print("  [停止] 底盘未能前往放置固定点, 不继续机械臂放置")
+                return False
 
     print(f"\n[Place] 前往放置点 ({_place_point_pose[1]}) ...")
     if not go_to_place_point(arm):

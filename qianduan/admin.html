@@ -594,7 +594,9 @@
             const toggle = document.getElementById('chassisNavigationToggle');
             const placeMarker = document.getElementById('chassisPlaceMarker');
             const enabled = toggle.checked;
+            const previous = { ...chassisNavigationConfig };
             toggle.disabled = true;
+            placeMarker.disabled = true;
             try {
                 const res = await adminFetch('/api/chassis/navigation-config', {
                     preserveSession: true,
@@ -606,12 +608,15 @@
                 if (res.status === 401) throw new Error('盒子端管理员会话配置不一致');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '设置保存失败');
                 chassisNavigationConfig = json.data;
-                showToast(`抓取前底盘导航已${enabled ? '开启' : '关闭'}`, 'success');
+                showToast(`底盘导航已${enabled ? '开启' : '关闭'}，放置点 ${chassisNavigationConfig.place_marker}`, 'success');
             } catch (error) {
-                toggle.checked = !enabled;
+                chassisNavigationConfig = previous;
+                toggle.checked = previous.navigation_enabled;
+                updateChassisPlaceMarkerOptions(previous.place_marker);
                 showToast(error.message, 'error');
             } finally {
                 toggle.disabled = false;
+                placeMarker.disabled = false;
             }
         }
 

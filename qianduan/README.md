@@ -106,7 +106,7 @@ Cookie 使用 `HttpOnly`、`Secure` 和 `SameSite=Strict`，默认有效期为 8
 
 管理页的底盘地图接口通过 `/api/chassis/` 转发到盒子。云端和盒子必须设置相同的 `ADMIN_USERNAME` 与 `ADMIN_SESSION_SECRET`，盒子才能验证云端登录签发的管理员 Cookie。盒子从底盘 Web 服务的 `/maps/<地图名>/<楼层>/map.yaml` 和 `map.png` 读取占据栅格，并根据 YAML 中的原点、分辨率叠加 marker；栅格暂时不可达时自动降级为坐标网格。
 
-管理页顶部的“抓取前导航”开关保存在盒子的 `chassis_settings.json`。首次没有设置文件时默认关闭；开启后，订单会先根据商品绑定的 `chassis_marker` 检查当前位置，已在距离和角度容差内时不重复移动，否则等待底盘导航成功后再执行机械臂抓取。
+管理页顶部的“抓取/放置前导航”开关和放置点保存在盒子的 `chassis_settings.json`。首次没有设置文件时默认关闭导航，默认放置点为 `yaojia1`。开启后，订单先根据商品绑定的 `chassis_marker` 前往货架；抓取完成后检查底盘是否已在配置的放置点，已在点位则直接执行机械臂放置，否则先收起机械臂、导航到放置点并等待到达后再放置。常驻 worker 每次放置前重新读取配置，管理页修改后无需重启 worker。
 
 ## 盒子部署
 
@@ -121,7 +121,7 @@ ROBOT_GRASP_MODE=real \
 DOBOT_IP=192.168.5.1 \
 CHASSIS_HOST=192.168.124.90 \
 CHASSIS_PORT=31001 \
-CHASSIS_MAP_HTTP_HOST=192.168.10.10 \
+CHASSIS_MAP_HTTP_HOST=192.168.124.90 \
 CHASSIS_MAP_HTTP_PORT=9001 \
 ADMIN_USERNAME=admin \
 ADMIN_PASSWORD=admin123 \
@@ -304,9 +304,10 @@ __filter_preview__\n
 | `CHASSIS_HOST` | `192.168.124.90` | 底盘 TCP 地址 |
 | `CHASSIS_PORT` | `31001` | 底盘 TCP 端口 |
 | `CHASSIS_MAP_HTTP_PROTOCOL` | `http` | 底盘栅格地图 Web 服务协议 |
-| `CHASSIS_MAP_HTTP_HOST` | `192.168.10.10` | 底盘栅格地图 Web 服务地址 |
+| `CHASSIS_MAP_HTTP_HOST` | 与 `CHASSIS_HOST` 相同 | 底盘栅格地图 Web 服务地址；桥接网络下使用底盘桥接后的地址 |
 | `CHASSIS_MAP_HTTP_PORT` | `9001` | 底盘栅格地图 Web 服务端口 |
 | `CHASSIS_NAVIGATION_ENABLE` | 空/关闭 | 设为 `1` 时在抓取前导航到商品绑定的 marker |
+| `CHASSIS_PLACE_MARKER` | `yaojia1` | 首次没有设置文件时使用的默认放置 marker |
 | `CHASSIS_SETTINGS_FILE` | 商品 JSON 同目录下的 `chassis_settings.json` | 管理页底盘导航开关持久化文件 |
 | `CHASSIS_REQUEST_TIMEOUT_MS` | `10000` | 单次底盘 TCP 请求超时 |
 | `CHASSIS_NAVIGATION_TIMEOUT_MS` | `180000` | 抓取前导航任务总超时 |

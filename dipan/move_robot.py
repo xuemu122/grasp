@@ -6,6 +6,7 @@
 
 import socket
 import json
+import math
 import os
 import sys
 import time
@@ -121,7 +122,7 @@ def marker_theta(orientation):
     orientation = orientation or {}
     z = float(orientation.get("z") or 0.0)
     w = float(orientation.get("w") or 1.0)
-    return normalize_angle(2.0 * __import__("math").atan2(z, w))
+    return normalize_angle(2.0 * math.atan2(z, w))
 
 
 def marker_info(sock, marker_name):
