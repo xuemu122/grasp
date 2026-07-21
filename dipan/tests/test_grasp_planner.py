@@ -91,6 +91,36 @@ class ShelfBoardFilterTests(unittest.TestCase):
         self.assertEqual(report["mode"], "dynamic")
         self.assertEqual([item["accepted"] for item in report["detections"]], [False, True, False])
 
+    def test_detection_box_does_not_exclude_visible_board_pixels_on_same_row(self):
+        depth = np.zeros((100, 200), dtype=np.uint16)
+        depth[20:28, :] = 300
+        depth[68:76, :] = 500
+        transformer = FakeTransformer()
+        previous_min_row_span = grasp_planner.SHELF_BOARD_MIN_ROW_SPAN_PX
+        previous_min_z_span = grasp_planner.SHELF_BOARD_MIN_Z_SPAN_M
+        grasp_planner.SHELF_BOARD_MIN_ROW_SPAN_PX = 30
+        grasp_planner.SHELF_BOARD_MIN_Z_SPAN_M = 0.1
+        try:
+            bounds = grasp_planner.detect_shelf_board_bounds(
+                depth,
+                FakeCamera(),
+                transformer,
+                (0, 0, 0, 0, 0, 0),
+                reference_z_m=0.3,
+                # The detection reaches into the lower board rows, but the
+                # board remains visible to the left and right of the box.
+                exclude_bboxes=[(70, 40, 130, 72)],
+            )
+        finally:
+            grasp_planner.SHELF_BOARD_MIN_ROW_SPAN_PX = previous_min_row_span
+            grasp_planner.SHELF_BOARD_MIN_Z_SPAN_M = previous_min_z_span
+
+        self.assertIsNotNone(bounds)
+        self.assertIn("lower", bounds)
+        self.assertIn("upper", bounds)
+        self.assertAlmostEqual(bounds["lower"]["z"], 0.3, places=3)
+        self.assertAlmostEqual(bounds["upper"]["z"], 0.5, places=3)
+
 
 if __name__ == "__main__":
     unittest.main()

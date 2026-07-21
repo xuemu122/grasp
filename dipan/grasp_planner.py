@@ -81,20 +81,16 @@ def detect_shelf_board_bounds(
     depth_m = depth[grid_y, grid_x].astype(np.float32) * depth_scale
     valid = np.isfinite(depth_m) & (depth_m >= 0.08) & (depth_m <= 1.5)
 
-    excluded_row_ranges = []
     excluded_centers = []
     for bbox in exclude_bboxes or ():
         if bbox is None:
             continue
         x1, y1, x2, y2 = [int(v) for v in bbox]
-        excluded_row_ranges.append((
-            y1 - SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX,
-            y2 + SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX,
-        ))
         excluded_centers.append((y1 + y2) / 2.0)
+        margin = SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX
         valid &= ~(
-            (grid_x >= max(0, x1 - 8)) & (grid_x <= min(width - 1, x2 + 8)) &
-            (grid_y >= max(0, y1 - 8)) & (grid_y <= min(height - 1, y2 + 8))
+            (grid_x >= max(0, x1 - margin)) & (grid_x <= min(width - 1, x2 + margin)) &
+            (grid_y >= max(0, y1 - margin)) & (grid_y <= min(height - 1, y2 + margin))
         )
 
     if int(np.count_nonzero(valid)) < SHELF_BOARD_MIN_POINTS:
@@ -115,8 +111,6 @@ def detect_shelf_board_bounds(
 
     row_candidates = []
     for row_index, row in enumerate(rows):
-        if any(row_min <= int(row) <= row_max for row_min, row_max in excluded_row_ranges):
-            continue
         keep = valid[row_index]
         valid_count = int(np.count_nonzero(keep))
         if valid_count < SHELF_BOARD_MIN_EDGE_POINTS:
