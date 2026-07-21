@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
+const http = require('node:http');
 const net = require('node:net');
 const { once } = require('node:events');
 const os = require('node:os');
@@ -119,12 +120,40 @@ async function startFakeChassisServer(port) {
     return { server, commands };
 }
 
+async function startFakeChassisMapServer(port) {
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+    const requests = [];
+    const server = http.createServer((req, res) => {
+        requests.push(req.url);
+        if (req.url.startsWith('/maps/test-map/1/map.yaml?')) {
+            res.writeHead(200, { 'Content-Type': 'text/yaml' });
+            res.end('image: map.png\nresolution: 0.05\norigin: [-5.0, -2.5, 0.0]\n');
+            return;
+        }
+        if (req.url.startsWith('/maps/test-map/1/map.png?')) {
+            res.writeHead(200, { 'Content-Type': 'image/png' });
+            res.end(png);
+            return;
+        }
+        res.writeHead(404);
+        res.end();
+    });
+    await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(port, '127.0.0.1', resolve);
+    });
+    return { server, requests, png };
+}
+
 test('WebSocket real mode moves to the mapped layer before each grab and stows', async (t) => {
     const port = await getFreePort();
     const wsPort = await getFreePort();
     const chassisPort = await getFreePort();
+    const chassisMapPort = await getFreePort();
     const fakeChassis = await startFakeChassisServer(chassisPort);
+    const fakeChassisMap = await startFakeChassisMapServer(chassisMapPort);
     t.after(() => fakeChassis.server.close());
+    t.after(() => fakeChassisMap.server.close());
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grasp-ws-'));
     const dataFile = path.join(tempDir, 'products.json');
     const shelfLayersFile = path.join(tempDir, 'shelf_layers.json');
@@ -154,6 +183,8 @@ test('WebSocket real mode moves to the mapped layer before each grab and stows',
             CHASSIS_NAVIGATION_ENABLE: '1',
             CHASSIS_HOST: '127.0.0.1',
             CHASSIS_PORT: String(chassisPort),
+            CHASSIS_MAP_HTTP_HOST: '127.0.0.1',
+            CHASSIS_MAP_HTTP_PORT: String(chassisMapPort),
             CHASSIS_NAVIGATION_POLL_MS: '10',
             CHASSIS_NAVIGATION_TIMEOUT_MS: '2000',
             ADMIN_USERNAME: 'test-admin',
@@ -195,6 +226,15 @@ test('WebSocket real mode moves to the mapped layer before each grab and stows',
     assert.equal(mapResponse.status, 200);
     assert.equal(mapPayload.data.map.map_name, 'test-map');
     assert.equal(mapPayload.data.markers[0].name, 'shelf-a');
+    assert.equal(mapPayload.data.raster.available, true);
+    assert.equal(mapPayload.data.raster.metadata.resolution, 0.05);
+    assert.deepEqual(mapPayload.data.raster.metadata.origin, [-5, -2.5, 0]);
+    const imageResponse = await fetch(`http://127.0.0.1:${port}${mapPayload.data.raster.image_url}`, {
+        headers: { Cookie: cookie }
+    });
+    assert.equal(imageResponse.status, 200);
+    assert.equal(imageResponse.headers.get('content-type'), 'image/png');
+    assert.deepEqual(Buffer.from(await imageResponse.arrayBuffer()), fakeChassisMap.png);
 
     const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
     const collector = createMessageCollector(ws);

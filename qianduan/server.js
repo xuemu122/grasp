@@ -7,6 +7,7 @@
  *   4. 模拟机器人抓取逻辑
  */
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -25,6 +26,9 @@ const GRASP_CWD = path.dirname(GRASP_SCRIPT);
 const DOBOT_IP = process.env.DOBOT_IP || '192.168.5.1';
 const CHASSIS_HOST = process.env.CHASSIS_HOST || process.env.MOVE_ROBOT_HOST || '192.168.124.90';
 const CHASSIS_PORT = Number(process.env.CHASSIS_PORT || process.env.MOVE_ROBOT_PORT || 31001);
+const CHASSIS_MAP_HTTP_PROTOCOL = String(process.env.CHASSIS_MAP_HTTP_PROTOCOL || 'http').replace(/:$/, '');
+const CHASSIS_MAP_HTTP_HOST = process.env.CHASSIS_MAP_HTTP_HOST || '192.168.10.10';
+const CHASSIS_MAP_HTTP_PORT = Number(process.env.CHASSIS_MAP_HTTP_PORT || 9001);
 const CHASSIS_NAVIGATION_DEFAULT_ENABLE = /^(1|true|yes|on)$/i.test(process.env.CHASSIS_NAVIGATION_ENABLE || '');
 const CHASSIS_REQUEST_TIMEOUT_MS = Number(process.env.CHASSIS_REQUEST_TIMEOUT_MS || 10000);
 const CHASSIS_NAVIGATION_TIMEOUT_MS = Number(process.env.CHASSIS_NAVIGATION_TIMEOUT_MS || 180000);
@@ -58,6 +62,7 @@ let robotWorkerReady = false;
 let robotWorkerStarting = null;
 let robotStowPromise = null;
 let robotFilterPreviewPromise = null;
+let chassisRasterCache = null;
 
 // 机器人初始位置
 const SHELF_LAYERS_FILE = process.env.SHELF_LAYERS_FILE || path.resolve(__dirname, '../dipan/shelf_layers.json');
@@ -723,6 +728,27 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // GET /api/chassis/map-image - 代理底盘内网栅格图，避免浏览器跨域和无法访问底盘网段
+    if (pathname === '/api/chassis/map-image' && req.method === 'GET') {
+        if (!requireAdmin(req, res)) return;
+        try {
+            const mapName = validateChassisMapName(url.searchParams.get('map'));
+            const floor = validateChassisFloor(url.searchParams.get('floor'));
+            const raster = await fetchChassisRaster(mapName, floor);
+            res.writeHead(200, {
+                'Content-Type': 'image/png',
+                'Content-Length': raster.image.length,
+                'Cache-Control': 'private, no-store',
+                'X-Content-Type-Options': 'nosniff'
+            });
+            res.end(raster.image);
+        } catch (error) {
+            log(`⚠️ 底盘栅格图读取失败: ${error.message}`);
+            sendJSON(res, { code: 1, message: error.message }, 502);
+        }
+        return;
+    }
+
     // GET /api/shelf/layers - 获取所有货架层位姿
     if (pathname === '/api/shelf/layers' && req.method === 'GET') {
         try {
@@ -1063,6 +1089,105 @@ function normalizeMarkers(results) {
     });
 }
 
+function validateChassisMapName(value) {
+    const mapName = String(value || '').trim();
+    if (!mapName || mapName.length > 128 || !/^[\p{L}\p{N}_.-]+$/u.test(mapName)) {
+        throw new Error('底盘地图名无效');
+    }
+    return mapName;
+}
+
+function validateChassisFloor(value) {
+    const floor = Number(value);
+    if (!Number.isInteger(floor) || floor < -100 || floor > 100) throw new Error('底盘楼层无效');
+    return floor;
+}
+
+function chassisMapAssetPath(mapName, floor, filename) {
+    return `/maps/${encodeURIComponent(validateChassisMapName(mapName))}/${validateChassisFloor(floor)}/${filename}`;
+}
+
+function fetchChassisHttp(assetPath, maxBytes = 20 * 1024 * 1024) {
+    return new Promise((resolve, reject) => {
+        const transport = CHASSIS_MAP_HTTP_PROTOCOL === 'https' ? https : http;
+        const request = transport.get({
+            protocol: `${CHASSIS_MAP_HTTP_PROTOCOL}:`,
+            hostname: CHASSIS_MAP_HTTP_HOST,
+            port: CHASSIS_MAP_HTTP_PORT,
+            path: `${assetPath}?r=${Date.now()}`,
+            timeout: CHASSIS_REQUEST_TIMEOUT_MS,
+            headers: { Accept: '*/*', Cookie: 'scan=false' },
+            rejectUnauthorized: false
+        }, (response) => {
+            if (response.statusCode !== 200) {
+                response.resume();
+                reject(new Error(`底盘地图 HTTP ${response.statusCode}: ${assetPath}`));
+                return;
+            }
+            const chunks = [];
+            let size = 0;
+            response.on('data', (chunk) => {
+                size += chunk.length;
+                if (size > maxBytes) {
+                    request.destroy(new Error(`底盘地图文件超过 ${maxBytes} 字节`));
+                    return;
+                }
+                chunks.push(chunk);
+            });
+            response.once('end', () => resolve(Buffer.concat(chunks)));
+        });
+        request.once('timeout', () => request.destroy(new Error(`底盘地图 HTTP 请求超时: ${assetPath}`)));
+        request.once('error', reject);
+    });
+}
+
+function parseMapYaml(buffer) {
+    const metadata = {};
+    for (const line of buffer.toString('utf8').split(/\r?\n/)) {
+        const match = line.match(/^\s*([A-Za-z_][\w-]*)\s*:\s*(.*?)\s*$/);
+        if (!match) continue;
+        const key = match[1];
+        const value = match[2].replace(/^['"]|['"]$/g, '');
+        if (/^\[.*\]$/.test(value)) {
+            metadata[key] = value.slice(1, -1).split(',').map((item) => Number(item.trim()));
+        } else if (value !== '' && Number.isFinite(Number(value))) {
+            metadata[key] = Number(value);
+        } else {
+            metadata[key] = value;
+        }
+    }
+    return metadata;
+}
+
+function pngDimensions(buffer) {
+    if (buffer.length < 24 || buffer.toString('ascii', 1, 4) !== 'PNG') {
+        throw new Error('底盘 map.png 不是有效的 PNG 文件');
+    }
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+}
+
+async function fetchChassisRaster(mapName, floor) {
+    const safeMapName = validateChassisMapName(mapName);
+    const safeFloor = validateChassisFloor(floor);
+    const key = `${safeMapName}/${safeFloor}`;
+    if (chassisRasterCache && chassisRasterCache.key === key && Date.now() - chassisRasterCache.cachedAt < 5000) {
+        return chassisRasterCache.value;
+    }
+    const [yaml, image] = await Promise.all([
+        fetchChassisHttp(chassisMapAssetPath(safeMapName, safeFloor, 'map.yaml'), 1024 * 1024),
+        fetchChassisHttp(chassisMapAssetPath(safeMapName, safeFloor, 'map.png'))
+    ]);
+    const value = {
+        mapName: safeMapName,
+        floor: safeFloor,
+        metadata: parseMapYaml(yaml),
+        ...pngDimensions(image),
+        image
+    };
+    chassisRasterCache = { key, cachedAt: Date.now(), value };
+    return value;
+}
+
 async function fetchChassisMap() {
     const client = chassisClient();
     const [mapResponse, markerResponse] = await Promise.all([
@@ -1071,9 +1196,29 @@ async function fetchChassisMap() {
     ]);
     if (mapResponse.status !== 'OK') throw new Error(`获取当前地图失败 (${chassisResponseError(mapResponse)})`);
     if (markerResponse.status !== 'OK') throw new Error(`获取 marker 失败 (${chassisResponseError(markerResponse)})`);
+    const map = chassisResults(mapResponse);
+    const mapName = map.map_name || map.hotel_id;
+    const floor = Number(map.floor);
+    let raster;
+    try {
+        const asset = await fetchChassisRaster(mapName, floor);
+        raster = {
+            available: true,
+            image_url: `/api/chassis/map-image?map=${encodeURIComponent(asset.mapName)}&floor=${asset.floor}`,
+            width: asset.width,
+            height: asset.height,
+            metadata: asset.metadata,
+            host: CHASSIS_MAP_HTTP_HOST,
+            port: CHASSIS_MAP_HTTP_PORT
+        };
+    } catch (error) {
+        raster = { available: false, error: error.message };
+        log(`⚠️ 底盘栅格图暂不可用，使用坐标网格: ${error.message}`);
+    }
     return {
-        map: chassisResults(mapResponse),
+        map,
         markers: normalizeMarkers(chassisResults(markerResponse)),
+        raster,
         host: CHASSIS_HOST,
         port: CHASSIS_PORT,
         fetchedAt: new Date().toISOString()

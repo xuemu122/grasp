@@ -104,7 +104,7 @@ ADMIN_SESSION_TTL_MS=28800000
 
 Cookie 使用 `HttpOnly`、`Secure` 和 `SameSite=Strict`，默认有效期为 8 小时。同一来源 15 分钟内连续登录失败 5 次后会被临时限制。修改账号、密码或密钥后需要重启云端商品服务；修改密钥会使现有会话立即失效。
 
-管理页的底盘地图接口通过 `/api/chassis/` 转发到盒子。云端和盒子必须设置相同的 `ADMIN_USERNAME` 与 `ADMIN_SESSION_SECRET`，盒子才能验证云端登录签发的管理员 Cookie。底盘手册没有提供栅格地图图片下载接口，管理页根据当前地图的尺寸、原点、分辨率和 marker 坐标绘制点位图。
+管理页的底盘地图接口通过 `/api/chassis/` 转发到盒子。云端和盒子必须设置相同的 `ADMIN_USERNAME` 与 `ADMIN_SESSION_SECRET`，盒子才能验证云端登录签发的管理员 Cookie。盒子从底盘 Web 服务的 `/maps/<地图名>/<楼层>/map.yaml` 和 `map.png` 读取占据栅格，并根据 YAML 中的原点、分辨率叠加 marker；栅格暂时不可达时自动降级为坐标网格。
 
 管理页顶部的“抓取前导航”开关保存在盒子的 `chassis_settings.json`。首次没有设置文件时默认关闭；开启后，订单会先根据商品绑定的 `chassis_marker` 检查当前位置，已在距离和角度容差内时不重复移动，否则等待底盘导航成功后再执行机械臂抓取。
 
@@ -121,6 +121,8 @@ ROBOT_GRASP_MODE=real \
 DOBOT_IP=192.168.5.1 \
 CHASSIS_HOST=192.168.124.90 \
 CHASSIS_PORT=31001 \
+CHASSIS_MAP_HTTP_HOST=192.168.10.10 \
+CHASSIS_MAP_HTTP_PORT=9001 \
 ADMIN_USERNAME=admin \
 ADMIN_PASSWORD=admin123 \
 ADMIN_SESSION_SECRET='<与云端完全相同的会话密钥>' \
@@ -301,6 +303,9 @@ __filter_preview__\n
 | `DOBOT_IP` | `192.168.5.1` | DOBOT 地址 |
 | `CHASSIS_HOST` | `192.168.124.90` | 底盘 TCP 地址 |
 | `CHASSIS_PORT` | `31001` | 底盘 TCP 端口 |
+| `CHASSIS_MAP_HTTP_PROTOCOL` | `http` | 底盘栅格地图 Web 服务协议 |
+| `CHASSIS_MAP_HTTP_HOST` | `192.168.10.10` | 底盘栅格地图 Web 服务地址 |
+| `CHASSIS_MAP_HTTP_PORT` | `9001` | 底盘栅格地图 Web 服务端口 |
 | `CHASSIS_NAVIGATION_ENABLE` | 空/关闭 | 设为 `1` 时在抓取前导航到商品绑定的 marker |
 | `CHASSIS_SETTINGS_FILE` | 商品 JSON 同目录下的 `chassis_settings.json` | 管理页底盘导航开关持久化文件 |
 | `CHASSIS_REQUEST_TIMEOUT_MS` | `10000` | 单次底盘 TCP 请求超时 |
