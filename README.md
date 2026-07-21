@@ -72,7 +72,7 @@ curl http://127.0.0.1:3000/api/admin/session
 curl http://192.168.124.90:9001/maps/shiyanshi_01/1/map.yaml
 ```
 
-第一条返回 JSON 说明盒子 HTTP 服务正常；第二条返回 `origin`、`resolution` 等 YAML 字段说明桥接后的底盘地图服务正常。管理页中的“抓取/放置前导航”默认关闭，放置点默认 `yaojia1`，开启后配置会保存到 `qianduan/data/chassis_settings.json`。
+第一条返回 JSON 说明盒子 HTTP 服务正常；第二条返回 `origin`、`resolution` 等 YAML 字段说明桥接后的底盘地图服务正常。管理页中的“抓取/放置前导航”默认关闭，放置点默认 `yaojia1`，开启后配置会保存到 `qianduan/data/chassis_settings.json`。底盘确实需要移动时，系统会先确认机械臂到达收起姿态，再下发底盘移动任务；到达商品点位后才展开到对应货架层抓取。导航开启时，未绑定底盘点位的商品会直接报错并停止，不会在错误位置继续抓取。
 
 历史/实验目录：
 

@@ -264,6 +264,17 @@ test('WebSocket real mode moves to the mapped layer before each grab and stows',
     );
     assert.match(layerError.message, /1\.\.10/);
 
+    ws.send(JSON.stringify({
+        type: 'grab',
+        orderId: 'ORD-NO-MARKER',
+        items: [{ id: 999998, name: '未绑定点位商品', qty: 1, shelf_layer: 2 }]
+    }));
+    const markerError = await collector.waitFor(
+        (message) => message.type === 'status' && message.status === 'error'
+            && message.orderId === 'ORD-NO-MARKER'
+    );
+    assert.match(markerError.message, /未配置底盘点位/);
+
     ws.send('null');
     const objectError = await collector.waitFor(
         (message) => message.type === 'error' && message.message === 'JSON 指令必须是对象'
@@ -291,7 +302,7 @@ test('WebSocket real mode moves to the mapped layer before each grab and stows',
     );
     const commands = [...serverOutput.matchAll(/\[fake-worker-command\] (.+)/g)]
         .map((match) => match[1].trim());
-    assert.deepEqual(commands, ['__layer_2__', '云端咖啡', '__layer_2__', '云端咖啡']);
+    assert.deepEqual(commands, ['__stow_pose__', '__layer_2__', '云端咖啡', '__layer_2__', '云端咖啡']);
     assert.equal(fakeChassis.commands.filter((command) => command.startsWith('/api/move?')).length, 1);
     assert.equal(collector.messages.some((message) => message.type === 'robot_log'), false);
 

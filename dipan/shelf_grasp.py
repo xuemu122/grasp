@@ -1471,6 +1471,13 @@ def main():
                     print("[前端常驻模式] stdin 已关闭, 保持使能并退出程序")
                     break
                 cmd = cmd.strip()
+                if cmd in ("__stow_pose__", "__safe_stow__"):
+                    print("[前端常驻模式] 收到底盘移动前安全收起指令", flush=True)
+                    if go_to_stow_pose(arm):
+                        print("[前端常驻模式][完成] 已到达收起姿态", flush=True)
+                    else:
+                        print("[前端常驻模式][失败] 移动到收起姿态失败", flush=True)
+                    continue
                 if cmd in ("**stow**", "__stow__", "__shutdown__"):
                     print("[前端常驻模式] 收到收起指令")
                     go_to_stow_pose(arm)

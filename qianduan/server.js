@@ -1255,7 +1255,7 @@ function currentPoseAtMarker(statusInfo, marker) {
         && thetaDistance <= CHASSIS_NAVIGATION_THETA_TOLERANCE_RAD;
 }
 
-async function navigateChassisToMarker(markerName) {
+async function navigateChassisToMarker(markerName, { beforeMove } = {}) {
     const client = chassisClient();
     const [markerResponse, statusResponse] = await Promise.all([
         client.request('/api/markers/query_list'),
@@ -1273,6 +1273,8 @@ async function navigateChassisToMarker(markerName) {
         log(`  🚙 底盘已在点位 ${markerName} 容差范围内，跳过导航`);
         return { skipped: true, marker };
     }
+
+    if (beforeMove) await beforeMove({ marker, initialStatus });
 
     const params = new URLSearchParams({
         marker: markerName,
@@ -1610,16 +1612,31 @@ async function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo) 
     const product = readProducts().find((candidate) => String(candidate.id) === String(item.id));
     const chassisMarker = item.chassis_marker || (product && product.chassis_marker) || '';
     const chassisNavigationEnabled = readChassisSettings().navigation_enabled;
+    if (chassisNavigationEnabled && !chassisMarker) {
+        throw new Error(`${label}: 已开启底盘导航，但商品未配置底盘点位`);
+    }
     if (chassisNavigationEnabled && chassisMarker) {
-        sendStatus(ws, 'grabbing', {
-            orderId,
-            item: itemStatus(item),
-            stage: 'moving',
-            progress: progressBase + progressStep * 0.03,
-            message: `底盘正在前往 ${chassisMarker}...`,
-            chassisMarker
+        await navigateChassisToMarker(chassisMarker, {
+            beforeMove: async () => {
+                sendStatus(ws, 'grabbing', {
+                    orderId,
+                    item: itemStatus(item),
+                    stage: 'moving',
+                    progress: progressBase + progressStep * 0.02,
+                    message: '底盘移动前，机械臂正在收起...',
+                    chassisMarker
+                });
+                await moveRobotToStowPose();
+                sendStatus(ws, 'grabbing', {
+                    orderId,
+                    item: itemStatus(item),
+                    stage: 'moving',
+                    progress: progressBase + progressStep * 0.03,
+                    message: `机械臂已收起，底盘正在前往 ${chassisMarker}...`,
+                    chassisMarker
+                });
+            }
         });
-        await navigateChassisToMarker(chassisMarker);
     } else if (chassisMarker) {
         log(`  🚙 抓取前底盘导航已关闭，跳过点位 ${chassisMarker}`);
     }
@@ -1931,6 +1948,50 @@ async function moveRobotToLayer(layerIndex, layerInfo, pose) {
     } catch (e) {
         throw new Error(`真实模式移动失败: ${e.message}`);
     }
+}
+
+async function moveRobotToStowPose() {
+    if (!ROBOT_GRASP_REAL) return { mode: 'simulated' };
+    const worker = await ensureRobotWorker();
+    if (!worker) throw new Error('机器人 worker 未启动');
+
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let outputTail = '';
+        const cleanup = () => {
+            clearTimeout(timeout);
+            worker.stdout.off('data', onData);
+            worker.stderr.off('data', onData);
+            worker.off('close', onClose);
+        };
+        const finish = (error) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            if (error) reject(error);
+            else resolve({ mode: 'real', detail: '已到达收起姿态' });
+        };
+        const timeout = setTimeout(() => {
+            finish(new Error(`安全收起超时 (${ROBOT_STOW_TIMEOUT_MS}ms): ${summarizeOutput(outputTail) || '无输出'}`));
+        }, ROBOT_STOW_TIMEOUT_MS);
+        const handleLines = createLineHandler((line) => {
+            const trimmed = line.trim();
+            if (trimmed.includes('[前端常驻模式][完成] 已到达收起姿态')) finish();
+            else if (trimmed.includes('[前端常驻模式][失败] 移动到收起姿态失败')) finish(new Error(trimmed));
+        });
+        const onData = (chunk) => {
+            outputTail = (outputTail + chunk.toString()).slice(-4000);
+            handleLines(chunk);
+        };
+        const onClose = (code) => finish(new Error(`worker 在安全收起时退出 code=${code}`));
+
+        worker.stdout.on('data', onData);
+        worker.stderr.on('data', onData);
+        worker.on('close', onClose);
+        worker.stdin.write('__stow_pose__\n', (error) => {
+            if (error) finish(new Error(`无法发送安全收起命令: ${error.message}`));
+        });
+    });
 }
 
 function inferGrabStage(line) {
