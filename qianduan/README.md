@@ -70,6 +70,9 @@ WS_HOST=127.0.0.1 \
 WS_PORT=3101 \
 ROBOT_GRASP_MODE=sim \
 PRODUCTS_DB_FILE=/var/lib/grasp-qianduan/products.json \
+ADMIN_USERNAME=admin \
+ADMIN_PASSWORD=admin123 \
+ADMIN_SESSION_SECRET='<云端与盒子共用的至少32字节随机密钥>' \
 node server.js
 ```
 
@@ -88,14 +91,16 @@ PRODUCT_UPLOAD_MAX_BYTES=5242880
 
 `/admin.html` 使用服务端会话登录。商品列表查询保持公开，供点单页读取；新增、修改和删除商品必须持有有效的管理员会话 Cookie。
 
-云端服务通过环境变量配置账号，不要把实际密码或会话密钥提交到仓库：
+当前内网部署使用以下管理员账号：
 
 ```text
-ADMIN_USERNAME=<管理员账号>
-ADMIN_PASSWORD=<管理员密码>
-ADMIN_SESSION_SECRET=<至少 32 字节的随机密钥>
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin123
+ADMIN_SESSION_SECRET=<云端与盒子共用的至少32字节随机密钥>
 ADMIN_SESSION_TTL_MS=28800000
 ```
+
+`admin123` 会以明文出现在启动环境和本 README 中，仅适用于当前受控内网。对公网开放前必须更换密码。`ADMIN_SESSION_SECRET` 不要提交到仓库，云端和盒子必须配置完全相同的值。
 
 Cookie 使用 `HttpOnly`、`Secure` 和 `SameSite=Strict`，默认有效期为 8 小时。同一来源 15 分钟内连续登录失败 5 次后会被临时限制。修改账号、密码或密钥后需要重启云端商品服务；修改密钥会使现有会话立即失效。
 
@@ -114,6 +119,11 @@ PORT=3000 \
 WS_PORT=3001 \
 ROBOT_GRASP_MODE=real \
 DOBOT_IP=192.168.5.1 \
+CHASSIS_HOST=192.168.124.90 \
+CHASSIS_PORT=31001 \
+ADMIN_USERNAME=admin \
+ADMIN_PASSWORD=admin123 \
+ADMIN_SESSION_SECRET='<与云端完全相同的会话密钥>' \
 node server.js
 ```
 
