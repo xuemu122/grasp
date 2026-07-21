@@ -10,14 +10,16 @@ import os
 import sys
 import time
 
-HOST = "192.168.124.90"
-PORT = 31001
+HOST = os.getenv("CHASSIS_HOST", os.getenv("MOVE_ROBOT_HOST", "192.168.124.90"))
+PORT = int(os.getenv("CHASSIS_PORT", os.getenv("MOVE_ROBOT_PORT", "31001")))
 
 # 目标点位名称
 MARKER_YAOJIA = "yaojia1"
 MARKER_CHARGE = "charge_point_1F_35744"
-MARKER_PLACE = os.getenv("MARKER_PLACE", "place_point")
+MARKER_PLACE = os.getenv("MARKER_PLACE", "yaojia1")
 DEFAULT_WAIT_TIMEOUT_S = int(os.getenv("MOVE_WAIT_TIMEOUT_S", "180"))
+MARKER_DISTANCE_TOLERANCE_M = float(os.getenv("CHASSIS_NAVIGATION_DISTANCE_TOLERANCE_M", "0.15"))
+MARKER_THETA_TOLERANCE_RAD = float(os.getenv("CHASSIS_NAVIGATION_THETA_TOLERANCE_RAD", "0.25"))
 CHARGE_RETURN_ON_DOCKING = os.getenv("CHARGE_RETURN_ON_DOCKING", "1").lower() in ("1", "true", "yes", "on")
 
 
@@ -106,6 +108,51 @@ def get_robot_status(sock):
     return result
 
 
+def normalize_angle(angle):
+    value = float(angle or 0.0)
+    while value > 3.141592653589793:
+        value -= 6.283185307179586
+    while value < -3.141592653589793:
+        value += 6.283185307179586
+    return value
+
+
+def marker_theta(orientation):
+    orientation = orientation or {}
+    z = float(orientation.get("z") or 0.0)
+    w = float(orientation.get("w") or 1.0)
+    return normalize_angle(2.0 * __import__("math").atan2(z, w))
+
+
+def marker_info(sock, marker_name):
+    """读取 marker 和当前位姿，用于放置前判断是否已经在目标点。"""
+    markers_result = send_command(sock, "/api/markers/query_list")
+    status_result = get_robot_status(sock)
+    if markers_result.get("status") != "OK" or status_result.get("status") != "OK":
+        return None
+    markers = response_results(markers_result)
+    marker = markers.get(marker_name)
+    if marker is None:
+        for candidate in markers.values():
+            if isinstance(candidate, dict) and candidate.get("marker_name") == marker_name:
+                marker = candidate
+                break
+    status = response_results(status_result)
+    pose = status.get("current_pose") or {}
+    position = (marker or {}).get("pose", {}).get("position", {})
+    if not marker or not all(key in pose for key in ("x", "y")):
+        return None
+    marker_floor = int((marker or {}).get("floor") or 0)
+    current_floor = int(status.get("current_floor") or 0)
+    if marker_floor and current_floor and marker_floor != current_floor:
+        return False
+    distance = ((float(pose.get("x")) - float(position.get("x") or 0.0)) ** 2
+                + (float(pose.get("y")) - float(position.get("y") or 0.0)) ** 2) ** 0.5
+    orientation = (marker or {}).get("pose", {}).get("orientation", {})
+    theta_distance = abs(normalize_angle(float(pose.get("theta") or 0.0) - marker_theta(orientation)))
+    return distance <= MARKER_DISTANCE_TOLERANCE_M and theta_distance <= MARKER_THETA_TOLERANCE_RAD
+
+
 def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S, arrive_on_docking=False):
     """等待底盘移动任务完成。成功返回 True, 失败/取消/超时返回 False。"""
     deadline = time.time() + timeout_s
@@ -180,6 +227,12 @@ def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S, arrive_o
 
 def move_to(sock, marker, wait=False, arrive_on_docking=False):
     """发送移动到目标点位的指令"""
+    try:
+        if wait and marker_info(sock, marker) is True:
+            print(f"[底盘] 已在目标点 {marker}，跳过导航")
+            return {"status": "OK", "move_done": True, "skipped": True, "marker": marker}
+    except Exception as exc:
+        print(f"[底盘] 无法判断当前位置，将继续导航: {exc}")
     cmd = f"/api/move?marker={marker}"
     print(f">>> 发送: {cmd}")
     result = send_command(sock, cmd)
@@ -207,7 +260,9 @@ def cancel_move(sock):
 def main():
     args = sys.argv[1:]
     wait = "--no-wait" not in args
+    check_only = "--check-only" in args
     args = [arg for arg in args if arg != "--no-wait"]
+    args = [arg for arg in args if arg != "--check-only"]
     target = args[0] if args else None
 
     if target and target not in ("yaojia1", "charge", "place", "cancel"):
@@ -244,9 +299,15 @@ def main():
             if not MARKER_PLACE:
                 print("错误: 放置固定点名称未设置，请设置 MARKER_PLACE 或编辑脚本")
                 sys.exit(1)
-            result = move_to(sock, MARKER_PLACE, wait=wait)
-            if wait and result.get("move_done") is False:
-                sys.exit(2)
+            if check_only:
+                at_marker = marker_info(sock, MARKER_PLACE)
+                print(f"[底盘] 放置点 {MARKER_PLACE}: {'已到达' if at_marker is True else '未到达或无法确认'}")
+                if at_marker is not True:
+                    sys.exit(3)
+            else:
+                result = move_to(sock, MARKER_PLACE, wait=wait)
+                if wait and result.get("move_done") is False:
+                    sys.exit(2)
         else:
             # 交互模式
             print("交互模式 (输入 q 退出):")

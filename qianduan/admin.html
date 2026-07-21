@@ -159,7 +159,13 @@
                 <label class="toggle-control">
                     <input type="checkbox" id="chassisNavigationToggle" onchange="updateChassisNavigationConfig()">
                     <span class="toggle-track"></span>
-                    <span>抓取前导航</span>
+                    <span>抓取/放置前导航</span>
+                </label>
+                <label class="toggle-control">
+                    <span>放置点</span>
+                    <select class="select-box" id="chassisPlaceMarker" onchange="updateChassisNavigationConfig()">
+                        <option value="yaojia1">yaojia1</option>
+                    </select>
                 </label>
                 <span class="map-status" id="chassisMapStatus">尚未读取底盘地图</span>
             </div>
@@ -350,6 +356,7 @@
         };
         let shelfLayers = {};
         let chassisMapData = { map: {}, markers: [] };
+        let chassisNavigationConfig = { navigation_enabled: false, place_marker: 'yaojia1' };
 
         // ========== 登录与初始化 ==========
         document.addEventListener('DOMContentLoaded', async () => {
@@ -504,6 +511,28 @@
             select.value = selected;
         }
 
+        function updateChassisPlaceMarkerOptions(selected = chassisNavigationConfig.place_marker || 'yaojia1') {
+            const select = document.getElementById('chassisPlaceMarker');
+            if (!select) return;
+            const markers = [...(chassisMapData.markers || [])].sort((a, b) =>
+                a.floor - b.floor || a.name.localeCompare(b.name, 'zh-CN'));
+            select.innerHTML = '<option value="yaojia1">yaojia1（默认）</option>';
+            for (const marker of markers) {
+                if (marker.name === 'yaojia1') continue;
+                const option = document.createElement('option');
+                option.value = marker.name;
+                option.textContent = `${marker.name} (${marker.x.toFixed(2)}, ${marker.y.toFixed(2)})`;
+                select.appendChild(option);
+            }
+            if (selected && !markers.some(marker => marker.name === selected) && selected !== 'yaojia1') {
+                const option = document.createElement('option');
+                option.value = selected;
+                option.textContent = `${selected}（底盘当前未返回）`;
+                select.appendChild(option);
+            }
+            select.value = selected || 'yaojia1';
+        }
+
         async function loadChassisMap() {
             const status = document.getElementById('chassisMapStatus');
             status.textContent = '正在读取底盘地图...';
@@ -526,6 +555,7 @@
                     : '<option value="">当前楼层</option>';
                 if (floors.includes(Number(map.floor))) floorSelect.value = String(map.floor);
                 updateChassisMarkerOptions(document.getElementById('formChassisMarker').value);
+                updateChassisPlaceMarkerOptions();
                 renderChassisMap();
             } catch (error) {
                 chassisMapData = { map: {}, markers: [] };
@@ -533,6 +563,7 @@
                 status.textContent = error.message;
                 document.getElementById('chassisMap').innerHTML = '<div class="map-empty">底盘地图暂不可用</div>';
                 updateChassisMarkerOptions(document.getElementById('formChassisMarker').value);
+                updateChassisPlaceMarkerOptions();
             }
         }
 
@@ -544,9 +575,16 @@
                 const json = await res.json();
                 if (res.status === 401) throw new Error('盒子端管理员会话配置不一致');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '底盘导航设置读取失败');
-                toggle.checked = Boolean(json.data?.navigation_enabled);
+                chassisNavigationConfig = {
+                    navigation_enabled: Boolean(json.data?.navigation_enabled),
+                    place_marker: json.data?.place_marker || 'yaojia1'
+                };
+                toggle.checked = chassisNavigationConfig.navigation_enabled;
+                updateChassisPlaceMarkerOptions(chassisNavigationConfig.place_marker);
             } catch (error) {
                 toggle.checked = false;
+                chassisNavigationConfig = { navigation_enabled: false, place_marker: 'yaojia1' };
+                updateChassisPlaceMarkerOptions();
             } finally {
                 toggle.disabled = false;
             }
@@ -554,6 +592,7 @@
 
         async function updateChassisNavigationConfig() {
             const toggle = document.getElementById('chassisNavigationToggle');
+            const placeMarker = document.getElementById('chassisPlaceMarker');
             const enabled = toggle.checked;
             toggle.disabled = true;
             try {
@@ -561,11 +600,12 @@
                     preserveSession: true,
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ enabled })
+                    body: JSON.stringify({ enabled, place_marker: placeMarker.value || 'yaojia1' })
                 });
                 const json = await res.json();
                 if (res.status === 401) throw new Error('盒子端管理员会话配置不一致');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '设置保存失败');
+                chassisNavigationConfig = json.data;
                 showToast(`抓取前底盘导航已${enabled ? '开启' : '关闭'}`, 'success');
             } catch (error) {
                 toggle.checked = !enabled;

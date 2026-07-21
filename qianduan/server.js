@@ -29,6 +29,7 @@ const CHASSIS_PORT = Number(process.env.CHASSIS_PORT || process.env.MOVE_ROBOT_P
 const CHASSIS_MAP_HTTP_PROTOCOL = String(process.env.CHASSIS_MAP_HTTP_PROTOCOL || 'http').replace(/:$/, '');
 const CHASSIS_MAP_HTTP_HOST = process.env.CHASSIS_MAP_HTTP_HOST || '192.168.10.10';
 const CHASSIS_MAP_HTTP_PORT = Number(process.env.CHASSIS_MAP_HTTP_PORT || 9001);
+const CHASSIS_PLACE_MARKER_DEFAULT = process.env.CHASSIS_PLACE_MARKER || 'yaojia1';
 const CHASSIS_NAVIGATION_DEFAULT_ENABLE = /^(1|true|yes|on)$/i.test(process.env.CHASSIS_NAVIGATION_ENABLE || '');
 const CHASSIS_REQUEST_TIMEOUT_MS = Number(process.env.CHASSIS_REQUEST_TIMEOUT_MS || 10000);
 const CHASSIS_NAVIGATION_TIMEOUT_MS = Number(process.env.CHASSIS_NAVIGATION_TIMEOUT_MS || 180000);
@@ -701,12 +702,19 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/chassis/navigation-config' && req.method === 'PUT') {
         if (!requireAdmin(req, res)) return;
         const body = await parseBody(req);
-        if (!body || typeof body.enabled !== 'boolean') {
+        if (!body || (body.enabled !== undefined && typeof body.enabled !== 'boolean')) {
             sendJSON(res, { code: 1, message: 'enabled 必须是布尔值' }, 400);
             return;
         }
         try {
-            const settings = { navigation_enabled: body.enabled };
+            const current = readChassisSettings();
+            const placeMarker = body.place_marker === undefined
+                ? current.place_marker
+                : validateChassisMarkerName(body.place_marker);
+            const settings = {
+                navigation_enabled: body.enabled === undefined ? current.navigation_enabled : body.enabled,
+                place_marker: placeMarker
+            };
             writeChassisSettings(settings);
             log(`🚙 抓取前底盘导航已${body.enabled ? '开启' : '关闭'}`);
             sendJSON(res, { code: 0, data: settings });
@@ -1027,13 +1035,16 @@ async function handleFilterPreviewCommand(ws) {
 function readChassisSettings() {
     try {
         if (!fs.existsSync(CHASSIS_SETTINGS_FILE)) {
-            return { navigation_enabled: CHASSIS_NAVIGATION_DEFAULT_ENABLE };
+            return { navigation_enabled: CHASSIS_NAVIGATION_DEFAULT_ENABLE, place_marker: CHASSIS_PLACE_MARKER_DEFAULT };
         }
         const data = JSON.parse(fs.readFileSync(CHASSIS_SETTINGS_FILE, 'utf8'));
-        return { navigation_enabled: Boolean(data.navigation_enabled) };
+        return {
+            navigation_enabled: Boolean(data.navigation_enabled),
+            place_marker: validateChassisMarkerName(data.place_marker || CHASSIS_PLACE_MARKER_DEFAULT)
+        };
     } catch (error) {
         log(`⚠️ 底盘设置读取失败: ${error.message}`);
-        return { navigation_enabled: CHASSIS_NAVIGATION_DEFAULT_ENABLE };
+        return { navigation_enabled: CHASSIS_NAVIGATION_DEFAULT_ENABLE, place_marker: CHASSIS_PLACE_MARKER_DEFAULT };
     }
 }
 
@@ -1042,6 +1053,14 @@ function writeChassisSettings(settings) {
     const tempFile = `${CHASSIS_SETTINGS_FILE}.${process.pid}.tmp`;
     fs.writeFileSync(tempFile, JSON.stringify(settings, null, 2), 'utf8');
     fs.renameSync(tempFile, CHASSIS_SETTINGS_FILE);
+}
+
+function validateChassisMarkerName(value) {
+    const marker = String(value || '').trim();
+    if (!marker || marker.length > 128 || /[\r\n\u0000]/.test(marker) || marker.includes('/')) {
+        throw new Error('底盘放置点名称无效');
+    }
+    return marker;
 }
 
 function chassisClient() {
@@ -1319,6 +1338,9 @@ function ensureRobotWorker() {
                 ...process.env,
                 PYTHONUNBUFFERED: '1',
                 DOBOT_IP,
+                CHASSIS_HOST,
+                CHASSIS_PORT: String(CHASSIS_PORT),
+                CHASSIS_SETTINGS_FILE,
                 SHELF_GRASP_WORKER: '1'
             }
         });
