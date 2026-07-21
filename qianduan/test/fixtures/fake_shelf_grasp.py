@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
+import os
 import re
 import sys
 
 
+if os.getenv("SHELF_GRASP_SAFE_NAV_STARTUP") == "1":
+    print("[启动安全检查][完成] 机械臂已在收起姿态，启动过程未产生机械臂运动", flush=True)
 print("[前端常驻模式] 等待商品名 (**stow**=收起并退出) ...", flush=True)
 for raw in sys.stdin:
     command = raw.strip()

@@ -161,6 +161,9 @@ _place_transition_joints = None  # [j1,j2,j3,j4,j5,j6]，可选
 # 收起姿态: 调用底盘前和退出程序前使用, 防止机械臂/灵巧手与环境碰撞
 STOW_POSE_FILE = os.path.join(os.path.dirname(__file__), "stow_pose.json")
 _stow_pose = None  # ([x,y,z,rx,ry,rz], name)
+SAFE_NAV_STARTUP = os.getenv("SHELF_GRASP_SAFE_NAV_STARTUP", "0").lower() in ("1", "true", "yes", "on")
+STOW_VERIFY_POSITION_TOLERANCE_MM = float(os.getenv("STOW_VERIFY_POSITION_TOLERANCE_MM", "35"))
+STOW_VERIFY_ANGLE_TOLERANCE_DEG = float(os.getenv("STOW_VERIFY_ANGLE_TOLERANCE_DEG", "8"))
 
 # 放置前是否先让底盘去固定点。默认关闭, 现场确认 marker 后可用环境变量或主菜单 b 开启。
 USE_CHASSIS_PLACE = os.getenv("USE_CHASSIS_PLACE", "0").lower() in ("1", "true", "yes", "on")
@@ -890,11 +893,44 @@ def go_to_place_transition(arm: "DobotArm"):
     return True
 
 
+def _angle_distance_deg(a, b):
+    return abs((float(a) - float(b) + 180.0) % 360.0 - 180.0)
+
+
+def is_at_stow_pose(arm: "DobotArm", verbose=True):
+    """只读核对当前法兰是否已在收起姿态，不产生任何运动。"""
+    if _stow_pose is None:
+        if verbose:
+            print("  [收起姿态检查] 未记录收起姿态")
+        return False
+    try:
+        current = arm.get_pose()
+    except Exception as exc:
+        if verbose:
+            print(f"  [收起姿态检查] 无法读取当前位姿: {exc}")
+        return False
+    target, name = _stow_pose
+    position_error = float(np.linalg.norm(np.asarray(current[:3]) - np.asarray(target[:3])))
+    angle_error = max(_angle_distance_deg(current[index], target[index]) for index in range(3, 6))
+    matched = (position_error <= STOW_VERIFY_POSITION_TOLERANCE_MM
+               and angle_error <= STOW_VERIFY_ANGLE_TOLERANCE_DEG)
+    if verbose:
+        state = "已在" if matched else "不在"
+        print(
+            f"  [收起姿态检查] {state}{name}: 位置误差={position_error:.1f}mm, "
+            f"角度误差={angle_error:.1f}°"
+        )
+    return matched
+
+
 def go_to_stow_pose(arm: "DobotArm"):
     """先回第2层观察位，再移动到记录的收起姿态。未记录时只提示并返回 False。"""
     if _stow_pose is None:
         print("  [收起姿态] 未记录, 跳过。可用 u 菜单拖动记录")
         return False
+    if is_at_stow_pose(arm):
+        print("  [收起姿态] 当前已经收起, 跳过机械臂运动")
+        return True
     if 2 in _shelf_layer_poses:
         print("\n[收起姿态] 先回第2层避碰 ...")
         if not go_to_layer_via_clearance(arm, 2):
@@ -1400,10 +1436,21 @@ def main():
     arm = DobotArm()
     arm.connect()
 
-    # 回初始观察位姿
-    print("\n[Home] 回到预设初始位姿 ...")
-    arm.go_home()
-    time.sleep(MOTION_SETTLE_S)  # 短缓冲，MovJ 内部已等待运动完成
+    # ── 货架层/放置/收起姿态 ──
+    load_shelf_layers()
+    load_place_point()
+    load_place_transition()
+    load_stow_pose()
+
+    if SAFE_NAV_STARTUP:
+        print("\n[启动安全检查] 导航订单模式不执行 Home/观察层运动，只核对当前收起姿态 ...")
+        if not is_at_stow_pose(arm):
+            raise RuntimeError("导航订单启动时机械臂不在收起姿态，拒绝自动移动和接单")
+        print("[启动安全检查][完成] 机械臂已在收起姿态，启动过程未产生机械臂运动")
+    else:
+        print("\n[Home] 回到预设初始位姿 ...")
+        arm.go_home()
+        time.sleep(MOTION_SETTLE_S)  # 短缓冲，MovJ 内部已等待运动完成
 
     # ── 3. 连接灵巧手 ──
     if SKIP_HAND:
@@ -1414,14 +1461,9 @@ def main():
         hand = AeroGripper()
         hand.connect()
 
-    # ── 货架层管理 ──
-    load_shelf_layers()
-    load_place_point()
-    load_place_transition()
-    load_stow_pose()
     if _current_layer_idx == STARTUP_LAYER_IDX:
         save_shelf_layers()
-    if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
+    if not SAFE_NAV_STARTUP and _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
         if go_to_layer_via_clearance(arm, _current_layer_idx) and hand is not None:
             hand.open()
             time.sleep(MOTION_SETTLE_S)

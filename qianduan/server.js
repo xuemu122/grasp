@@ -1343,6 +1343,7 @@ function ensureRobotWorker() {
                 CHASSIS_HOST,
                 CHASSIS_PORT: String(CHASSIS_PORT),
                 CHASSIS_SETTINGS_FILE,
+                SHELF_GRASP_SAFE_NAV_STARTUP: '1',
                 SHELF_GRASP_WORKER: '1'
             }
         });
