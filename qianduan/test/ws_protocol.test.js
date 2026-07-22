@@ -145,7 +145,7 @@ async function startFakeChassisMapServer(port) {
     return { server, requests, png };
 }
 
-test('WebSocket real mode moves to the mapped layer before each grab and stows', async (t) => {
+test('WebSocket real mode navigates before worker startup, moves to each layer, and stows', async (t) => {
     const port = await getFreePort();
     const wsPort = await getFreePort();
     const chassisPort = await getFreePort();
@@ -301,8 +301,11 @@ test('WebSocket real mode moves to the mapped layer before each grab and stows',
     );
     const commands = [...serverOutput.matchAll(/\[fake-worker-command\] (.+)/g)]
         .map((match) => match[1].trim());
-    assert.match(serverOutput, /启动过程未产生机械臂运动/);
-    assert.deepEqual(commands, ['__stow_pose__', '__layer_2__', '云端咖啡', '__layer_2__', '云端咖啡']);
+    const chassisMoveIndex = serverOutput.indexOf('底盘开始前往 shelf-a');
+    const workerStartIndex = serverOutput.indexOf('启动常驻抓取 worker');
+    assert.ok(chassisMoveIndex >= 0, serverOutput);
+    assert.ok(workerStartIndex > chassisMoveIndex, serverOutput);
+    assert.deepEqual(commands, ['__layer_2__', '云端咖啡', '__layer_2__', '云端咖啡']);
     assert.equal(fakeChassis.commands.filter((command) => command.startsWith('/api/move?')).length, 1);
     assert.equal(collector.messages.some((message) => message.type === 'robot_log'), false);
 

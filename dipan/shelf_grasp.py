@@ -1541,6 +1541,9 @@ def main():
                     print(f"[前端常驻模式] 正在移动到第{target_layer}层...", flush=True)
                     if go_to_layer(arm, target_layer):
                         _current_layer_idx = target_layer
+                        if hand is not None:
+                            hand.open()
+                            time.sleep(MOTION_SETTLE_S)
                         print(f"[前端常驻模式][完成] 已到达第{target_layer}层")
                     else:
                         print(f"[前端常驻模式][失败] 移动到第{target_layer}层失败")

@@ -864,6 +864,9 @@ server.listen(PORT, HOST, () => {
     log(`HTTP 服务已启动: http://${HOST}:${PORT}`);
     log(`商品管理页面: http://localhost:${PORT}/admin.html`);
     log(`抓取模式: ${ROBOT_GRASP_REAL ? '真实机械臂' : '模拟'} (${ROBOT_GRASP_MODE})`);
+    const chassisSettings = readChassisSettings();
+    log(`底盘接口: ${CHASSIS_HOST}:${CHASSIS_PORT}，栅格地图: ${CHASSIS_MAP_HTTP_PROTOCOL}://${CHASSIS_MAP_HTTP_HOST}:${CHASSIS_MAP_HTTP_PORT}`);
+    log(`底盘导航: ${chassisSettings.navigation_enabled ? '已开启' : '已关闭'}，放置点: ${chassisSettings.place_marker}`);
 });
 
 // ========== WebSocket 服务 ==========
@@ -1343,7 +1346,6 @@ function ensureRobotWorker() {
                 CHASSIS_HOST,
                 CHASSIS_PORT: String(CHASSIS_PORT),
                 CHASSIS_SETTINGS_FILE,
-                SHELF_GRASP_SAFE_NAV_STARTUP: '1',
                 SHELF_GRASP_WORKER: '1'
             }
         });
@@ -1617,7 +1619,8 @@ async function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo) 
         throw new Error(`${label}: 已开启底盘导航，但商品未配置底盘点位`);
     }
     if (chassisNavigationEnabled && chassisMarker) {
-        await navigateChassisToMarker(chassisMarker, {
+        const workerAlreadyRunning = Boolean(robotWorker && !robotWorker.killed && robotWorkerReady);
+        const navigationOptions = workerAlreadyRunning ? {
             beforeMove: async () => {
                 sendStatus(ws, 'grabbing', {
                     orderId,
@@ -1637,9 +1640,24 @@ async function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo) 
                     chassisMarker
                 });
             }
-        });
+        } : {};
+        if (!workerAlreadyRunning) {
+            log('  [底盘] 首次订单保持机械臂现有收起姿态；到达商品点位后再启动抓取 worker');
+            sendStatus(ws, 'grabbing', {
+                orderId,
+                item: itemStatus(item),
+                stage: 'moving',
+                progress: progressBase + progressStep * 0.03,
+                message: `机械臂保持收起，底盘正在前往 ${chassisMarker}...`,
+                chassisMarker
+            });
+        }
+        await navigateChassisToMarker(chassisMarker, navigationOptions);
+        log(`  [底盘] 已完成 ${chassisMarker} 到点检查，现在允许机械臂进入初始位和观察位`);
     } else if (chassisMarker) {
         log(`  🚙 抓取前底盘导航已关闭，跳过点位 ${chassisMarker}`);
+    } else if (!chassisNavigationEnabled) {
+        log('  🚙 抓取前底盘导航已关闭，机械臂将在当前位置执行');
     }
     let shelfPose = null;
     if (item.shelf_layer) {
