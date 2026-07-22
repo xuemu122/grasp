@@ -4,6 +4,7 @@
 import csv
 import os
 import sys
+import threading
 import time
 
 
@@ -92,11 +93,17 @@ class AeroGripper:
     def __init__(self, port=None):
         self.hand = AeroHand(port=port)
         self.ok = True
+        self._hold_hz = max(1.0, float(os.getenv("AERO_HOLD_HZ", "20")))
+        self._hold_pose = None
+        self._hold_lock = threading.Lock()
+        self._hold_stop = threading.Event()
+        self._hold_thread = None
 
     def connect(self):
         print("[Aero] 已连接")
 
     def disconnect(self):
+        self._stop_hold()
         if not self.ok:
             print("[Aero] 已禁用, 跳过断开")
             return
@@ -107,11 +114,50 @@ class AeroGripper:
             self.ok = False
             print(f"[Aero] 断开失败, 已禁用灵巧手: {e}")
 
+    def _hold_loop(self):
+        period = 1.0 / self._hold_hz
+        while not self._hold_stop.wait(period):
+            with self._hold_lock:
+                pose = self._hold_pose[:] if self._hold_pose is not None else None
+            if pose is None or not self.ok:
+                continue
+            try:
+                self.hand.set_joint_positions(pose)
+            except Exception as e:
+                self.ok = False
+                self._hold_stop.set()
+                print(f"[Aero] 抓取姿态保持失败, 已禁用灵巧手: {e}")
+
+    def _start_hold(self, pose):
+        target = [float(value) for value in pose]
+        self.hand.set_joint_positions(target)
+        with self._hold_lock:
+            self._hold_pose = target
+        if self._hold_thread is None or not self._hold_thread.is_alive():
+            self._hold_stop.clear()
+            self._hold_thread = threading.Thread(
+                target=self._hold_loop,
+                name="aero-grasp-hold",
+                daemon=True,
+            )
+            self._hold_thread.start()
+        print(f"[Aero] 持续保持抓取姿态 ({self._hold_hz:.0f}Hz)")
+
+    def _stop_hold(self):
+        self._hold_stop.set()
+        thread = self._hold_thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        self._hold_thread = None
+        with self._hold_lock:
+            self._hold_pose = None
+
     def open(self):
         if not self.ok:
             print("[Aero] 已禁用, 跳过张开")
             return False
         try:
+            self._stop_hold()
             self.hand.set_joint_positions(self.OPEN)
             print("[Aero] 张开")
             return True
@@ -144,6 +190,7 @@ class AeroGripper:
             print("[Aero] 已禁用, 跳过柔性抓取")
             return False
         try:
+            self._stop_hold()
             thumb0 = float(os.getenv("AERO_FLEX_THUMB0", "80"))
             start = float(os.getenv("AERO_FLEX_START", "0"))
             max_cmd = float(os.getenv("AERO_FLEX_MAX", "80"))
@@ -271,6 +318,8 @@ class AeroGripper:
                 if events:
                     print(f"[Aero] 柔性锁定: {', '.join(events)}")
                 if all(idx in locked for idx in required_fingers):
+                    final_pose = self._pose_from_values(thumb0, values)
+                    self._start_hold(final_pose)
                     print(
                         "[Aero] 柔性抓取完成: "
                         + ", ".join(f"{idx}:{COMPACT_NAMES[idx]}={locked[idx]:.0f}" for idx in sorted(locked))
@@ -279,7 +328,10 @@ class AeroGripper:
 
             pending = sorted(idx for idx in required_fingers if idx not in locked)
             print(f"[Aero][警告] 柔性抓取达到最大步数, 未完成: {pending}")
-            return bool(locked)
+            if locked:
+                self._start_hold(self._pose_from_values(thumb0, values))
+                return True
+            return False
         except Exception as e:
             self.ok = False
             print(f"[Aero] 柔性抓取失败, 已禁用灵巧手: {e}")
@@ -299,7 +351,8 @@ class AeroGripper:
             else:
                 pose = self.GRASP
                 label = "抓取"
-            self.hand.set_joint_positions(pose)
+            self._stop_hold()
+            self._start_hold(pose)
             print(f"[Aero] {label}")
             return True
         except Exception as e:
