@@ -104,7 +104,7 @@ ADMIN_SESSION_TTL_MS=28800000
 
 Cookie 使用 `HttpOnly`、`Secure` 和 `SameSite=Strict`，默认有效期为 8 小时。同一来源 15 分钟内连续登录失败 5 次后会被临时限制。修改账号、密码或密钥后需要重启云端商品服务；修改密钥会使现有会话立即失效。
 
-管理页的底盘地图接口通过 `/api/chassis/` 转发到盒子。云端和盒子必须设置相同的 `ADMIN_USERNAME` 与 `ADMIN_SESSION_SECRET`，盒子才能验证云端登录签发的管理员 Cookie。盒子从底盘 Web 服务的 `/maps/<地图名>/<楼层>/map.yaml` 和 `map.png` 读取占据栅格，并根据 YAML 中的原点、分辨率叠加 marker；栅格暂时不可达时自动降级为坐标网格。
+管理页的底盘地图接口通过 `/api/chassis/` 转发到盒子。云端和盒子必须设置相同的 `ADMIN_USERNAME` 与 `ADMIN_SESSION_SECRET`，盒子才能验证云端登录签发的管理员 Cookie。盒子每次启动从底盘 Web 服务的 `/maps/<地图名>/<楼层>/map.yaml` 和 `map.png` 更新一次本地地图快照，默认保存到 `data/chassis_map_cache/`：`current.json` 保存地图元数据和 marker，按地图/楼层目录保存原始 YAML 和 PNG。管理页普通刷新只读本地快照；底盘临时不可达时继续使用上一次成功快照。点击“刷新地图”才会强制重新从底盘更新，且没有可用快照时才降级为坐标网格。
 
 管理页顶部的“抓取/放置前导航”开关和放置点保存在盒子的 `chassis_settings.json`。首次没有设置文件时默认关闭导航，默认放置点为 `yaojia1`。开启导航后，首次订单保持机械臂现有收起姿态，先判断并前往商品绑定的 `chassis_marker`；底盘到点后才启动 worker，进入 Home、初始观察位和商品层观察位。worker 已运行时，后续跨点位订单会先收起机械臂再导航。到达目标观察层后 worker 会明确张开 Aero Hand，再开始拍照识别。导航开启但商品未绑定点位时，订单会直接失败，不会在错误位置继续抓取。抓取完成后检查底盘是否已在配置的放置点，已在点位则直接执行机械臂放置，否则先收起机械臂、导航到放置点并等待到达后再放置。常驻 worker 每次放置前重新读取配置，管理页修改后无需重启 worker。
 
@@ -166,7 +166,7 @@ curl http://127.0.0.1:3000/api/admin/session
 curl http://192.168.124.90:9001/maps/shiyanshi_01/1/map.yaml
 ```
 
-第一条无需登录也会返回会话状态 JSON，用于确认盒子 HTTP 服务可达。第二条应返回 `origin` 和 `resolution` 等 YAML 字段，用于确认桥接网络下的底盘地图服务可达。管理页刷新地图时，盒子会从相同地址读取 `map.png`。
+第一条无需登录也会返回会话状态 JSON，用于确认盒子 HTTP 服务可达。第二条应返回 `origin` 和 `resolution` 等 YAML 字段，用于确认桥接网络下的底盘地图服务可达。启动时盒子会把该地图写入 `data/chassis_map_cache/`；之后即使底盘地图 HTTP 暂时断开，管理页仍可显示上一次快照。
 
 本机管理页地址为 `http://localhost:3000/admin.html`，内网管理员账号为 `admin`、密码为 `admin123`。云端页面出现“盒子端管理员会话配置不一致”时，需要确认云端和盒子使用完全相同的 `ADMIN_USERNAME` 与 `ADMIN_SESSION_SECRET`，重启两端服务后退出管理页并重新登录。
 
@@ -351,6 +351,7 @@ __filter_preview__\n
 | `CHASSIS_MAP_HTTP_PROTOCOL` | `http` | 底盘栅格地图 Web 服务协议 |
 | `CHASSIS_MAP_HTTP_HOST` | 与 `CHASSIS_HOST` 相同 | 底盘栅格地图 Web 服务地址；桥接网络下使用底盘桥接后的地址 |
 | `CHASSIS_MAP_HTTP_PORT` | `9001` | 底盘栅格地图 Web 服务端口 |
+| `CHASSIS_MAP_CACHE_DIR` | 商品 JSON 同目录下的 `chassis_map_cache` | 地图 PNG/YAML 与 `current.json` 快照目录 |
 | `CHASSIS_NAVIGATION_ENABLE` | 空/关闭 | 设为 `1` 时在抓取前导航到商品绑定的 marker |
 | `CHASSIS_PLACE_MARKER` | `yaojia1` | 首次没有设置文件时使用的默认放置 marker |
 | `CHASSIS_SETTINGS_FILE` | 商品 JSON 同目录下的 `chassis_settings.json` | 管理页底盘导航开关持久化文件 |

@@ -153,7 +153,9 @@ test('WebSocket real mode navigates before worker startup, moves to each layer, 
     const fakeChassis = await startFakeChassisServer(chassisPort);
     const fakeChassisMap = await startFakeChassisMapServer(chassisMapPort);
     t.after(() => fakeChassis.server.close());
-    t.after(() => fakeChassisMap.server.close());
+    t.after(() => {
+        if (fakeChassisMap.server.listening) fakeChassisMap.server.close();
+    });
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grasp-ws-'));
     const dataFile = path.join(tempDir, 'products.json');
     const shelfLayersFile = path.join(tempDir, 'shelf_layers.json');
@@ -185,6 +187,7 @@ test('WebSocket real mode navigates before worker startup, moves to each layer, 
             CHASSIS_PORT: String(chassisPort),
             CHASSIS_MAP_HTTP_HOST: '127.0.0.1',
             CHASSIS_MAP_HTTP_PORT: String(chassisMapPort),
+            CHASSIS_REQUEST_TIMEOUT_MS: '500',
             CHASSIS_NAVIGATION_POLL_MS: '10',
             CHASSIS_NAVIGATION_TIMEOUT_MS: '2000',
             ADMIN_USERNAME: 'test-admin',
@@ -234,6 +237,16 @@ test('WebSocket real mode navigates before worker startup, moves to each layer, 
     assert.equal(imageResponse.status, 200);
     assert.equal(imageResponse.headers.get('content-type'), 'image/png');
     assert.deepEqual(Buffer.from(await imageResponse.arrayBuffer()), fakeChassisMap.png);
+    const snapshotFile = path.join(tempDir, 'chassis_map_cache', 'current.json');
+    const cachedImage = path.join(tempDir, 'chassis_map_cache', 'test-map', '1', 'map.png');
+    assert.equal(fs.existsSync(snapshotFile), true);
+    assert.deepEqual(fs.readFileSync(cachedImage), fakeChassisMap.png);
+    await new Promise((resolve, reject) => fakeChassisMap.server.close((error) => error ? reject(error) : resolve()));
+    const cachedImageResponse = await fetch(`http://127.0.0.1:${port}${mapPayload.data.raster.image_url}`, {
+        headers: { Cookie: cookie }
+    });
+    assert.equal(cachedImageResponse.status, 200);
+    assert.deepEqual(Buffer.from(await cachedImageResponse.arrayBuffer()), fakeChassisMap.png);
 
     const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
     const collector = createMessageCollector(ws);
@@ -314,4 +327,64 @@ test('WebSocket real mode navigates before worker startup, moves to each layer, 
         (message) => message.type === 'status' && message.status === 'completed' && message.message === '机械臂已收起'
     );
     assert.equal(stowed.progress, 100);
+
+    ws.close();
+    child.kill('SIGTERM');
+    await once(child, 'close');
+
+    const restartPort = await getFreePort();
+    const restartWsPort = await getFreePort();
+    const restarted = spawn(process.execPath, ['server.js'], {
+        cwd: __dirname + '/..',
+        env: {
+            ...process.env,
+            PORT: String(restartPort),
+            WS_PORT: String(restartWsPort),
+            ROBOT_GRASP_MODE: 'sim',
+            PRODUCTS_DB_FILE: dataFile,
+            CHASSIS_HOST: '127.0.0.1',
+            CHASSIS_PORT: String(chassisPort),
+            CHASSIS_MAP_HTTP_HOST: '127.0.0.1',
+            CHASSIS_MAP_HTTP_PORT: String(chassisMapPort),
+            CHASSIS_REQUEST_TIMEOUT_MS: '500',
+            ADMIN_USERNAME: 'test-admin',
+            ADMIN_PASSWORD: 'test-password',
+            ADMIN_SESSION_SECRET: 'test-admin-session-secret-32-bytes'
+        },
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let restartOutput = '';
+    restarted.stdout.on('data', (chunk) => restartOutput += chunk.toString());
+    restarted.stderr.on('data', (chunk) => restartOutput += chunk.toString());
+    t.after(() => {
+        if (restarted.exitCode === null) restarted.kill('SIGTERM');
+    });
+    await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error(`重启服务超时: ${restartOutput}`)), 5000);
+        const inspect = () => {
+            if (!restartOutput.includes('WebSocket 服务已启动')) return;
+            clearTimeout(timeout);
+            resolve();
+        };
+        restarted.stdout.on('data', inspect);
+        restarted.stderr.on('data', inspect);
+        restarted.once('exit', (code) => reject(new Error(`重启服务提前退出 ${code}: ${restartOutput}`)));
+    });
+    const restartLogin = await fetch(`http://127.0.0.1:${restartPort}/api/admin/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'test-admin', password: 'test-password' })
+    });
+    const restartCookie = restartLogin.headers.get('set-cookie').split(';', 1)[0];
+    const persistedMapResponse = await fetch(`http://127.0.0.1:${restartPort}/api/chassis/map`, {
+        headers: { Cookie: restartCookie }
+    });
+    const persistedMap = await persistedMapResponse.json();
+    assert.equal(persistedMapResponse.status, 200);
+    assert.equal(persistedMap.data.raster.storage, 'local_snapshot');
+    const persistedImageResponse = await fetch(`http://127.0.0.1:${restartPort}${persistedMap.data.raster.image_url}`, {
+        headers: { Cookie: restartCookie }
+    });
+    assert.equal(persistedImageResponse.status, 200);
+    assert.deepEqual(Buffer.from(await persistedImageResponse.arrayBuffer()), fakeChassisMap.png);
 });

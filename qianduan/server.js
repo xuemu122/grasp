@@ -38,6 +38,8 @@ const CHASSIS_NAVIGATION_THETA_TOLERANCE_RAD = Number(process.env.CHASSIS_NAVIGA
 const CHASSIS_NAVIGATION_POLL_MS = Number(process.env.CHASSIS_NAVIGATION_POLL_MS || 1000);
 const PRODUCTS_DB_FILE = process.env.PRODUCTS_DB_FILE || path.join(__dirname, 'data', 'products.json');
 const CHASSIS_SETTINGS_FILE = process.env.CHASSIS_SETTINGS_FILE || path.join(path.dirname(PRODUCTS_DB_FILE), 'chassis_settings.json');
+const CHASSIS_MAP_CACHE_DIR = process.env.CHASSIS_MAP_CACHE_DIR || path.join(path.dirname(PRODUCTS_DB_FILE), 'chassis_map_cache');
+const CHASSIS_MAP_SNAPSHOT_FILE = path.join(CHASSIS_MAP_CACHE_DIR, 'current.json');
 const PRODUCT_UPLOAD_DIR = process.env.PRODUCT_UPLOAD_DIR || path.join(path.dirname(PRODUCTS_DB_FILE), 'uploads');
 const PRODUCT_UPLOAD_MAX_BYTES = Number(process.env.PRODUCT_UPLOAD_MAX_BYTES || 5 * 1024 * 1024);
 const ROBOT_WORKER_READY_TIMEOUT_MS = Number(process.env.ROBOT_WORKER_READY_TIMEOUT_MS || 90000);
@@ -64,6 +66,7 @@ let robotWorkerStarting = null;
 let robotStowPromise = null;
 let robotFilterPreviewPromise = null;
 let chassisRasterCache = null;
+let chassisMapRefreshPromise = null;
 
 // 机器人初始位置
 const SHELF_LAYERS_FILE = process.env.SHELF_LAYERS_FILE || path.resolve(__dirname, '../dipan/shelf_layers.json');
@@ -724,11 +727,12 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // GET /api/chassis/map - 获取当前地图元数据和 marker 坐标
+    // GET /api/chassis/map - 读取本地地图快照；refresh=1 时先从底盘更新
     if (pathname === '/api/chassis/map' && req.method === 'GET') {
         if (!requireAdmin(req, res)) return;
         try {
-            sendJSON(res, { code: 0, data: await fetchChassisMap() });
+            const forceRefresh = url.searchParams.get('refresh') === '1';
+            sendJSON(res, { code: 0, data: await getChassisMapSnapshot({ forceRefresh }) });
         } catch (error) {
             log(`⚠️ 底盘地图读取失败: ${error.message}`);
             sendJSON(res, { code: 1, message: error.message }, 502);
@@ -742,7 +746,7 @@ const server = http.createServer(async (req, res) => {
         try {
             const mapName = validateChassisMapName(url.searchParams.get('map'));
             const floor = validateChassisFloor(url.searchParams.get('floor'));
-            const raster = await fetchChassisRaster(mapName, floor);
+            const raster = await getCachedChassisRaster(mapName, floor);
             res.writeHead(200, {
                 'Content-Type': 'image/png',
                 'Content-Length': raster.image.length,
@@ -855,7 +859,14 @@ const server = http.createServer(async (req, res) => {
             res.end('404 Not Found');
             return;
         }
-        res.writeHead(200, { 'Content-Type': contentType });
+        const cacheControl = ['.html', '.js', '.css'].includes(ext)
+            ? 'no-store, max-age=0'
+            : 'public, max-age=3600';
+        res.writeHead(200, {
+            'Content-Type': contentType,
+            'Cache-Control': cacheControl,
+            'X-Content-Type-Options': 'nosniff'
+        });
         res.end(data);
     });
 });
@@ -867,6 +878,16 @@ server.listen(PORT, HOST, () => {
     const chassisSettings = readChassisSettings();
     log(`底盘接口: ${CHASSIS_HOST}:${CHASSIS_PORT}，栅格地图: ${CHASSIS_MAP_HTTP_PROTOCOL}://${CHASSIS_MAP_HTTP_HOST}:${CHASSIS_MAP_HTTP_PORT}`);
     log(`底盘导航: ${chassisSettings.navigation_enabled ? '已开启' : '已关闭'}，放置点: ${chassisSettings.place_marker}`);
+    refreshChassisMapSnapshot()
+        .then((snapshot) => log(`底盘地图已更新到本地: ${snapshot.map.map_name || snapshot.map.hotel_id}/${snapshot.map.floor}`))
+        .catch((error) => {
+            try {
+                const cached = readChassisMapSnapshot();
+                log(`⚠️ 底盘地图启动更新失败，继续使用本地快照 ${cached.map.map_name || cached.map.hotel_id}/${cached.map.floor}: ${error.message}`);
+            } catch {
+                log(`⚠️ 底盘地图启动更新失败且没有本地快照: ${error.message}`);
+            }
+        });
 });
 
 // ========== WebSocket 服务 ==========
@@ -1202,6 +1223,7 @@ async function fetchChassisRaster(mapName, floor) {
     const value = {
         mapName: safeMapName,
         floor: safeFloor,
+        yaml,
         metadata: parseMapYaml(yaml),
         ...pngDimensions(image),
         image
@@ -1210,41 +1232,136 @@ async function fetchChassisRaster(mapName, floor) {
     return value;
 }
 
-async function fetchChassisMap() {
-    const client = chassisClient();
-    const [mapResponse, markerResponse] = await Promise.all([
-        client.request('/api/map/get_current_map'),
-        client.request('/api/markers/query_list')
-    ]);
-    if (mapResponse.status !== 'OK') throw new Error(`获取当前地图失败 (${chassisResponseError(mapResponse)})`);
-    if (markerResponse.status !== 'OK') throw new Error(`获取 marker 失败 (${chassisResponseError(markerResponse)})`);
-    const map = chassisResults(mapResponse);
-    const mapName = map.map_name || map.hotel_id;
-    const floor = Number(map.floor);
-    let raster;
-    try {
-        const asset = await fetchChassisRaster(mapName, floor);
-        raster = {
+function chassisMapCachePaths(mapName, floor) {
+    const safeMapName = validateChassisMapName(mapName);
+    const safeFloor = validateChassisFloor(floor);
+    const directory = path.join(CHASSIS_MAP_CACHE_DIR, encodeURIComponent(safeMapName), String(safeFloor));
+    return {
+        directory,
+        yaml: path.join(directory, 'map.yaml'),
+        image: path.join(directory, 'map.png')
+    };
+}
+
+function writeFileAtomic(filePath, data, options = {}) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(temporary, data, options);
+    fs.renameSync(temporary, filePath);
+}
+
+function writeChassisMapSnapshot(map, markers, asset) {
+    const mapName = validateChassisMapName(map.map_name || map.hotel_id);
+    const floor = validateChassisFloor(map.floor);
+    const paths = chassisMapCachePaths(mapName, floor);
+    const fetchedAt = new Date().toISOString();
+    writeFileAtomic(paths.yaml, asset.yaml, { mode: 0o640 });
+    writeFileAtomic(paths.image, asset.image, { mode: 0o640 });
+    const snapshot = {
+        schema_version: 1,
+        map,
+        markers,
+        raster: {
             available: true,
-            image_url: `/api/chassis/map-image?map=${encodeURIComponent(asset.mapName)}&floor=${asset.floor}`,
+            image_url: `/api/chassis/map-image?map=${encodeURIComponent(mapName)}&floor=${floor}`,
             width: asset.width,
             height: asset.height,
             metadata: asset.metadata,
-            host: CHASSIS_MAP_HTTP_HOST,
-            port: CHASSIS_MAP_HTTP_PORT
-        };
-    } catch (error) {
-        raster = { available: false, error: error.message };
-        log(`⚠️ 底盘栅格图暂不可用，使用坐标网格: ${error.message}`);
-    }
-    return {
-        map,
-        markers: normalizeMarkers(chassisResults(markerResponse)),
-        raster,
+            storage: 'local_snapshot',
+            updated_at: fetchedAt
+        },
         host: CHASSIS_HOST,
         port: CHASSIS_PORT,
-        fetchedAt: new Date().toISOString()
+        fetchedAt
     };
+    writeFileAtomic(CHASSIS_MAP_SNAPSHOT_FILE, JSON.stringify(snapshot, null, 2), { encoding: 'utf8', mode: 0o640 });
+    return snapshot;
+}
+
+function readChassisMapSnapshot(expectedMapName, expectedFloor) {
+    const snapshot = JSON.parse(fs.readFileSync(CHASSIS_MAP_SNAPSHOT_FILE, 'utf8'));
+    const map = snapshot && snapshot.map;
+    const mapName = validateChassisMapName(map && (map.map_name || map.hotel_id));
+    const floor = validateChassisFloor(map && map.floor);
+    if (expectedMapName !== undefined && validateChassisMapName(expectedMapName) !== mapName) {
+        throw new Error(`本地地图快照不是 ${expectedMapName}`);
+    }
+    if (expectedFloor !== undefined && validateChassisFloor(expectedFloor) !== floor) {
+        throw new Error(`本地地图快照不是第${expectedFloor}层`);
+    }
+    const paths = chassisMapCachePaths(mapName, floor);
+    const image = fs.readFileSync(paths.image);
+    const dimensions = pngDimensions(image);
+    const yaml = fs.readFileSync(paths.yaml);
+    return {
+        ...snapshot,
+        raster: {
+            ...snapshot.raster,
+            available: true,
+            image_url: `/api/chassis/map-image?map=${encodeURIComponent(mapName)}&floor=${floor}`,
+            width: dimensions.width,
+            height: dimensions.height,
+            metadata: snapshot.raster && snapshot.raster.metadata
+                ? snapshot.raster.metadata
+                : parseMapYaml(yaml),
+            storage: 'local_snapshot'
+        }
+    };
+}
+
+async function refreshChassisMapSnapshot() {
+    if (chassisMapRefreshPromise) return chassisMapRefreshPromise;
+    const refresh = (async () => {
+        const client = chassisClient();
+        const [mapResponse, markerResponse] = await Promise.all([
+            client.request('/api/map/get_current_map'),
+            client.request('/api/markers/query_list')
+        ]);
+        if (mapResponse.status !== 'OK') throw new Error(`获取当前地图失败 (${chassisResponseError(mapResponse)})`);
+        if (markerResponse.status !== 'OK') throw new Error(`获取 marker 失败 (${chassisResponseError(markerResponse)})`);
+        const map = chassisResults(mapResponse);
+        const mapName = map.map_name || map.hotel_id;
+        const floor = Number(map.floor);
+        const asset = await fetchChassisRaster(mapName, floor);
+        return writeChassisMapSnapshot(map, normalizeMarkers(chassisResults(markerResponse)), asset);
+    })();
+    chassisMapRefreshPromise = refresh;
+    try {
+        return await refresh;
+    } finally {
+        if (chassisMapRefreshPromise === refresh) chassisMapRefreshPromise = null;
+    }
+}
+
+async function getChassisMapSnapshot({ forceRefresh = false } = {}) {
+    if (forceRefresh) return refreshChassisMapSnapshot();
+    if (chassisMapRefreshPromise) {
+        try {
+            await chassisMapRefreshPromise;
+        } catch {
+            // Startup refresh failure is handled by the persisted snapshot below.
+        }
+    }
+    try {
+        return readChassisMapSnapshot();
+    } catch (cacheError) {
+        try {
+            return await refreshChassisMapSnapshot();
+        } catch (refreshError) {
+            throw new Error(`本地地图快照不可用 (${cacheError.message})，底盘更新也失败 (${refreshError.message})`);
+        }
+    }
+}
+
+async function getCachedChassisRaster(mapName, floor) {
+    try {
+        readChassisMapSnapshot(mapName, floor);
+    } catch {
+        await refreshChassisMapSnapshot();
+    }
+    const paths = chassisMapCachePaths(mapName, floor);
+    const image = fs.readFileSync(paths.image);
+    return { image, ...pngDimensions(image) };
 }
 
 function currentPoseAtMarker(statusInfo, marker) {

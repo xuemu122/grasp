@@ -150,7 +150,7 @@
         <div class="card chassis-map-card">
             <div class="card-title">
                 <span>底盘地图与点位 <span class="count" id="chassisMarkerCount">0 个点位</span></span>
-                <button class="btn btn-primary btn-sm" type="button" onclick="loadChassisMap()">刷新地图</button>
+                <button class="btn btn-primary btn-sm" type="button" onclick="loadChassisMap(true)">刷新地图</button>
             </div>
             <div class="map-toolbar">
                 <select class="select-box" id="chassisMapFloor" onchange="renderChassisMap()">
@@ -533,11 +533,12 @@
             select.value = selected || 'yaojia1';
         }
 
-        async function loadChassisMap() {
+        async function loadChassisMap(forceRefresh = false) {
             const status = document.getElementById('chassisMapStatus');
-            status.textContent = '正在读取底盘地图...';
+            status.textContent = forceRefresh ? '正在从底盘更新地图...' : '正在读取本地地图...';
             try {
-                const res = await adminFetch('/api/chassis/map', { cache: 'no-store', preserveSession: true });
+                const endpoint = forceRefresh ? '/api/chassis/map?refresh=1' : '/api/chassis/map';
+                const res = await adminFetch(endpoint, { cache: 'no-store', preserveSession: true });
                 const json = await res.json();
                 if (res.status === 401) throw new Error('盒子端管理员会话配置不一致');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '地图读取失败');
@@ -545,7 +546,10 @@
                 const map = chassisMapData.map || {};
                 const markers = chassisMapData.markers || [];
                 document.getElementById('chassisMarkerCount').textContent = `${markers.length} 个点位`;
-                const rasterStatus = chassisMapData.raster?.available ? '栅格已加载' : '栅格不可用，显示坐标网格';
+                const raster = chassisMapData.raster || {};
+                const rasterStatus = raster.available
+                    ? '栅格已加载'
+                    : `栅格不可用，显示坐标网格${raster.error ? `（${raster.error}）` : ''}`;
                 status.textContent = `${map.map_name || map.hotel_id || '当前地图'} · 第${map.floor || '-'}层 · ${rasterStatus}`;
 
                 const floorSelect = document.getElementById('chassisMapFloor');
