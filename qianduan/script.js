@@ -460,6 +460,7 @@ async function submitOrder() {
     const payload = {
         type: 'grab',
         orderId: orderId,
+        completionToken: prepared.completionToken,
         items: items.map(i => {
             const preparedItem = preparedItems.get(String(i.id));
             return {

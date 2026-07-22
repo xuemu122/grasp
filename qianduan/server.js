@@ -1634,10 +1634,21 @@ async function handleGrabCommand(ws, msg) {
         return;
     }
 
+    let orderItems = msg.items;
+    if (msg.completionToken) {
+        const preparedOrder = readOrderToken(msg.completionToken);
+        if (preparedOrder && preparedOrder.orderId === orderId && Array.isArray(preparedOrder.items)) {
+            orderItems = preparedOrder.items;
+            log(`🔐 订单 ${orderId} 已从签名凭证恢复货架层和底盘点位`);
+        } else {
+            log(`⚠️ 订单 ${orderId} 的签名凭证无效，改用 WebSocket items`);
+        }
+    }
+
     let items;
     let totalUnits;
     try {
-        ({ items, totalUnits } = normalizeOrderItems(msg.items));
+        ({ items, totalUnits } = normalizeOrderItems(orderItems));
     } catch (error) {
         sendMessage(ws, { type: 'error', message: error.message });
         return;

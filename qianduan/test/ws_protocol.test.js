@@ -160,7 +160,14 @@ test('WebSocket real mode navigates before worker startup, moves to each layer, 
     const dataFile = path.join(tempDir, 'products.json');
     const shelfLayersFile = path.join(tempDir, 'shelf_layers.json');
     fs.writeFileSync(dataFile, JSON.stringify({
-        products: []
+        products: [{
+            id: 1,
+            name: '云端咖啡',
+            stock: 10,
+            status: 1,
+            location: '测试区A货架第2层',
+            chassis_marker: 'shelf-a'
+        }]
     }));
     fs.writeFileSync(shelfLayersFile, JSON.stringify({
         layers: {
@@ -293,11 +300,20 @@ test('WebSocket real mode navigates before worker startup, moves to each layer, 
     );
     assert.equal(objectError.message, 'JSON 指令必须是对象');
 
-    const orderId = 'ORD-TEST123';
+    const prepareResponse = await fetch(`http://127.0.0.1:${port}/api/orders/prepare`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: [{ id: 1, name: '云端咖啡', qty: 2 }] })
+    });
+    const preparedOrder = await prepareResponse.json();
+    assert.equal(prepareResponse.status, 200);
+    assert.equal(preparedOrder.items[0].chassis_marker, 'shelf-a');
+    const orderId = preparedOrder.orderId;
     ws.send(JSON.stringify({
         type: 'grab',
         orderId,
-        items: [{ id: 999999, name: '云端咖啡', qty: 2, emoji: 'coffee', shelf_layer: 2, chassis_marker: 'shelf-a' }]
+        completionToken: preparedOrder.completionToken,
+        items: [{ id: 1, name: '云端咖啡', qty: 2 }]
     }));
     const started = await collector.waitFor(
         (message) => message.type === 'status' && message.status === 'started' && message.orderId === orderId
@@ -318,6 +334,7 @@ test('WebSocket real mode navigates before worker startup, moves to each layer, 
     const workerStartIndex = serverOutput.indexOf('启动常驻抓取 worker');
     assert.ok(chassisMoveIndex >= 0, serverOutput);
     assert.ok(workerStartIndex > chassisMoveIndex, serverOutput);
+    assert.match(serverOutput, /已从签名凭证恢复货架层和底盘点位/);
     assert.deepEqual(commands, ['__layer_2__', '云端咖啡', '__layer_2__', '云端咖啡']);
     assert.equal(fakeChassis.commands.filter((command) => command.startsWith('/api/move?')).length, 1);
     assert.equal(collector.messages.some((message) => message.type === 'robot_log'), false);
