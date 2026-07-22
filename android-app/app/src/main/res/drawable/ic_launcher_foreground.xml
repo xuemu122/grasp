@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 购物袋图标 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M36,36 L36,32 C36,24 44,20 54,20 C64,20 72,24 72,32 L72,36 M30,36 L78,36 L78,86 C78,88 76,90 74,90 L34,90 C32,90 30,88 30,86 Z" />
+    <path
+        android:fillColor="#2196F3"
+        android:pathData="M42,48 L42,44 M66,48 L66,44" />
+</vector>

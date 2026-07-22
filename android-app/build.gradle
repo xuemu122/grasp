@@ -1,0 +1,2 @@
+// Put repositories and dependencies in settings.gradle with pluginManagement.
+// This root build.gradle is intentionally empty.
