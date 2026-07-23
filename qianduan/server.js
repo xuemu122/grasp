@@ -921,12 +921,28 @@ function sendMessage(ws, message) {
     }
 }
 
+function currentRobotOperation() {
+    if (chassisNavigationPromise) return { status: 'chassis-moving', label: '底盘正在运动' };
+    if (robotStowPromise) return { status: 'stowing', label: '机械臂正在收起' };
+    if (activeOrderId) return { status: 'busy', label: `订单 ${activeOrderId} 正在执行` };
+    if (robotFilterPreviewPromise) return { status: 'busy', label: '正在采集层板过滤预览' };
+    return null;
+}
+
 function currentRobotStatus() {
-    if (robotStowPromise) return 'stowing';
-    if (chassisNavigationPromise) return 'chassis-moving';
-    if (activeOrderId) return 'busy';
+    const operation = currentRobotOperation();
+    if (operation) return operation.status;
     if (!ROBOT_GRASP_REAL) return 'simulated';
     return robotWorkerReady ? 'ready' : 'standby';
+}
+
+function rejectIfRobotBusy(ws, action, responseType = 'error') {
+    const operation = currentRobotOperation();
+    if (!operation) return false;
+    const response = { type: responseType, message: `${operation.label}，暂不能${action}` };
+    if (responseType !== 'error') response.status = 'error';
+    sendMessage(ws, response);
+    return true;
 }
 
 wss.on('connection', (ws) => {
@@ -974,22 +990,7 @@ async function handleFilterPreviewCommand(ws) {
         return;
     }
 
-    if (activeOrderId) {
-        sendMessage(ws, { type: 'filter-preview', status: 'error', message: `订单 ${activeOrderId} 正在执行，请稍后再试` });
-        return;
-    }
-    if (robotStowPromise) {
-        sendMessage(ws, { type: 'filter-preview', status: 'error', message: '机械臂正在收起，请稍后再试' });
-        return;
-    }
-    if (chassisNavigationPromise) {
-        sendMessage(ws, { type: 'filter-preview', status: 'error', message: '底盘正在运动，请稍后再试' });
-        return;
-    }
-    if (robotFilterPreviewPromise) {
-        sendMessage(ws, { type: 'filter-preview', status: 'error', message: '已有过滤预览正在执行，请稍后再试' });
-        return;
-    }
+    if (rejectIfRobotBusy(ws, '采集过滤预览', 'filter-preview')) return;
 
     let worker;
     try {
@@ -1554,22 +1555,7 @@ async function handleStowCommand(ws) {
         sendStatus(ws, 'completed', { message: '模拟模式无需收起' });
         return;
     }
-    if (activeOrderId) {
-        sendMessage(ws, { type: 'error', message: `订单 ${activeOrderId} 正在执行，完成后再收起` });
-        return;
-    }
-    if (chassisNavigationPromise) {
-        sendMessage(ws, { type: 'error', message: '底盘正在运动，请稍后再收起' });
-        return;
-    }
-    if (robotStowPromise) {
-        sendMessage(ws, { type: 'error', message: '机械臂正在收起，请勿重复发送' });
-        return;
-    }
-    if (robotFilterPreviewPromise) {
-        sendMessage(ws, { type: 'error', message: '正在采集层板过滤预览，请稍后再试' });
-        return;
-    }
+    if (rejectIfRobotBusy(ws, '手动收起')) return;
     if (!robotWorker || robotWorker.exitCode !== null) {
         sendStatus(ws, 'completed', { message: '机器人 worker 未启动，无需收起' });
         return;
@@ -1617,13 +1603,8 @@ async function handleStowCommand(ws) {
 
 // ========== 处理移动到层命令 ==========
 async function handleGotoLayerCommand(ws, msg) {
+    if (rejectIfRobotBusy(ws, '移动机械臂')) return;
     try {
-        if (chassisNavigationPromise) {
-            throw new Error('底盘正在运动，暂不能移动机械臂或接收新订单');
-        }
-        if (robotFilterPreviewPromise) {
-            throw new Error('正在采集层板过滤预览，请稍后再试');
-        }
         const layerIndex = await resolveLayerIndex(msg);
         if (!layerIndex) {
             sendMessage(ws, { type: 'error', message: '请提供 productName/productId 或 layer 参数' });
@@ -1684,6 +1665,56 @@ async function returnRobotToCharge(ws, orderId) {
     await navigateChassisToMarker(CHASSIS_CHARGE_MARKER, { arriveOnDocking: true });
 }
 
+function resolveOrderItems(msg, orderId) {
+    let orderItems = msg.items;
+    if (!msg.completionToken) return normalizeOrderItems(orderItems);
+
+    const preparedOrder = readOrderToken(msg.completionToken);
+    if (preparedOrder && preparedOrder.orderId === orderId && Array.isArray(preparedOrder.items)) {
+        orderItems = preparedOrder.items;
+        log(`🔐 订单 ${orderId} 已从签名凭证恢复货架层和底盘点位`);
+    } else {
+        log(`⚠️ 订单 ${orderId} 的签名凭证无效，改用 WebSocket items`);
+    }
+    return normalizeOrderItems(orderItems);
+}
+
+async function executeOrderItems(ws, orderId, items, totalUnits) {
+    let completedUnits = 0;
+    const productsById = ROBOT_GRASP_REAL
+        ? new Map(readProducts().map((product) => [String(product.id), product]))
+        : null;
+    for (const item of items) {
+        for (let itemNo = 1; itemNo <= item.qty; itemNo++) {
+            const progressBase = (completedUnits / totalUnits) * 100;
+            if (ROBOT_GRASP_REAL) {
+                await runRealGrab(
+                    ws,
+                    orderId,
+                    item,
+                    progressBase,
+                    totalUnits,
+                    itemNo,
+                    productsById.get(String(item.id)),
+                );
+            } else {
+                await runSimulatedGrab(ws, orderId, item, progressBase, totalUnits, itemNo);
+            }
+            completedUnits += 1;
+        }
+    }
+}
+
+async function completeOrder(ws, orderId) {
+    await returnRobotToCharge(ws, orderId);
+    const autoReturned = ROBOT_GRASP_REAL && ROBOT_AUTO_RETURN_CHARGE;
+    const message = autoReturned
+        ? '所有商品抓取完成，机器人已收起并回充'
+        : '所有商品抓取完成';
+    sendStatus(ws, 'completed', { orderId, message, progress: 100 });
+    log(`✅ 订单 ${orderId} 处理完成${autoReturned ? '，已回充' : ''}`);
+}
+
 // ========== 处理抓取命令 ==========
 async function handleGrabCommand(ws, msg) {
     const orderId = String(msg.orderId || '').trim();
@@ -1692,41 +1723,15 @@ async function handleGrabCommand(ws, msg) {
         return;
     }
 
-    let orderItems = msg.items;
-    if (msg.completionToken) {
-        const preparedOrder = readOrderToken(msg.completionToken);
-        if (preparedOrder && preparedOrder.orderId === orderId && Array.isArray(preparedOrder.items)) {
-            orderItems = preparedOrder.items;
-            log(`🔐 订单 ${orderId} 已从签名凭证恢复货架层和底盘点位`);
-        } else {
-            log(`⚠️ 订单 ${orderId} 的签名凭证无效，改用 WebSocket items`);
-        }
-    }
-
     let items;
     let totalUnits;
     try {
-        ({ items, totalUnits } = normalizeOrderItems(orderItems));
+        ({ items, totalUnits } = resolveOrderItems(msg, orderId));
     } catch (error) {
         sendMessage(ws, { type: 'error', message: error.message });
         return;
     }
-    if (robotStowPromise) {
-        sendMessage(ws, { type: 'error', message: '机械臂正在收起，请稍后再试' });
-        return;
-    }
-    if (chassisNavigationPromise) {
-        sendMessage(ws, { type: 'error', message: '底盘正在运动，暂不接受新订单' });
-        return;
-    }
-    if (robotFilterPreviewPromise) {
-        sendMessage(ws, { type: 'error', message: '正在采集层板过滤预览，请稍后再试' });
-        return;
-    }
-    if (activeOrderId) {
-        sendMessage(ws, { type: 'error', message: `机器人正在处理订单 ${activeOrderId}，请稍后再试` });
-        return;
-    }
+    if (rejectIfRobotBusy(ws, '提交新订单')) return;
 
     log(`🤖 开始处理订单 ${orderId}，共 ${totalUnits} 件商品`);
     activeOrderId = orderId;
@@ -1738,26 +1743,8 @@ async function handleGrabCommand(ws, msg) {
             message: '订单已接收'
         });
 
-        let completedUnits = 0;
-        for (let i = 0; i < items.length; i++) {
-            const item = items[i];
-            for (let n = 0; n < item.qty; n++) {
-                const progressBase = (completedUnits / totalUnits) * 100;
-                if (ROBOT_GRASP_REAL) {
-                    await runRealGrab(ws, orderId, item, progressBase, totalUnits, n + 1);
-                } else {
-                    await runSimulatedGrab(ws, orderId, item, progressBase, totalUnits, n + 1);
-                }
-                completedUnits += 1;
-            }
-        }
-
-        await returnRobotToCharge(ws, orderId);
-        const completionMessage = ROBOT_GRASP_REAL && ROBOT_AUTO_RETURN_CHARGE
-            ? '所有商品抓取完成，机器人已收起并回充'
-            : '所有商品抓取完成';
-        sendStatus(ws, 'completed', { orderId, message: completionMessage, progress: 100 });
-        log(`✅ 订单 ${orderId} 处理完成${ROBOT_AUTO_RETURN_CHARGE ? '，已回充' : ''}`);
+        await executeOrderItems(ws, orderId, items, totalUnits);
+        await completeOrder(ws, orderId);
     } catch (e) {
         log(`❌ 订单 ${orderId} 失败: ${e.message}`);
         sendStatus(ws, 'error', { orderId, message: e.message });
@@ -1794,7 +1781,7 @@ async function runSimulatedGrab(ws, orderId, item, progressBase, totalUnits, ite
     log(`  ✅ ${label} 模拟完成`);
 }
 
-async function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo) {
+async function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo, product) {
     const itemName = item.name;
     const label = item.qty > 1 ? `${itemName} (${itemNo}/${item.qty})` : itemName;
     const progressStep = 100 / totalUnits;
@@ -1808,7 +1795,6 @@ async function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo) 
         message: `正在查询 ${label} 的货架位置...`
     });
 
-    const product = readProducts().find((candidate) => String(candidate.id) === String(item.id));
     const chassisMarker = item.chassis_marker || (product && product.chassis_marker) || '';
     const chassisNavigationEnabled = readChassisSettings().navigation_enabled;
     if (chassisNavigationEnabled && !chassisMarker) {

@@ -103,6 +103,10 @@ DRINK_CLASS_IDS = set(range(70, 78)) | set(range(80, 87))
 # 当前默认使用电流反馈柔性抓取；原侧抓/上抓固定手势仍可通过 HAND_GRASP_MODE=bottle/auto 保留。
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "flex").lower()
 DETECTION_STABILITY_IOU = float(os.getenv("DETECTION_STABILITY_IOU", "0.35"))
+DETECTION_CAPTURE_FRAMES = max(1, int(os.getenv("DETECTION_CAPTURE_FRAMES", "10")))
+DETECTION_WARMUP_FRAMES = max(0, int(os.getenv("DETECTION_WARMUP_FRAMES", "2")))
+DETECTION_EARLY_STOP_FRAMES = max(0, int(os.getenv("DETECTION_EARLY_STOP_FRAMES", "6")))
+DETECTION_EARLY_STOP_SUPPORT = max(1, int(os.getenv("DETECTION_EARLY_STOP_SUPPORT", "5")))
 TARGET_PRODUCT_QUERY = os.getenv("TARGET_PRODUCT_QUERY", os.getenv("TARGET_NAME", "")).strip()
 SHELF_GRASP_AUTO_ONCE = os.getenv("SHELF_GRASP_AUTO_ONCE", "0").lower() in ("1", "true", "yes", "on")
 SHELF_GRASP_WORKER = os.getenv("SHELF_GRASP_WORKER", "0").lower() in ("1", "true", "yes", "on")
@@ -1389,6 +1393,93 @@ def _save_filter_preview(camera, locator, transformer, flange_pose, layer_z_m, l
     return report
 
 
+def _handle_worker_command(cmd, arm, hand, camera, locator, transformer, waiting_at_place):
+    """Handle one stdin control command before the next worker grab.
+
+    Returns ``(action, waiting_at_place, target)`` where action is one of
+    ``continue``, ``stow``, ``quit`` or ``target``.
+    """
+    global _current_layer_idx
+
+    if cmd in ("__stow_pose__", "__safe_stow__"):
+        print("[前端常驻模式] 收到底盘移动前安全收起指令", flush=True)
+        if go_to_stow_pose(arm):
+            print("[前端常驻模式][完成] 已到达收起姿态", flush=True)
+        else:
+            print("[前端常驻模式][失败] 移动到收起姿态失败", flush=True)
+        return "continue", False, None
+
+    if cmd in ("**stow**", "__stow__", "__shutdown__"):
+        print("[前端常驻模式] 收到收起指令")
+        go_to_stow_pose(arm)
+        return "stow", False, None
+
+    if cmd in ("__quit__", "__exit__"):
+        print("[前端常驻模式] 收到退出指令, 不自动收起")
+        return "quit", waiting_at_place, None
+
+    if cmd in ("__filter_preview__", "__inspect_filter__"):
+        current_layer_z_m = None
+        if _current_layer_idx in _shelf_layer_poses:
+            current_layer_z_m = _shelf_layer_poses[_current_layer_idx][0][2] / 1000.0
+        _save_filter_preview(
+            camera,
+            locator,
+            transformer,
+            arm.get_pose(),
+            current_layer_z_m,
+            _current_layer_idx,
+        )
+        return "continue", waiting_at_place, None
+
+    layer_match = re.match(r'^__layer_(\d+)__$', cmd)
+    if layer_match:
+        target_layer = int(layer_match.group(1))
+        print(f"[前端常驻模式] 正在移动到第{target_layer}层...", flush=True)
+        move_to_layer = go_to_layer_smooth_from_place if waiting_at_place else go_to_layer
+        if move_to_layer(arm, target_layer):
+            _current_layer_idx = target_layer
+            if hand is not None:
+                hand.open()
+                time.sleep(MOTION_SETTLE_S)
+            print(f"[前端常驻模式][完成] 已到达第{target_layer}层")
+            return "continue", False, None
+        print(f"[前端常驻模式][失败] 移动到第{target_layer}层失败")
+        return "continue", waiting_at_place, None
+
+    movel_match = re.match(
+        r'^__movel_([\d.\-]+),([\d.\-]+),([\d.\-]+),'
+        r'([\d.\-]+),([\d.\-]+),([\d.\-]+)__$',
+        cmd,
+    )
+    if movel_match:
+        vals = [float(value) for value in movel_match.groups()]
+        print(f"[前端常驻模式][完成] 移动到指定位姿: {vals}")
+        if arm.movel(*vals, speed=100):
+            print("[前端常驻模式][完成] 已到达目标位姿")
+            return "continue", False, None
+        print("[前端常驻模式][失败] 移动到指定位姿失败")
+        return "continue", waiting_at_place, None
+
+    if not cmd:
+        return "continue", waiting_at_place, None
+    return "target", waiting_at_place, cmd
+
+
+def _stable_target_seen(frame_detections, target_query):
+    """Return true when enough frames support at least one requested target."""
+    if not DETECTION_EARLY_STOP_FRAMES or len(frame_detections) < DETECTION_EARLY_STOP_FRAMES:
+        return False
+    fused, tracks = _fuse_detection_tracks(frame_detections, DETECTION_STABILITY_IOU)
+    if target_query:
+        target_ids = {
+            detection.class_id
+            for detection in _filter_detections_by_target_query(fused, target_query)
+        }
+        tracks = [track for track in tracks if track["class_id"] in target_ids]
+    return any(len(track["items"]) >= DETECTION_EARLY_STOP_SUPPORT for track in tracks)
+
+
 def main():
     global _current_layer_idx
 
@@ -1510,58 +1601,15 @@ def main():
                     print("[前端常驻模式] stdin 已关闭, 保持使能并退出程序")
                     break
                 cmd = cmd.strip()
-                if cmd in ("__stow_pose__", "__safe_stow__"):
-                    print("[前端常驻模式] 收到底盘移动前安全收起指令", flush=True)
-                    if go_to_stow_pose(arm):
-                        waiting_at_place = False
-                        print("[前端常驻模式][完成] 已到达收起姿态", flush=True)
-                    else:
-                        print("[前端常驻模式][失败] 移动到收起姿态失败", flush=True)
+                action, waiting_at_place, target = _handle_worker_command(
+                    cmd, arm, hand, camera, locator, transformer, waiting_at_place
+                )
+                if action == "continue":
                     continue
-                if cmd in ("**stow**", "__stow__", "__shutdown__"):
-                    print("[前端常驻模式] 收到收起指令")
-                    go_to_stow_pose(arm)
-                    worker_stow_requested = True
+                if action in ("stow", "quit"):
+                    worker_stow_requested = action == "stow"
                     break
-                if cmd in ("__quit__", "__exit__"):
-                    print("[前端常驻模式] 收到退出指令, 不自动收起")
-                    break
-                if cmd in ("__filter_preview__", "__inspect_filter__"):
-                    current_layer_z_m = None
-                    if _current_layer_idx in _shelf_layer_poses:
-                        current_layer_z_m = _shelf_layer_poses[_current_layer_idx][0][2] / 1000.0
-                    _save_filter_preview(camera, locator, transformer, arm.get_pose(), current_layer_z_m, _current_layer_idx)
-                    continue
-                # 层移动命令: __layer_N__ -> 移动到第N层
-                layer_match = re.match(r'^__layer_(\d+)__$', cmd)
-                if layer_match:
-                    target_layer = int(layer_match.group(1))
-                    print(f"[前端常驻模式] 正在移动到第{target_layer}层...", flush=True)
-                    move_to_layer = go_to_layer_smooth_from_place if waiting_at_place else go_to_layer
-                    if move_to_layer(arm, target_layer):
-                        waiting_at_place = False
-                        _current_layer_idx = target_layer
-                        if hand is not None:
-                            hand.open()
-                            time.sleep(MOTION_SETTLE_S)
-                        print(f"[前端常驻模式][完成] 已到达第{target_layer}层")
-                    else:
-                        print(f"[前端常驻模式][失败] 移动到第{target_layer}层失败")
-                    continue
-                # 直接位姿移动: __movel_x,y,z,rx,ry,rz__ 
-                movel_match = re.match(r'^__movel_([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+),([\d.\-]+)__$', cmd)
-                if movel_match:
-                    vals = [float(v) for v in movel_match.groups()]
-                    print(f"[前端常驻模式][完成] 移动到指定位姿: {vals}")
-                    if arm.movel(vals[0], vals[1], vals[2], vals[3], vals[4], vals[5], speed=100):
-                        waiting_at_place = False
-                        print(f"[前端常驻模式][完成] 已到达目标位姿")
-                    else:
-                        print(f"[前端常驻模式][失败] 移动到指定位姿失败")
-                    continue
-                if not cmd:
-                    continue
-                target_query = cmd
+                target_query = target
                 print(f"[前端常驻模式] 目标:{target_query}, 开始抓取")
             elif SHELF_GRASP_AUTO_ONCE:
                 cmd = ""
@@ -1708,20 +1756,21 @@ def main():
             transformer.set_flange(flange_pose)
 
             # ── 多帧择优拍照：快速连拍 N 帧, 按光照评分选最佳 ──
-            N_FRAMES = 10            # 采集帧数
-            WARMUP = 2              # 前 N 帧丢弃 (等自动曝光稳定)
+            frame_limit = DETECTION_CAPTURE_FRAMES
+            warmup_frames = DETECTION_WARMUP_FRAMES
             best_img, best_depth = None, None
             best_score, best_grade = -1, ""
             best_idx = -1
             frame_detections = []
             captured_frames = []
 
-            print(f"拍照中 ({N_FRAMES + WARMUP} 帧, 丢弃前 {WARMUP})...", end=" ", flush=True)
-            for i in range(N_FRAMES + WARMUP):
+            print(f"拍照中 (最多 {frame_limit + warmup_frames} 帧, 丢弃前 {warmup_frames})...", end=" ", flush=True)
+            capture_started = time.monotonic()
+            for i in range(frame_limit + warmup_frames):
                 c, d = camera.read()
                 if c is None:
                     continue
-                if i < WARMUP:
+                if i < warmup_frames:
                     continue
                 score, grade, _, _, _, _ = _assess_lighting(c)
                 if score > best_score:
@@ -1731,8 +1780,12 @@ def main():
                 dets = locator.process_frame(c, d)
                 frame_detections.append(dets)
                 captured_frames.append((c, d))
+                if _stable_target_seen(frame_detections, target_query):
+                    print(f"稳定目标已确认({len(frame_detections)}帧), 提前结束; ", end="")
+                    break
                 # 反光和过暗都有惩罚, 纯正常最高; 有反光也能选出相对最好的
-            print(f"完成")
+            capture_elapsed_s = time.monotonic() - capture_started
+            print(f"完成 (YOLO={len(frame_detections)}帧, {capture_elapsed_s:.2f}s)")
             print(f"  → 第 {best_idx} 帧 评分: {best_grade} ({best_score:.0f}分)")
 
             if best_img is None:
@@ -1748,7 +1801,7 @@ def main():
                     reverse=True,
                 )[:6]
                 stable_text = " | ".join(
-                    f"{t['items'][0][1].class_name}:frames={len(t['items'])}/{N_FRAMES},"
+                    f"{t['items'][0][1].class_name}:frames={len(t['items'])}/{len(frame_detections)},"
                     f"max={max(item.confidence for _, item in t['items']):.2f}"
                     for t in stable
                 )

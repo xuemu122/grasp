@@ -13,6 +13,7 @@ let shelfLayers = {};        // 货架层位姿缓存 { "1": {pose:[...], name:"
 let ws = null;
 let wsConnected = false;
 let robotAcceptingOrders = true;
+let catalogRefreshPromise = null;
 
 function syncOrderButton() {
     const btnSubmit = document.getElementById('btnSubmit');
@@ -121,9 +122,7 @@ function handleWSMessage(msg) {
 // ========== 初始化 ==========
 async function init() {
     connectWebSocket();
-    await loadShelfLayers();
-    await loadCategories();
-    await loadProducts();
+    await refreshCatalog();
     bindSearch();
     window.addEventListener('focus', refreshCatalog);
     document.addEventListener('visibilitychange', () => {
@@ -135,11 +134,26 @@ async function init() {
 }
 
 async function refreshCatalog() {
-    await Promise.all([loadShelfLayers(), loadCategories(), loadProducts()]);
+    if (catalogRefreshPromise) return catalogRefreshPromise;
+    const refresh = Promise.all([
+        loadShelfLayers(),
+        loadCategories(false),
+        loadProducts(false),
+    ]).then(() => {
+        updateCartUI();
+        renderCategories();
+        renderProducts();
+    });
+    catalogRefreshPromise = refresh;
+    try {
+        return await refresh;
+    } finally {
+        if (catalogRefreshPromise === refresh) catalogRefreshPromise = null;
+    }
 }
 
 // ========== 加载分类 ==========
-async function loadCategories() {
+async function loadCategories(render = true) {
     try {
         const res = await fetch('/api/categories');
         const data = await res.json();
@@ -150,11 +164,11 @@ async function loadCategories() {
         console.error('加载分类失败:', e);
         categories = [];
     }
-    renderCategories();
+    if (render) renderCategories();
 }
 
 // ========== 加载商品 ==========
-async function loadProducts() {
+async function loadProducts(render = true) {
     try {
         const res = await fetch('/api/products');
         const data = await res.json();
@@ -169,13 +183,16 @@ async function loadProducts() {
                     cart[id] = Number(product.stock);
                 }
             }
-            updateCartUI();
         }
     } catch (e) {
         console.error('加载商品失败:', e);
         products = [];
     }
-    renderProducts();
+    if (render) {
+        updateCartUI();
+        renderCategories();
+        renderProducts();
+    }
 }
 
 // ========== 渲染分类导航 ==========
@@ -183,6 +200,10 @@ function renderCategories() {
     const list = document.getElementById('categoryList');
     if (!list) return;
 
+    const categoryCounts = new Map();
+    for (const product of products) {
+        categoryCounts.set(product.category, (categoryCounts.get(product.category) || 0) + 1);
+    }
     const items = [
         { key: 'all', label: '全部商品' },
         ...categories.map(c => ({ key: c, label: c }))
@@ -193,7 +214,7 @@ function renderCategories() {
              data-category="${item.key}"
              onclick="selectCategory('${item.key}')">
             <span class="cat-name">${item.label}</span>
-            <span class="cat-count">${item.key === 'all' ? products.length : products.filter(p => p.category === item.key).length}</span>
+            <span class="cat-count">${item.key === 'all' ? products.length : (categoryCounts.get(item.key) || 0)}</span>
         </div>
     `).join('');
 }
@@ -254,9 +275,6 @@ function renderProducts() {
 
     const filtered = getFilteredProducts();
     if (countEl) countEl.textContent = `共 ${filtered.length} 件商品`;
-
-    // 更新分类计数
-    renderCategories();
 
     if (filtered.length === 0) {
         grid.innerHTML = `
