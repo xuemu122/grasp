@@ -111,6 +111,9 @@ TARGET_PRODUCT_QUERY = os.getenv("TARGET_PRODUCT_QUERY", os.getenv("TARGET_NAME"
 SHELF_GRASP_AUTO_ONCE = os.getenv("SHELF_GRASP_AUTO_ONCE", "0").lower() in ("1", "true", "yes", "on")
 SHELF_GRASP_WORKER = os.getenv("SHELF_GRASP_WORKER", "0").lower() in ("1", "true", "yes", "on")
 SHELF_GRASP_IDLE_STARTUP = os.getenv("SHELF_GRASP_IDLE_STARTUP", "0").lower() in ("1", "true", "yes", "on")
+LAYER_ENTRY_SHELF = "shelf"
+LAYER_ENTRY_STOW = "stow"
+LAYER_ENTRY_UNKNOWN = "unknown"
 TARGET_DEPTH_REFINE_RADIUS_PX = int(os.getenv("TARGET_DEPTH_REFINE_RADIUS_PX", "10"))
 TARGET_DEPTH_REFINE_MAX_DELTA_M = float(os.getenv("TARGET_DEPTH_REFINE_MAX_DELTA_M", "0.08"))
 DEPTH_GUARD_ENABLE = os.getenv("DEPTH_GUARD_ENABLE", "1").lower() in ("1", "true", "yes", "on")
@@ -741,8 +744,8 @@ def go_to_layer(arm: "DobotArm", layer_idx: int):
     return True
 
 
-def go_to_layer_smooth_from_place(arm: "DobotArm", layer_idx: int):
-    """放置后返回层位姿；先抬高避碰，再平滑经过高位过渡点。"""
+def go_to_layer_from_non_shelf_pose(arm: "DobotArm", layer_idx: int, visit_place_transition: bool = True):
+    """从放置/未知位姿安全进层；先抬高，再经高位过渡后垂直下落。"""
     if layer_idx not in _shelf_layer_poses:
         print(f"  [错误] 第{layer_idx}层未记录! 先用 l s 记录当前位姿")
         return False
@@ -759,8 +762,8 @@ def go_to_layer_smooth_from_place(arm: "DobotArm", layer_idx: int):
     try:
         cur = arm.get_pose()
     except Exception as e:
-        print(f"  [警告] 无法读取当前位姿, 回退为普通回层: {e}")
-        return go_to_layer(arm, layer_idx)
+        print(f"  [安全进层][中止] 无法读取当前位姿, 不发送运动命令: {e}")
+        return False
 
     z_candidates = [cur[2], target_z]
     if _place_transition_pose is not None:
@@ -782,10 +785,10 @@ def go_to_layer_smooth_from_place(arm: "DobotArm", layer_idx: int):
     if not lift_targets:
         lift_targets.append(max(cur[2], target_z))
 
-    print(f"\n[安全回层] 先原地抬高, 再回第{layer_idx}层 ({name})...")
+    print(f"\n[安全进层] 先原地抬高, 再进入第{layer_idx}层 ({name})...")
     lifted = False
     for idx, lift_z in enumerate(lift_targets, 1):
-        print(f"  [安全回层] 尝试抬高到 Z={lift_z:.0f}mm ({idx}/{len(lift_targets)})")
+        print(f"  [安全进层] 尝试抬高到 Z={lift_z:.0f}mm ({idx}/{len(lift_targets)})")
         if arm.movel(cur[0], cur[1], lift_z, cur[3], cur[4], cur[5], speed=80, cp=0):
             safe_z = lift_z
             lifted = True
@@ -795,10 +798,10 @@ def go_to_layer_smooth_from_place(arm: "DobotArm", layer_idx: int):
         except Exception:
             pass
     if not lifted:
-        print("  [安全回层] 原地抬高失败")
+        print("  [安全进层] 原地抬高失败")
         return False
 
-    if _place_transition_pose is not None:
+    if visit_place_transition and _place_transition_pose is not None:
         t_pose, t_name = _place_transition_pose
         print(f"\n[放置过渡点] 回程关节运动到 {t_name} ...")
         ok = arm.move_pose_safe(t_pose, joints=_place_transition_joints, speed=80)
@@ -820,6 +823,27 @@ def go_to_layer_smooth_from_place(arm: "DobotArm", layer_idx: int):
     return True
 
 
+def go_to_layer_from_stow(arm: "DobotArm", layer_idx: int):
+    """严格反向经过收起过渡点后再安全进层，禁止从折叠位直接做笛卡尔运动。"""
+    if not is_at_stow_pose(arm):
+        print("  [收起位进层][中止] 当前位姿不再匹配收起位, 不发送运动命令")
+        return False
+    if _place_transition_pose is None:
+        print("  [收起位进层][中止] 未记录放置过渡点, 不发送运动命令")
+        return False
+
+    transition_pose, transition_name = _place_transition_pose
+    print(f"\n[收起位进层] 先反向关节运动到 {transition_name} ...")
+    if not arm.move_pose_safe(
+        transition_pose,
+        joints=_place_transition_joints,
+        speed=80,
+    ):
+        print("  [收起位进层] 前往放置过渡点失败, 不继续进层")
+        return False
+    return go_to_layer_from_non_shelf_pose(arm, layer_idx, visit_place_transition=False)
+
+
 def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: float = 120.0):
     """先抬高再回到指定层, 用于避开放置点到货架层的直线路径"""
     if layer_idx not in _shelf_layer_poses:
@@ -830,8 +854,8 @@ def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: flo
     try:
         cur = arm.get_pose()
     except Exception as e:
-        print(f"  [警告] 无法读取当前位姿, 回退为直接 MovL: {e}")
-        return go_to_layer(arm, layer_idx)
+        print(f"  [安全返回][中止] 无法读取当前位姿, 不发送运动命令: {e}")
+        return False
 
     target_z = pose[2]
     allow_low_z = _layer_allows_low_z(layer_idx)
@@ -1394,21 +1418,22 @@ def _save_filter_preview(camera, locator, transformer, flange_pose, layer_z_m, l
     return report
 
 
-def _handle_worker_command(cmd, arm, hand, camera, locator, transformer, waiting_at_place):
+def _handle_worker_command(cmd, arm, hand, camera, locator, transformer, layer_entry_origin):
     """Handle one stdin control command before the next worker grab.
 
-    Returns ``(action, waiting_at_place, target)`` where action is one of
+    Returns ``(action, layer_entry_origin, target)`` where action is one of
     ``continue``, ``stow``, ``poweroff``, ``quit`` or ``target``.
     """
     global _current_layer_idx
 
     if cmd in ("__stow_pose__", "__safe_stow__"):
         print("[前端常驻模式] 收到底盘移动前安全收起指令", flush=True)
-        if go_to_stow_pose(arm):
+        stowed = go_to_stow_pose(arm)
+        if stowed:
             print("[前端常驻模式][完成] 已到达收起姿态", flush=True)
         else:
             print("[前端常驻模式][失败] 移动到收起姿态失败", flush=True)
-        return "continue", False, None
+        return "continue", LAYER_ENTRY_STOW if stowed else LAYER_ENTRY_UNKNOWN, None
 
     if cmd in ("**stow**", "__stow__", "__shutdown__"):
         print("[前端常驻模式] 收到收起指令")
@@ -1417,11 +1442,11 @@ def _handle_worker_command(cmd, arm, hand, camera, locator, transformer, waiting
 
     if cmd in ("__poweroff__", "__shutdown_power__"):
         print("[前端常驻模式] 收到断电关闭指令, 保持当前位置并关闭硬件")
-        return "poweroff", waiting_at_place, None
+        return "poweroff", layer_entry_origin, None
 
     if cmd in ("__quit__", "__exit__"):
         print("[前端常驻模式] 收到退出指令, 不自动收起")
-        return "quit", waiting_at_place, None
+        return "quit", layer_entry_origin, None
 
     if cmd in ("__filter_preview__", "__inspect_filter__"):
         current_layer_z_m = None
@@ -1435,22 +1460,28 @@ def _handle_worker_command(cmd, arm, hand, camera, locator, transformer, waiting
             current_layer_z_m,
             _current_layer_idx,
         )
-        return "continue", waiting_at_place, None
+        return "continue", layer_entry_origin, None
 
     layer_match = re.match(r'^__layer_(\d+)__$', cmd)
     if layer_match:
         target_layer = int(layer_match.group(1))
         print(f"[前端常驻模式] 正在移动到第{target_layer}层...", flush=True)
-        move_to_layer = go_to_layer_smooth_from_place if waiting_at_place else go_to_layer
+        if layer_entry_origin == LAYER_ENTRY_SHELF:
+            move_to_layer = go_to_layer
+        elif layer_entry_origin == LAYER_ENTRY_STOW:
+            move_to_layer = go_to_layer_from_stow
+        else:
+            move_to_layer = go_to_layer_from_non_shelf_pose
         if move_to_layer(arm, target_layer):
             _current_layer_idx = target_layer
             if hand is not None:
                 hand.open()
                 time.sleep(MOTION_SETTLE_S)
             print(f"[前端常驻模式][完成] 已到达第{target_layer}层")
-            return "continue", False, None
+            return "continue", LAYER_ENTRY_SHELF, None
         print(f"[前端常驻模式][失败] 移动到第{target_layer}层失败")
-        return "continue", waiting_at_place, None
+        # 失败后当前位置可能停在任意中间点，下一次禁止直接横移进层。
+        return "continue", LAYER_ENTRY_UNKNOWN, None
 
     movel_match = re.match(
         r'^__movel_([\d.\-]+),([\d.\-]+),([\d.\-]+),'
@@ -1462,13 +1493,13 @@ def _handle_worker_command(cmd, arm, hand, camera, locator, transformer, waiting
         print(f"[前端常驻模式][完成] 移动到指定位姿: {vals}")
         if arm.movel(*vals, speed=100):
             print("[前端常驻模式][完成] 已到达目标位姿")
-            return "continue", False, None
+            return "continue", LAYER_ENTRY_UNKNOWN, None
         print("[前端常驻模式][失败] 移动到指定位姿失败")
-        return "continue", waiting_at_place, None
+        return "continue", LAYER_ENTRY_UNKNOWN, None
 
     if not cmd:
-        return "continue", waiting_at_place, None
-    return "target", waiting_at_place, cmd
+        return "continue", layer_entry_origin, None
+    return "target", layer_entry_origin, cmd
 
 
 def _stable_target_seen(frame_detections, target_query):
@@ -1591,8 +1622,8 @@ def main():
         auto_attempt_succeeded = False
         worker_stow_requested = False
         worker_poweroff_requested = False
-        # 待机启动时不知道机械臂当前位于哪条已规划路径上，首个进层命令必须先安全抬升。
-        waiting_at_place = SHELF_GRASP_IDLE_STARTUP
+        # 待机启动时不知道机械臂当前位于哪条已规划路径上，禁止直接横移进层。
+        layer_entry_origin = LAYER_ENTRY_UNKNOWN if SHELF_GRASP_IDLE_STARTUP else LAYER_ENTRY_SHELF
 
         def worker_fail(message: str):
             if SHELF_GRASP_WORKER:
@@ -1607,11 +1638,12 @@ def main():
                 print("\n[前端常驻模式] 等待商品名 (**stow**=收起并退出, __quit__=直接退出) ...", flush=True)
                 cmd = sys.stdin.readline()
                 if cmd == "":
-                    print("[前端常驻模式] stdin 已关闭, 保持使能并退出程序")
+                    print("[前端常驻模式] stdin 已关闭, 失去上级控制, 正在关闭硬件使能")
+                    worker_poweroff_requested = True
                     break
                 cmd = cmd.strip()
-                action, waiting_at_place, target = _handle_worker_command(
-                    cmd, arm, hand, camera, locator, transformer, waiting_at_place
+                action, layer_entry_origin, target = _handle_worker_command(
+                    cmd, arm, hand, camera, locator, transformer, layer_entry_origin
                 )
                 if action == "continue":
                     continue
@@ -2285,7 +2317,7 @@ def main():
                 print("  [停止] 放置失败, 本次抓取未完成")
                 worker_fail("放置失败")
                 continue
-            waiting_at_place = True
+            layer_entry_origin = LAYER_ENTRY_UNKNOWN
             time.sleep(MOTION_SETTLE_S)
             auto_attempt_succeeded = True
 
@@ -2302,13 +2334,12 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        if SHELF_GRASP_WORKER and not worker_stow_requested and not worker_poweroff_requested:
-            print("[前端常驻模式] 未收到收起指令, 保持连接/使能, 不主动断开")
-            return
         if SHELF_GRASP_WORKER and worker_stow_requested:
             print("[前端常驻模式] 已按收起指令到位, 跳过退出前二次收起")
         elif SHELF_GRASP_WORKER and worker_poweroff_requested:
             print("[前端常驻模式] 正在停止保持、断开灵巧手并关闭 DOBOT 使能")
+        elif SHELF_GRASP_WORKER:
+            print("[前端常驻模式] worker 即将退出, 不执行移动, 直接关闭硬件使能")
         elif SHELF_GRASP_AUTO_ONCE:
             print("[前端自动模式] 退出时不自动收起, 保持当前安全观察位/当前位置")
         else:

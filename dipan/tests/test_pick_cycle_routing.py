@@ -38,7 +38,7 @@ class PickCycleRoutingTests(unittest.TestCase):
                 side_effect=lambda arm, idx: transfer_calls.append(idx) or True,
             ),
             patch.object(shelf_grasp, "go_to_layer") as go_layer,
-            patch.object(shelf_grasp, "go_to_layer_smooth_from_place") as go_layer_from_place,
+            patch.object(shelf_grasp, "go_to_layer_from_non_shelf_pose") as go_layer_from_place,
         ):
             result = shelf_grasp.finish_pick_cycle(object(), hand, layer_idx)
 
@@ -90,24 +90,83 @@ class PickCycleRoutingTests(unittest.TestCase):
         go_to_layer.assert_not_called()
 
     def test_worker_product_name_passes_through(self):
-        action, waiting_at_place, target = shelf_grasp._handle_worker_command(
-            "云端咖啡", Mock(), FakeHand(), None, None, None, True
+        action, layer_entry_origin, target = shelf_grasp._handle_worker_command(
+            "云端咖啡", Mock(), FakeHand(), None, None, None, shelf_grasp.LAYER_ENTRY_UNKNOWN
         )
 
         self.assertEqual(action, "target")
-        self.assertTrue(waiting_at_place)
+        self.assertEqual(layer_entry_origin, shelf_grasp.LAYER_ENTRY_UNKNOWN)
         self.assertEqual(target, "云端咖啡")
 
     def test_worker_poweroff_exits_without_stow_motion(self):
         arm = Mock()
-        action, waiting_at_place, target = shelf_grasp._handle_worker_command(
-            "__poweroff__", arm, FakeHand(), None, None, None, True
+        action, layer_entry_origin, target = shelf_grasp._handle_worker_command(
+            "__poweroff__", arm, FakeHand(), None, None, None, shelf_grasp.LAYER_ENTRY_UNKNOWN
         )
 
         self.assertEqual(action, "poweroff")
-        self.assertTrue(waiting_at_place)
+        self.assertEqual(layer_entry_origin, shelf_grasp.LAYER_ENTRY_UNKNOWN)
         self.assertIsNone(target)
         arm.assert_not_called()
+
+    def test_worker_stow_forces_reverse_transition_before_next_layer(self):
+        arm = Mock()
+        hand = FakeHand()
+        with (
+            patch.object(shelf_grasp, "MOTION_SETTLE_S", 0.0),
+            patch.object(shelf_grasp, "_current_layer_idx", 2),
+            patch.object(shelf_grasp, "go_to_stow_pose", return_value=True) as stow,
+            patch.object(shelf_grasp, "go_to_layer") as direct_move,
+            patch.object(shelf_grasp, "go_to_layer_from_non_shelf_pose") as unknown_move,
+            patch.object(shelf_grasp, "go_to_layer_from_stow", return_value=True) as stow_move,
+        ):
+            action, origin, target = shelf_grasp._handle_worker_command(
+                "__stow_pose__", arm, hand, None, None, None, shelf_grasp.LAYER_ENTRY_SHELF
+            )
+            self.assertEqual((action, origin, target),
+                             ("continue", shelf_grasp.LAYER_ENTRY_STOW, None))
+
+            action, origin, target = shelf_grasp._handle_worker_command(
+                "__layer_3__", arm, hand, None, None, None, origin
+            )
+
+        stow.assert_called_once_with(arm)
+        stow_move.assert_called_once_with(arm, 3)
+        direct_move.assert_not_called()
+        unknown_move.assert_not_called()
+        self.assertEqual((action, origin, target),
+                         ("continue", shelf_grasp.LAYER_ENTRY_SHELF, None))
+
+    def test_stow_entry_reverses_to_transition_before_cartesian_motion(self):
+        arm = Mock()
+        transition = ([118, 535, 572, 109, 85, -167], "place-transition")
+        arm.move_pose_safe.return_value = True
+        with (
+            patch.object(shelf_grasp, "_place_transition_pose", transition),
+            patch.object(shelf_grasp, "_place_transition_joints", [1, 2, 3, 4, 5, 6]),
+            patch.object(shelf_grasp, "is_at_stow_pose", return_value=True),
+            patch.object(shelf_grasp, "go_to_layer_from_non_shelf_pose", return_value=True) as enter_layer,
+        ):
+            self.assertTrue(shelf_grasp.go_to_layer_from_stow(arm, 3))
+
+        arm.move_pose_safe.assert_called_once_with(
+            transition[0], joints=[1, 2, 3, 4, 5, 6], speed=80
+        )
+        enter_layer.assert_called_once_with(arm, 3, visit_place_transition=False)
+
+    def test_safe_layer_entry_fails_closed_when_pose_is_unreadable(self):
+        arm = Mock()
+        arm.get_pose.side_effect = RuntimeError("pose unavailable")
+        with patch.object(
+            shelf_grasp,
+            "_shelf_layer_poses",
+            {3: ([-443, 28, 80, 145, 85, -39], "layer-3")},
+        ):
+            self.assertFalse(shelf_grasp.go_to_layer_from_non_shelf_pose(arm, 3))
+            self.assertFalse(shelf_grasp.go_to_layer_via_clearance(arm, 3))
+
+        arm.movel.assert_not_called()
+        arm.move_pose_safe.assert_not_called()
 
     def test_worker_layer_command_uses_safe_path_from_place(self):
         arm = Mock()
@@ -116,15 +175,15 @@ class PickCycleRoutingTests(unittest.TestCase):
             patch.object(shelf_grasp, "MOTION_SETTLE_S", 0.0),
             patch.object(shelf_grasp, "_current_layer_idx", 2),
             patch.object(shelf_grasp, "go_to_layer") as direct_move,
-            patch.object(shelf_grasp, "go_to_layer_smooth_from_place", return_value=True) as safe_move,
+            patch.object(shelf_grasp, "go_to_layer_from_non_shelf_pose", return_value=True) as safe_move,
         ):
-            action, waiting_at_place, target = shelf_grasp._handle_worker_command(
-                "__layer_3__", arm, hand, None, None, None, True
+            action, layer_entry_origin, target = shelf_grasp._handle_worker_command(
+                "__layer_3__", arm, hand, None, None, None, shelf_grasp.LAYER_ENTRY_UNKNOWN
             )
             self.assertEqual(shelf_grasp._current_layer_idx, 3)
 
         self.assertEqual(action, "continue")
-        self.assertFalse(waiting_at_place)
+        self.assertEqual(layer_entry_origin, shelf_grasp.LAYER_ENTRY_SHELF)
         self.assertIsNone(target)
         safe_move.assert_called_once_with(arm, 3)
         direct_move.assert_not_called()
