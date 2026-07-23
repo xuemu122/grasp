@@ -13,11 +13,11 @@ import math
 import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from tool_geometry import camera_capsule_strips
+from tool_geometry import camera_capsule_strips, hand_capsule_parts
 
 
 NOVA5_URDF = "/home/nvidia/grasp/dobot_ws/src/DOBOT_6Axis_ROS2_V4/dobot_rviz/urdf/nova5_robot.urdf"
@@ -58,6 +58,7 @@ class CapsuleSpec:
     a_local: np.ndarray
     b_local: np.ndarray
     radius_m: float
+    tool_group: Optional[str] = None
 
 
 def _rpy_to_rot(roll: float, pitch: float, yaw: float) -> np.ndarray:
@@ -151,14 +152,10 @@ class Nova5SelfCollisionGuard:
         urdf_path: str = NOVA5_URDF,
         srdf_path: str = NOVA5_SRDF,
         margin_m: float = 0.015,
-        tool_length_m: float = 0.25,
-        tool_radius_m: float = 0.075,
     ):
         self.urdf_path = urdf_path
         self.srdf_path = srdf_path
         self.margin_m = float(margin_m)
-        self.tool_length_m = float(tool_length_m)
-        self.tool_radius_m = float(tool_radius_m)
         self.joints = self._load_urdf_joints(urdf_path)
         self.disabled_pairs = self._load_disabled_pairs(srdf_path)
         self.disabled_pairs.add(tuple(sorted(("base_link", "Link2"))))
@@ -218,7 +215,7 @@ class Nova5SelfCollisionGuard:
         j6 = joints["joint6"].xyz
         l2_a, l2_b = _trim_segment(np.zeros(3), j3, 0.12, 0.03)
         l3_a, l3_b = _trim_segment(np.zeros(3), j4, 0.06, 0.03)
-        robot_and_hand = (
+        robot = (
             CapsuleSpec("base_link", "base_link", np.array([0.0, 0.0, 0.02]), np.array([0.0, 0.0, 0.24]), 0.12),
             CapsuleSpec("Link1", "Link1", np.array([0.0, 0.0, -0.05]), np.array([0.0, 0.0, 0.06]), 0.11),
             CapsuleSpec("Link2", "Link2", l2_a, l2_b, 0.075),
@@ -226,7 +223,18 @@ class Nova5SelfCollisionGuard:
             CapsuleSpec("Link4", "Link4", np.zeros(3), j5, 0.055),
             CapsuleSpec("Link5", "Link5", np.zeros(3), j6, 0.055),
             CapsuleSpec("Link6", "Link6", np.zeros(3), np.array([0.0, 0.0, 0.05]), 0.055),
-            CapsuleSpec("Link6", "tool_hand", np.zeros(3), np.array([0.0, 0.0, self.tool_length_m]), self.tool_radius_m),
+        )
+        hand = tuple(
+            CapsuleSpec(
+                "Link6",
+                group,
+                np.asarray(start, dtype=np.float64),
+                np.asarray(end, dtype=np.float64),
+                float(radius),
+                tool_group=group,
+            )
+            for group, capsules in hand_capsule_parts().items()
+            for start, end, radius in capsules
         )
         camera = tuple(
             CapsuleSpec(
@@ -235,16 +243,27 @@ class Nova5SelfCollisionGuard:
                 np.asarray(start, dtype=np.float64),
                 np.asarray(end, dtype=np.float64),
                 float(radius),
+                tool_group="tool_camera",
             )
             for start, end, radius in camera_capsule_strips()
         )
-        return robot_and_hand + camera
+        return robot + hand + camera
 
     def _make_check_pairs(self) -> Tuple[Tuple[int, int], ...]:
         pairs = []
         for i, j in itertools.combinations(range(len(self.capsules)), 2):
             a = self.capsules[i]
             b = self.capsules[j]
+            if a.tool_group and b.tool_group:
+                continue
+            if a.tool_group or b.tool_group:
+                robot_part = b if a.tool_group else a
+                # The tool is rigidly mounted through Link6 next to Link5. Their
+                # coarse envelopes overlap at the flange by construction.
+                if robot_part.link in ("Link5", "Link6"):
+                    continue
+                pairs.append((i, j))
+                continue
             if a.link == b.link:
                 continue
             if tuple(sorted((a.link, b.link))) in self.disabled_pairs:

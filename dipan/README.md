@@ -464,6 +464,8 @@ Q     跳过/退出
 
 从放置点或未知位姿前往下一层使用 `go_to_layer_from_non_shelf_pose()`；从收起位进层会先严格反向经过放置过渡点，再抬高、横移和垂直下落；抓取后的上撤使用 `go_to_layer_via_clearance()`。任何安全路径无法读取当前位姿时都会停止，不再回退为直接 `MovL`。
 
+自碰撞护栏使用 Nova5 连杆胶囊和完整末端包络共同检查：Aero 掌体、张开手指和腕部相机都会参与关节路径采样。默认尺寸可通过 `TOOL_HAND_LENGTH_Z_M`、`TOOL_HAND_BODY_DEPTH_X_M`、`TOOL_HAND_PALM_WIDTH_Y_M`、`TOOL_HAND_OPEN_WIDTH_Y_M`、`TOOL_CAMERA_LENGTH_X_M`、`TOOL_CAMERA_WIDTH_Y_M`、`TOOL_CAMERA_HEIGHT_Z_M` 和 `TOOL_CAMERA_Z_MIN_M` 按实测调整。碰撞模型、当前关节角、逆解或检查过程不可用时默认拒绝运动；只有明确设置 `SELF_COLLISION_ENABLE=0` 或 `SELF_COLLISION_FAIL_CLOSED=0` 才会关闭相应门禁。
+
 ## 底盘放置流程
 
 主菜单输入 `b` 可以切换底盘放置流程，提示里会显示 `b 底盘:开/关`。

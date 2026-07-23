@@ -33,7 +33,14 @@ from grasp_planner import (
 )
 from hand_eye import FX, FY, HandEyeTransformer
 from depth_collision_guard import depth_to_robot_obstacles, check_hand_path, hand_path_hit_mask
-from tool_geometry import camera_box_bounds, camera_size_label_mm
+from tool_geometry import (
+    HAND_BODY_DEPTH_X_M,
+    HAND_LENGTH_Z_M,
+    HAND_PALM_LENGTH_Z_M,
+    HAND_PALM_WIDTH_Y_M,
+    camera_box_bounds,
+    camera_size_label_mm,
+)
 from target_selection import (
     bbox_iou as _bbox_iou,
     filter_detections_by_target_query as _filter_detections_by_target_query,
@@ -61,12 +68,12 @@ def _parse_float_list_env(name, default):
 # ============================================================
 # 参数
 # ============================================================
-HAND_LENGTH = 0.25      # 法兰 → 指尖 (米)
-HAND_PALM_LENGTH_M = float(os.getenv("HAND_PALM_LENGTH_M", "0.157"))  # 法兰 → 掌心前端 (米)
+HAND_LENGTH = HAND_LENGTH_Z_M      # 法兰 → 指尖 (米)
+HAND_PALM_LENGTH_M = HAND_PALM_LENGTH_Z_M  # 法兰 → 掌心前端 (米)
 HAND_FINGER_THICKNESS_M = float(os.getenv("HAND_FINGER_THICKNESS_M", "0.03"))  # 手指厚度 (米)
 HAND_WEIGHT = 0.6       # 末端重量 (kg), Aero Hand
-HAND_W_Y = 0.095        # 手 Y 方向宽度 (米)
-HAND_W_X = 0.08         # 手 X 方向宽度 (米)
+HAND_W_Y = HAND_PALM_WIDTH_Y_M     # 手 Y 方向宽度 (米)
+HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side

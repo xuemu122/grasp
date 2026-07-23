@@ -8,7 +8,7 @@ import time
 from typing import Optional, Tuple
 
 from self_collision_guard import Nova5SelfCollisionGuard, describe_self_collision
-from tool_geometry import camera_size_label_mm
+from tool_geometry import tool_size_label_mm
 
 
 DOBOT_IP = os.getenv("DOBOT_IP", "192.168.5.1")
@@ -20,7 +20,8 @@ ROBOT_POLL_S = float(os.getenv("ROBOT_POLL_S", "0.2"))
 SELF_COLLISION_ENABLE = os.getenv("SELF_COLLISION_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 SELF_COLLISION_MARGIN_M = float(os.getenv("SELF_COLLISION_MARGIN_M", "0.015"))
 SELF_COLLISION_PATH_SAMPLES = int(os.getenv("SELF_COLLISION_PATH_SAMPLES", "8"))
-SELF_COLLISION_REQUIRE_IK = os.getenv("SELF_COLLISION_REQUIRE_IK", "0").lower() in ("1", "true", "yes", "on")
+SELF_COLLISION_REQUIRE_IK = os.getenv("SELF_COLLISION_REQUIRE_IK", "1").lower() in ("1", "true", "yes", "on")
+SELF_COLLISION_FAIL_CLOSED = os.getenv("SELF_COLLISION_FAIL_CLOSED", "1").lower() in ("1", "true", "yes", "on")
 SELF_COLLISION_VERBOSE = os.getenv("SELF_COLLISION_VERBOSE", "0").lower() in ("1", "true", "yes", "on")
 DOBOT_IK_VERBOSE = os.getenv("DOBOT_IK_VERBOSE", "0").lower() in ("1", "true", "yes", "on")
 
@@ -57,10 +58,13 @@ class DobotArm:
                 print(
                     f"[自碰撞] Nova5 URDF 护栏已启用 "
                     f"(margin={SELF_COLLISION_MARGIN_M*1000:.0f}mm, "
-                    f"samples={SELF_COLLISION_PATH_SAMPLES}, camera={camera_size_label_mm()})"
+                    f"samples={SELF_COLLISION_PATH_SAMPLES}, tool={tool_size_label_mm()})"
                 )
             except Exception as e:
-                print(f"[自碰撞][警告] 初始化失败, 本次关闭自碰撞护栏: {e}")
+                message = f"[自碰撞][错误] 完整机械臂/灵巧手/相机模型初始化失败: {e}"
+                if SELF_COLLISION_FAIL_CLOSED:
+                    raise RuntimeError(message) from e
+                print(message + ", 已显式配置为放行")
 
     def connect(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -190,12 +194,16 @@ class DobotArm:
 
     def _check_self_collision_path(self, current_joints, target_joints, label: str = "目标关节") -> bool:
         if self.self_collision_guard is None:
+            if SELF_COLLISION_ENABLE and SELF_COLLISION_FAIL_CLOSED:
+                print(f"  [自碰撞][中止] {label}: 碰撞模型不可用")
+                return False
             return True
         try:
             result = self.self_collision_guard.check_path(current_joints, target_joints, samples=SELF_COLLISION_PATH_SAMPLES)
         except Exception as e:
-            print(f"  [自碰撞][警告] {label}: 检查失败, 放行: {e}")
-            return True
+            action = "中止" if SELF_COLLISION_FAIL_CLOSED else "放行"
+            print(f"  [自碰撞][{action}] {label}: 检查失败: {e}")
+            return not SELF_COLLISION_FAIL_CLOSED
         if result.ok:
             if SELF_COLLISION_VERBOSE:
                 print(f"  [自碰撞] {label}: {describe_self_collision(result)}")
@@ -205,22 +213,30 @@ class DobotArm:
 
     def _check_self_collision_joints(self, target_joints, label: str = "目标关节") -> bool:
         if self.self_collision_guard is None:
+            if SELF_COLLISION_ENABLE and SELF_COLLISION_FAIL_CLOSED:
+                print(f"  [自碰撞][中止] {label}: 碰撞模型不可用")
+                return False
             return True
         try:
             current = self.get_joints()
         except Exception as e:
-            print(f"  [自碰撞][警告] {label}: 无法读取当前关节角, 放行: {e}")
-            return True
+            action = "中止" if SELF_COLLISION_FAIL_CLOSED else "放行"
+            print(f"  [自碰撞][{action}] {label}: 无法读取当前关节角: {e}")
+            return not SELF_COLLISION_FAIL_CLOSED
         return self._check_self_collision_path(current, target_joints, label=label)
 
     def _check_self_collision_pose(self, pose, label: str = "目标位姿") -> bool:
         if self.self_collision_guard is None:
+            if SELF_COLLISION_ENABLE and SELF_COLLISION_FAIL_CLOSED:
+                print(f"  [自碰撞][中止] {label}: 碰撞模型不可用")
+                return False
             return True
         try:
             current = self.get_joints()
         except Exception as e:
-            print(f"  [自碰撞][警告] {label}: 无法读取当前关节角, 放行: {e}")
-            return True
+            action = "中止" if SELF_COLLISION_FAIL_CLOSED else "放行"
+            print(f"  [自碰撞][{action}] {label}: 无法读取当前关节角: {e}")
+            return not SELF_COLLISION_FAIL_CLOSED
         target_joints = self.inverse_kin_near(pose, near=current)
         if target_joints is None:
             msg = f"  [自碰撞][警告] {label}: 未能求近邻逆解, 无法做自碰撞检查"
