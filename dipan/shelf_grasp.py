@@ -924,14 +924,25 @@ def is_at_stow_pose(arm: "DobotArm", verbose=True):
 
 
 def go_to_stow_pose(arm: "DobotArm"):
-    """先回第2层观察位，再移动到记录的收起姿态。未记录时只提示并返回 False。"""
+    """从放置区优先经过渡点收起；没有过渡点时才经第2层避碰。"""
     if _stow_pose is None:
         print("  [收起姿态] 未记录, 跳过。可用 u 菜单拖动记录")
         return False
     if is_at_stow_pose(arm):
         print("  [收起姿态] 当前已经收起, 跳过机械臂运动")
         return True
-    if 2 in _shelf_layer_poses:
+
+    if _place_transition_pose is not None:
+        transition_pose, transition_name = _place_transition_pose
+        print(f"\n[收起姿态] 经放置过渡点 {transition_name} 安全收起 ...")
+        if not arm.move_pose_safe(
+            transition_pose,
+            joints=_place_transition_joints,
+            speed=80,
+        ):
+            print("  [收起姿态] 前往放置过渡点失败, 不继续收起")
+            return False
+    elif 2 in _shelf_layer_poses:
         print("\n[收起姿态] 先回第2层避碰 ...")
         if not go_to_layer_via_clearance(arm, 2):
             print("  [收起姿态] 回第2层失败, 不继续收起")
@@ -940,8 +951,8 @@ def go_to_stow_pose(arm: "DobotArm"):
         print("  [收起姿态] 第2层未记录, 不继续收起")
         return False
     pose, name = _stow_pose
-    print(f"\n[收起姿态] 移动到 {name} ...")
-    if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100):
+    print(f"\n[收起姿态] 安全关节运动到 {name} ...")
+    if not arm.move_pose_safe(pose, speed=80):
         print("  [收起姿态] 移动失败")
         return False
     time.sleep(MOTION_SETTLE_S)
@@ -1303,7 +1314,7 @@ def _toggle_chassis_place():
     state = "开启" if USE_CHASSIS_PLACE else "关闭"
     print(f"\n[底盘放置] 已{state}")
     if USE_CHASSIS_PLACE:
-        print("  流程: 先回第2层 → 到收起姿态 → 调用 move_robot.py place → 等底盘到达 → 机械臂放置")
+        print("  流程: 经安全过渡点收起 → 调用 move_robot.py place → 等底盘到达 → 机械臂放置")
 
 
 def _save_filter_preview(camera, locator, transformer, flange_pose, layer_z_m, layer_idx=None):

@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, call, patch
 
 import shelf_grasp
 
@@ -63,6 +63,31 @@ class PickCycleRoutingTests(unittest.TestCase):
         go_place.assert_called_once_with(ANY)
         go_layer.assert_not_called()
         go_layer_from_place.assert_not_called()
+
+    def test_stow_uses_place_transition_instead_of_layer_two(self):
+        transition = ([1, 2, 3, 4, 5, 6], "place-transition")
+        stow = ([7, 8, 9, 10, 11, 12], "stow")
+        arm = unittest.mock.Mock()
+        arm.move_pose_safe.return_value = True
+
+        with (
+            patch.object(shelf_grasp, "MOTION_SETTLE_S", 0.0),
+            patch.object(shelf_grasp, "_stow_pose", stow),
+            patch.object(shelf_grasp, "_place_transition_pose", transition),
+            patch.object(shelf_grasp, "_place_transition_joints", None),
+            patch.object(shelf_grasp, "is_at_stow_pose", return_value=False),
+            patch.object(shelf_grasp, "go_to_layer_via_clearance") as go_to_layer,
+        ):
+            self.assertTrue(shelf_grasp.go_to_stow_pose(arm))
+
+        self.assertEqual(
+            arm.move_pose_safe.call_args_list,
+            [
+                call(transition[0], joints=None, speed=80),
+                call(stow[0], speed=80),
+            ],
+        )
+        go_to_layer.assert_not_called()
 
 
 if __name__ == "__main__":
