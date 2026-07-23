@@ -12,6 +12,17 @@ let shelfLayers = {};        // 货架层位姿缓存 { "1": {pose:[...], name:"
 // ========== WebSocket 连接 ==========
 let ws = null;
 let wsConnected = false;
+let robotAcceptingOrders = true;
+
+function syncOrderButton() {
+    const btnSubmit = document.getElementById('btnSubmit');
+    if (!btnSubmit) return;
+    const locked = !robotAcceptingOrders || Boolean(currentOrderId);
+    btnSubmit.disabled = locked;
+    if (!currentOrderId) {
+        btnSubmit.textContent = robotAcceptingOrders ? '开始拣选' : '机器人移动中...';
+    }
+}
 
 function connectWebSocket() {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -47,17 +58,21 @@ function logWS(msg) {
 function updateConnectionStatus(status) {
     const robotStatus = document.getElementById('robotStatus');
     if (!robotStatus) return;
+    robotAcceptingOrders = !['busy', 'stowing', 'chassis-moving', 'returning'].includes(status);
     if (status === 'backend' || status === 'standby' || status === 'idle') {
         robotStatus.innerHTML = '<span class="status-dot busy"></span> 后端在线，机械臂待启动';
     } else if (status === 'ready') {
         robotStatus.innerHTML = '<span class="status-dot online"></span> 机器人就绪';
     } else if (status === 'busy' || status === 'stowing') {
         robotStatus.innerHTML = `<span class="status-dot busy"></span> ${status === 'stowing' ? '机械臂收起中' : '机器人执行中'}`;
+    } else if (status === 'chassis-moving' || status === 'returning') {
+        robotStatus.innerHTML = `<span class="status-dot busy"></span> ${status === 'chassis-moving' ? '底盘运动中' : '订单收尾/回充中'}`;
     } else if (status === 'simulated') {
         robotStatus.innerHTML = '<span class="status-dot busy"></span> 模拟后端在线';
     } else {
         robotStatus.innerHTML = '<span class="status-dot" style="background:#EF4444;box-shadow:0 0 8px rgba(239,68,68,0.6)"></span> 后端未连接';
     }
+    syncOrderButton();
 }
 
 function handleWSMessage(msg) {
@@ -66,10 +81,17 @@ function handleWSMessage(msg) {
             logWS(msg.message);
             updateConnectionStatus(msg.robotStatus || 'backend');
             break;
+        case 'robot_status':
+            updateConnectionStatus(msg.status || 'backend');
+            if (msg.message) logWS(msg.message);
+            break;
         case 'status':
             if (msg.status === 'started') {
                 updateRobotStatus('busy', msg.message || '机器人抓取中...');
             } else if (msg.status === 'grabbing') {
+                updateGrabProgress(msg);
+            } else if (msg.status === 'returning') {
+                updateRobotStatus('busy', msg.message || '订单收尾中...');
                 updateGrabProgress(msg);
             } else if (msg.status === 'layer-moving') {
                 updateRobotStatus('busy', msg.message || `移动中: 第${msg.layer}层`);
@@ -424,6 +446,11 @@ async function submitOrder() {
     const items = getCartItems();
     if (items.length === 0) return;
 
+    if (!robotAcceptingOrders) {
+        alert('机器人正在移动或回充，请稍后再下单');
+        return;
+    }
+
     if (!wsConnected) {
         alert('⚠️ 后端服务未连接，请先启动后端！\n\n在终端执行: node server.js');
         return;
@@ -444,8 +471,7 @@ async function submitOrder() {
         if (!res.ok || prepared.code !== 0) throw new Error(prepared.message || '订单校验失败');
     } catch (error) {
         alert(`订单提交失败: ${error.message}`);
-        btnSubmit.disabled = false;
-        btnSubmit.textContent = '开始拣选';
+        syncOrderButton();
         return;
     }
 
@@ -453,6 +479,7 @@ async function submitOrder() {
     currentOrderId = orderId;
     currentOrderToken = prepared.completionToken;
     currentOrderItems = items.map(item => ({ ...item }));
+    syncOrderButton();
 
     showModal(orderId, items);
 
@@ -712,11 +739,7 @@ async function onGrabCompleted(msg) {
         updateCartUI();
         renderProducts();
 
-        const btnSubmit = document.getElementById('btnSubmit');
-        if (btnSubmit) {
-            btnSubmit.disabled = false;
-            btnSubmit.textContent = '开始拣选';
-        }
+        syncOrderButton();
     }, 1500);
 }
 
@@ -729,11 +752,7 @@ function onGrabFailed() {
     currentOrderToken = null;
     currentOrderItems = [];
 
-    const btnSubmit = document.getElementById('btnSubmit');
-    if (btnSubmit) {
-        btnSubmit.disabled = false;
-        btnSubmit.textContent = '开始拣选';
-    }
+    syncOrderButton();
 }
 
 // ========== 显示抓取弹窗 ==========

@@ -30,7 +30,9 @@ const CHASSIS_MAP_HTTP_PROTOCOL = String(process.env.CHASSIS_MAP_HTTP_PROTOCOL |
 const CHASSIS_MAP_HTTP_HOST = process.env.CHASSIS_MAP_HTTP_HOST || CHASSIS_HOST;
 const CHASSIS_MAP_HTTP_PORT = Number(process.env.CHASSIS_MAP_HTTP_PORT || 9001);
 const CHASSIS_PLACE_MARKER_DEFAULT = process.env.CHASSIS_PLACE_MARKER || 'yaojia1';
+const CHASSIS_CHARGE_MARKER = process.env.CHASSIS_CHARGE_MARKER || 'charge_point_1F_35744';
 const CHASSIS_NAVIGATION_DEFAULT_ENABLE = /^(1|true|yes|on)$/i.test(process.env.CHASSIS_NAVIGATION_ENABLE || '');
+const ROBOT_AUTO_RETURN_CHARGE = !/^(0|false|no|off)$/i.test(process.env.ROBOT_AUTO_RETURN_CHARGE || '1');
 const CHASSIS_REQUEST_TIMEOUT_MS = Number(process.env.CHASSIS_REQUEST_TIMEOUT_MS || 10000);
 const CHASSIS_NAVIGATION_TIMEOUT_MS = Number(process.env.CHASSIS_NAVIGATION_TIMEOUT_MS || 180000);
 const CHASSIS_NAVIGATION_DISTANCE_TOLERANCE_M = Number(process.env.CHASSIS_NAVIGATION_DISTANCE_TOLERANCE_M || 0.15);
@@ -65,6 +67,7 @@ let robotWorkerReady = false;
 let robotWorkerStarting = null;
 let robotStowPromise = null;
 let robotFilterPreviewPromise = null;
+let chassisNavigationPromise = null;
 let chassisRasterCache = null;
 let chassisMapRefreshPromise = null;
 
@@ -920,6 +923,7 @@ function sendMessage(ws, message) {
 
 function currentRobotStatus() {
     if (robotStowPromise) return 'stowing';
+    if (chassisNavigationPromise) return 'chassis-moving';
     if (activeOrderId) return 'busy';
     if (!ROBOT_GRASP_REAL) return 'simulated';
     return robotWorkerReady ? 'ready' : 'standby';
@@ -976,6 +980,10 @@ async function handleFilterPreviewCommand(ws) {
     }
     if (robotStowPromise) {
         sendMessage(ws, { type: 'filter-preview', status: 'error', message: '机械臂正在收起，请稍后再试' });
+        return;
+    }
+    if (chassisNavigationPromise) {
+        sendMessage(ws, { type: 'filter-preview', status: 'error', message: '底盘正在运动，请稍后再试' });
         return;
     }
     if (robotFilterPreviewPromise) {
@@ -1054,6 +1062,10 @@ async function handleFilterPreviewCommand(ws) {
     } finally {
         robotFilterPreviewPromise = null;
     }
+}
+
+function broadcastRobotStatus(status = currentRobotStatus(), message = '') {
+    broadcast({ type: 'robot_status', status, message, timestamp: Date.now() });
 }
 
 function readChassisSettings() {
@@ -1375,7 +1387,22 @@ function currentPoseAtMarker(statusInfo, marker) {
         && thetaDistance <= CHASSIS_NAVIGATION_THETA_TOLERANCE_RAD;
 }
 
-async function navigateChassisToMarker(markerName, { beforeMove } = {}) {
+async function navigateChassisToMarker(markerName, options = {}) {
+    if (chassisNavigationPromise) {
+        throw new Error('底盘正在运动，暂不接受新的导航任务');
+    }
+    const operation = navigateChassisToMarkerUnlocked(markerName, options);
+    chassisNavigationPromise = operation;
+    broadcastRobotStatus('chassis-moving', `底盘正在前往 ${markerName}`);
+    try {
+        return await operation;
+    } finally {
+        if (chassisNavigationPromise === operation) chassisNavigationPromise = null;
+        broadcastRobotStatus();
+    }
+}
+
+async function navigateChassisToMarkerUnlocked(markerName, { beforeMove, arriveOnDocking = false } = {}) {
     const client = chassisClient();
     const [markerResponse, statusResponse] = await Promise.all([
         client.request('/api/markers/query_list'),
@@ -1420,6 +1447,7 @@ async function navigateChassisToMarker(markerName, { beforeMove } = {}) {
         if (response.status !== 'OK') continue;
         const info = chassisResults(response);
         const moveStatus = info.move_status;
+        const runningStatus = info.running_status;
         const moveTarget = info.move_target;
         const targetMatches = moveTarget === markerName;
         if (targetMatches && moveStatus === 'running') seenCurrentTask = true;
@@ -1427,6 +1455,10 @@ async function navigateChassisToMarker(markerName, { beforeMove } = {}) {
         if (state !== lastState) {
             log(`  [底盘] ${state}`);
             lastState = state;
+        }
+        if (targetMatches && arriveOnDocking && runningStatus === 'dock_to_charging_pile') {
+            log(`  ✅ 底盘已到达 ${markerName}，正在自动对接充电桩`);
+            return { skipped: false, marker, docking: true };
         }
         if (moveStatus === 'succeeded' && (targetMatches || seenCurrentTask)) {
             log(`  ✅ 底盘已到达 ${markerName}`);
@@ -1526,6 +1558,10 @@ async function handleStowCommand(ws) {
         sendMessage(ws, { type: 'error', message: `订单 ${activeOrderId} 正在执行，完成后再收起` });
         return;
     }
+    if (chassisNavigationPromise) {
+        sendMessage(ws, { type: 'error', message: '底盘正在运动，请稍后再收起' });
+        return;
+    }
     if (robotStowPromise) {
         sendMessage(ws, { type: 'error', message: '机械臂正在收起，请勿重复发送' });
         return;
@@ -1582,6 +1618,9 @@ async function handleStowCommand(ws) {
 // ========== 处理移动到层命令 ==========
 async function handleGotoLayerCommand(ws, msg) {
     try {
+        if (chassisNavigationPromise) {
+            throw new Error('底盘正在运动，暂不能移动机械臂或接收新订单');
+        }
         if (robotFilterPreviewPromise) {
             throw new Error('正在采集层板过滤预览，请稍后再试');
         }
@@ -1626,6 +1665,25 @@ async function handleGotoLayerCommand(ws, msg) {
     }
 }
 
+async function returnRobotToCharge(ws, orderId) {
+    if (!ROBOT_GRASP_REAL || !ROBOT_AUTO_RETURN_CHARGE) return;
+
+    sendStatus(ws, 'returning', {
+        orderId,
+        progress: 99,
+        message: '订单已拣选完成，机械臂正在收起...'
+    });
+    broadcastRobotStatus('stowing', '订单完成，机械臂正在收起');
+    await moveRobotToStowPose();
+
+    sendStatus(ws, 'returning', {
+        orderId,
+        progress: 99,
+        message: `机械臂已收起，底盘正在回充电桩 ${CHASSIS_CHARGE_MARKER}...`
+    });
+    await navigateChassisToMarker(CHASSIS_CHARGE_MARKER, { arriveOnDocking: true });
+}
+
 // ========== 处理抓取命令 ==========
 async function handleGrabCommand(ws, msg) {
     const orderId = String(msg.orderId || '').trim();
@@ -1657,6 +1715,10 @@ async function handleGrabCommand(ws, msg) {
         sendMessage(ws, { type: 'error', message: '机械臂正在收起，请稍后再试' });
         return;
     }
+    if (chassisNavigationPromise) {
+        sendMessage(ws, { type: 'error', message: '底盘正在运动，暂不接受新订单' });
+        return;
+    }
     if (robotFilterPreviewPromise) {
         sendMessage(ws, { type: 'error', message: '正在采集层板过滤预览，请稍后再试' });
         return;
@@ -1668,6 +1730,7 @@ async function handleGrabCommand(ws, msg) {
 
     log(`🤖 开始处理订单 ${orderId}，共 ${totalUnits} 件商品`);
     activeOrderId = orderId;
+    broadcastRobotStatus('busy', `正在处理订单 ${orderId}`);
 
     try {
         sendStatus(ws, 'started', {
@@ -1689,13 +1752,18 @@ async function handleGrabCommand(ws, msg) {
             }
         }
 
-        sendStatus(ws, 'completed', { orderId, message: '所有商品抓取完成', progress: 100 });
-        log(`✅ 订单 ${orderId} 处理完成`);
+        await returnRobotToCharge(ws, orderId);
+        const completionMessage = ROBOT_GRASP_REAL && ROBOT_AUTO_RETURN_CHARGE
+            ? '所有商品抓取完成，机器人已收起并回充'
+            : '所有商品抓取完成';
+        sendStatus(ws, 'completed', { orderId, message: completionMessage, progress: 100 });
+        log(`✅ 订单 ${orderId} 处理完成${ROBOT_AUTO_RETURN_CHARGE ? '，已回充' : ''}`);
     } catch (e) {
         log(`❌ 订单 ${orderId} 失败: ${e.message}`);
         sendStatus(ws, 'error', { orderId, message: e.message });
     } finally {
         activeOrderId = null;
+        broadcastRobotStatus();
     }
 }
 

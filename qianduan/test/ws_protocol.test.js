@@ -56,7 +56,8 @@ async function startFakeChassisServer(port) {
     const commands = [];
     let moveStarted = false;
     let statusPolls = 0;
-    const marker = {
+    let moveTarget = '';
+    const shelfMarker = {
         floor: 1,
         marker_name: 'shelf-a',
         key: 0,
@@ -65,6 +66,16 @@ async function startFakeChassisServer(port) {
             orientation: { x: 0, y: 0, z: 0, w: 1 }
         }
     };
+    const chargeMarker = {
+        floor: 1,
+        marker_name: 'charge_point_1F_35744',
+        key: 11,
+        pose: {
+            position: { x: -1.0, y: 0.5, z: 0 },
+            orientation: { x: 0, y: 0, z: 0, w: 1 }
+        }
+    };
+    const markers = { 'shelf-a': shelfMarker, 'charge_point_1F_35744': chargeMarker };
     const server = net.createServer((socket) => {
         let pending = '';
         socket.on('data', (chunk) => {
@@ -83,24 +94,28 @@ async function startFakeChassisServer(port) {
                     }
                 };
             } else if (command === '/api/markers/query_list') {
-                response = { status: 'OK', results: { 'shelf-a': marker } };
+                response = { status: 'OK', results: markers };
             } else if (command === '/api/robot_status') {
                 statusPolls += 1;
                 const arrived = moveStarted && statusPolls >= 3;
+                const docking = moveStarted && moveTarget === 'charge_point_1F_35744' && statusPolls >= 2 && !arrived;
+                const targetMarker = markers[moveTarget] || shelfMarker;
                 response = {
                     status: 'OK',
                     results: {
                         move_status: moveStarted ? (arrived ? 'succeeded' : 'running') : 'idle',
-                        running_status: moveStarted && !arrived ? 'running' : 'idle',
-                        move_target: moveStarted ? 'shelf-a' : '',
+                        running_status: moveStarted && !arrived ? (docking ? 'dock_to_charging_pile' : 'running') : 'idle',
+                        move_target: moveStarted ? moveTarget : '',
                         current_floor: 1,
-                        current_pose: arrived
-                            ? { x: 1.0, y: 2.0, theta: 0 }
+                        current_pose: arrived || docking
+                            ? { x: targetMarker.pose.position.x, y: targetMarker.pose.position.y, theta: 0 }
                             : { x: 0, y: 0, theta: 0 }
                     }
                 };
             } else if (command.startsWith('/api/move?')) {
                 moveStarted = true;
+                statusPolls = 0;
+                moveTarget = new URLSearchParams(command.split('?', 2)[1]).get('marker') || '';
                 response = { status: 'OK', task_id: 'task-1' };
             } else if (command === '/api/move/cancel') {
                 response = { status: 'OK' };
@@ -357,9 +372,11 @@ test('WebSocket real mode navigates before worker startup, moves to each layer, 
         '__layer_2__',
         '云端咖啡',
         '__layer_2__',
-        '云端咖啡'
+        '云端咖啡',
+        '__stow_pose__'
     ]);
-    assert.equal(fakeChassis.commands.filter((command) => command.startsWith('/api/move?')).length, 1);
+    assert.equal(fakeChassis.commands.filter((command) => command.startsWith('/api/move?')).length, 2);
+    assert.ok(fakeChassis.commands.some((command) => command.includes('marker=charge_point_1F_35744')));
     assert.equal(collector.messages.some((message) => message.type === 'robot_log'), false);
 
     ws.send(JSON.stringify({ type: 'stow' }));
