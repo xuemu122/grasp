@@ -110,6 +110,7 @@ DETECTION_EARLY_STOP_SUPPORT = max(1, int(os.getenv("DETECTION_EARLY_STOP_SUPPOR
 TARGET_PRODUCT_QUERY = os.getenv("TARGET_PRODUCT_QUERY", os.getenv("TARGET_NAME", "")).strip()
 SHELF_GRASP_AUTO_ONCE = os.getenv("SHELF_GRASP_AUTO_ONCE", "0").lower() in ("1", "true", "yes", "on")
 SHELF_GRASP_WORKER = os.getenv("SHELF_GRASP_WORKER", "0").lower() in ("1", "true", "yes", "on")
+SHELF_GRASP_IDLE_STARTUP = os.getenv("SHELF_GRASP_IDLE_STARTUP", "0").lower() in ("1", "true", "yes", "on")
 TARGET_DEPTH_REFINE_RADIUS_PX = int(os.getenv("TARGET_DEPTH_REFINE_RADIUS_PX", "10"))
 TARGET_DEPTH_REFINE_MAX_DELTA_M = float(os.getenv("TARGET_DEPTH_REFINE_MAX_DELTA_M", "0.08"))
 DEPTH_GUARD_ENABLE = os.getenv("DEPTH_GUARD_ENABLE", "1").lower() in ("1", "true", "yes", "on")
@@ -1397,7 +1398,7 @@ def _handle_worker_command(cmd, arm, hand, camera, locator, transformer, waiting
     """Handle one stdin control command before the next worker grab.
 
     Returns ``(action, waiting_at_place, target)`` where action is one of
-    ``continue``, ``stow``, ``quit`` or ``target``.
+    ``continue``, ``stow``, ``poweroff``, ``quit`` or ``target``.
     """
     global _current_layer_idx
 
@@ -1413,6 +1414,10 @@ def _handle_worker_command(cmd, arm, hand, camera, locator, transformer, waiting
         print("[前端常驻模式] 收到收起指令")
         go_to_stow_pose(arm)
         return "stow", False, None
+
+    if cmd in ("__poweroff__", "__shutdown_power__"):
+        print("[前端常驻模式] 收到断电关闭指令, 保持当前位置并关闭硬件")
+        return "poweroff", waiting_at_place, None
 
     if cmd in ("__quit__", "__exit__"):
         print("[前端常驻模式] 收到退出指令, 不自动收起")
@@ -1505,8 +1510,31 @@ def main():
     print("=" * 60)
     target_query = TARGET_PRODUCT_QUERY
 
-    # ── 1. 初始化相机 + YOLO ──
-    print("\n[1/4] 初始化相机 + YOLO ...")
+    # ── 1. 连接 DOBOT 并立即上电 ──
+    print("\n[1/4] 连接 DOBOT 并上电 ...")
+    arm = DobotArm()
+    arm.connect()
+
+    # ── 货架层/放置/收起姿态 ──
+    load_shelf_layers()
+    load_place_point()
+    load_place_transition()
+    load_stow_pose()
+
+    if SHELF_GRASP_IDLE_STARTUP:
+        print("\n[启动待机] 已上电使能，保持当前位置，不发送 Home/MovJ/MovL")
+    elif SAFE_NAV_STARTUP:
+        print("\n[启动安全检查] 导航订单模式不执行 Home/观察层运动，只核对当前收起姿态 ...")
+        if not is_at_stow_pose(arm):
+            raise RuntimeError("导航订单启动时机械臂不在收起姿态，拒绝自动移动和接单")
+        print("[启动安全检查][完成] 机械臂已在收起姿态，启动过程未产生机械臂运动")
+    else:
+        print("\n[Home] 回到预设初始位姿 ...")
+        arm.go_home()
+        time.sleep(MOTION_SETTLE_S)  # 短缓冲，MovJ 内部已等待运动完成
+
+    # ── 2. 初始化相机 + YOLO ──
+    print("\n[2/4] 初始化相机 + YOLO ...")
     camera = RealSenseCamera(width=640, height=480, fps=30)
     locator = MedicineLocatorSystem(
         model_path="/home/nvidia/grasp/识别/best.pt",
@@ -1517,27 +1545,6 @@ def main():
     )
     locator.init_camera = lambda: None
     locator.camera = camera
-
-    # ── 2. 连接 DOBOT ──
-    print("\n[2/4] 连接 DOBOT ...")
-    arm = DobotArm()
-    arm.connect()
-
-    # ── 货架层/放置/收起姿态 ──
-    load_shelf_layers()
-    load_place_point()
-    load_place_transition()
-    load_stow_pose()
-
-    if SAFE_NAV_STARTUP:
-        print("\n[启动安全检查] 导航订单模式不执行 Home/观察层运动，只核对当前收起姿态 ...")
-        if not is_at_stow_pose(arm):
-            raise RuntimeError("导航订单启动时机械臂不在收起姿态，拒绝自动移动和接单")
-        print("[启动安全检查][完成] 机械臂已在收起姿态，启动过程未产生机械臂运动")
-    else:
-        print("\n[Home] 回到预设初始位姿 ...")
-        arm.go_home()
-        time.sleep(MOTION_SETTLE_S)  # 短缓冲，MovJ 内部已等待运动完成
 
     # ── 3. 连接灵巧手 ──
     if SKIP_HAND:
@@ -1550,7 +1557,7 @@ def main():
 
     if _current_layer_idx == STARTUP_LAYER_IDX:
         save_shelf_layers()
-    if not SAFE_NAV_STARTUP and _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
+    if not SHELF_GRASP_IDLE_STARTUP and not SAFE_NAV_STARTUP and _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
         if go_to_layer_via_clearance(arm, _current_layer_idx) and hand is not None:
             hand.open()
             time.sleep(MOTION_SETTLE_S)
@@ -1583,7 +1590,9 @@ def main():
         auto_attempt_pending = SHELF_GRASP_AUTO_ONCE
         auto_attempt_succeeded = False
         worker_stow_requested = False
-        waiting_at_place = False
+        worker_poweroff_requested = False
+        # 待机启动时不知道机械臂当前位于哪条已规划路径上，首个进层命令必须先安全抬升。
+        waiting_at_place = SHELF_GRASP_IDLE_STARTUP
 
         def worker_fail(message: str):
             if SHELF_GRASP_WORKER:
@@ -1606,8 +1615,9 @@ def main():
                 )
                 if action == "continue":
                     continue
-                if action in ("stow", "quit"):
+                if action in ("stow", "poweroff", "quit"):
                     worker_stow_requested = action == "stow"
+                    worker_poweroff_requested = action == "poweroff"
                     break
                 target_query = target
                 print(f"[前端常驻模式] 目标:{target_query}, 开始抓取")
@@ -2292,11 +2302,13 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        if SHELF_GRASP_WORKER and not worker_stow_requested:
+        if SHELF_GRASP_WORKER and not worker_stow_requested and not worker_poweroff_requested:
             print("[前端常驻模式] 未收到收起指令, 保持连接/使能, 不主动断开")
             return
         if SHELF_GRASP_WORKER and worker_stow_requested:
             print("[前端常驻模式] 已按收起指令到位, 跳过退出前二次收起")
+        elif SHELF_GRASP_WORKER and worker_poweroff_requested:
+            print("[前端常驻模式] 正在停止保持、断开灵巧手并关闭 DOBOT 使能")
         elif SHELF_GRASP_AUTO_ONCE:
             print("[前端自动模式] 退出时不自动收起, 保持当前安全观察位/当前位置")
         else:

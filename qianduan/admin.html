@@ -41,6 +41,7 @@
         .btn-success:hover { background: #059669; }
         .btn-danger { background: transparent; color: var(--danger); border: 2px solid var(--danger); }
         .btn-danger:hover { background: var(--danger-light); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
         .btn-sm { padding: 5px 12px; font-size: 0.8rem; }
         .table-wrapper { overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
@@ -87,6 +88,9 @@
         .empty-state .icon { font-size: 3rem; display: block; margin-bottom: 10px; }
         .loading { text-align: center; padding: 40px; color: var(--gray-400); }
         .chassis-map-card { grid-column: 1 / -1; }
+        .robot-control-card { grid-column: 1 / -1; }
+        .robot-control-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .robot-control-status { flex: 1; min-width: 240px; color: var(--gray-600); font-size: 0.9rem; }
         .map-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
         .map-toolbar .map-status { flex: 1; min-width: 220px; color: var(--gray-500); font-size: 0.84rem; }
         .toggle-control { display: inline-flex; align-items: center; gap: 8px; color: var(--gray-700); font-size: 0.86rem; font-weight: 600; cursor: pointer; }
@@ -147,6 +151,18 @@
     </header>
 
     <div class="container">
+        <div class="card robot-control-card">
+            <div class="card-title">
+                <span>机器人控制</span>
+                <span class="status-badge warn" id="robotControlBadge">正在读取</span>
+            </div>
+            <div class="robot-control-row">
+                <span class="robot-control-status" id="robotControlStatus">正在读取机器人状态...</span>
+                <button class="btn btn-primary" id="robotStowButton" type="button" onclick="stowRobotAdmin()">收起机械臂</button>
+                <button class="btn btn-danger" id="robotPoweroffButton" type="button" onclick="powerOffRobotAdmin()">断电并关闭抓取程序</button>
+            </div>
+        </div>
+
         <div class="card chassis-map-card">
             <div class="card-title">
                 <span>底盘地图与点位 <span class="count" id="chassisMarkerCount">0 个点位</span></span>
@@ -403,7 +419,7 @@
 
         async function showAdmin() {
             document.getElementById('loginOverlay').hidden = true;
-            await Promise.all([loadShelfLayers(), loadChassisMap(), loadChassisNavigationConfig()]);
+            await Promise.all([loadShelfLayers(), loadChassisMap(), loadChassisNavigationConfig(), loadRobotStatus()]);
             await Promise.all([loadProducts(), loadCategories()]);
         }
 
@@ -430,6 +446,64 @@
                 throw new Error('登录已过期');
             }
             return res;
+        }
+
+        function renderRobotStatus(data) {
+            const badge = document.getElementById('robotControlBadge');
+            const status = document.getElementById('robotControlStatus');
+            const stowButton = document.getElementById('robotStowButton');
+            const poweroffButton = document.getElementById('robotPoweroffButton');
+            const state = data.status || 'standby';
+            const unavailable = data.busy || data.powered_off;
+
+            badge.textContent = state === 'ready' ? '已上电'
+                : state === 'powered-off' ? '已断电'
+                : state === 'simulated' ? '模拟模式'
+                : state === 'standby' ? '启动中'
+                : '忙碌';
+            badge.className = `status-badge ${state === 'ready' || state === 'simulated' ? 'on' : state === 'powered-off' ? 'off' : 'warn'}`;
+            status.textContent = data.label || '机器人状态未知';
+            stowButton.disabled = unavailable;
+            poweroffButton.disabled = data.busy || data.powered_off;
+        }
+
+        async function loadRobotStatus() {
+            try {
+                const res = await adminFetch('/api/robot/status', { cache: 'no-store', preserveSession: true });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '读取机器人状态失败');
+                renderRobotStatus(json.data);
+            } catch (error) {
+                renderRobotStatus({ status: 'standby', label: error.message, busy: true, powered_off: false });
+            }
+        }
+
+        async function runRobotControl(endpoint, pendingText, successFallback) {
+            const stowButton = document.getElementById('robotStowButton');
+            const poweroffButton = document.getElementById('robotPoweroffButton');
+            stowButton.disabled = true;
+            poweroffButton.disabled = true;
+            document.getElementById('robotControlStatus').textContent = pendingText;
+            try {
+                const res = await adminFetch(endpoint, { method: 'POST' });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '机器人操作失败');
+                showToast(json.message || successFallback, 'success');
+            } catch (error) {
+                showToast(error.message, 'error');
+            } finally {
+                await loadRobotStatus();
+            }
+        }
+
+        async function stowRobotAdmin() {
+            if (!confirm('确认让机械臂移动到收起姿态吗？收起后仍保持上电。')) return;
+            await runRobotControl('/api/robot/stow', '机械臂正在收起...', '机械臂已收起');
+        }
+
+        async function powerOffRobotAdmin() {
+            if (!confirm('确认断电并关闭抓取程序吗？机械臂会保持当前位置直接解除使能，重新上电需要重启后端服务。')) return;
+            await runRobotControl('/api/robot/poweroff', '正在断开灵巧手并关闭 DOBOT 使能...', '机器人已断电关闭');
         }
 
         function renderEmojiPicker() {

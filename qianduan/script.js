@@ -529,16 +529,6 @@ async function submitOrder() {
     ws.send(JSON.stringify(payload));
 }
 
-function stowRobot() {
-    if (!wsConnected) {
-        alert('后端服务未连接');
-        return;
-    }
-    if (!confirm('确认让机器人回到收起姿态并关闭连接吗？')) return;
-    updateRobotStatus('busy', '机器人收起中...');
-    ws.send(JSON.stringify({ type: 'stow', timestamp: Date.now() }));
-}
-
 // ========== 货架层缓存加载 ==========
 async function loadShelfLayers() {
     try {

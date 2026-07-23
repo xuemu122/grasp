@@ -48,7 +48,6 @@ const ROBOT_WORKER_READY_TIMEOUT_MS = Number(process.env.ROBOT_WORKER_READY_TIME
 const ROBOT_GRAB_TIMEOUT_MS = Number(process.env.ROBOT_GRAB_TIMEOUT_MS || 120000);
 const ROBOT_STOW_TIMEOUT_MS = Number(process.env.ROBOT_STOW_TIMEOUT_MS || 120000);
 const ROBOT_FILTER_PREVIEW_TIMEOUT_MS = Number(process.env.ROBOT_FILTER_PREVIEW_TIMEOUT_MS || 30000);
-const ROBOT_STOW_COMMAND = process.env.ROBOT_STOW_COMMAND || '**stow**';
 const ROBOT_MAX_ITEM_QTY = Number(process.env.ROBOT_MAX_ITEM_QTY || 20);
 const ROBOT_MAX_ORDER_UNITS = Number(process.env.ROBOT_MAX_ORDER_UNITS || 50);
 const ROBOT_SIM_DELAY_SCALE = Math.max(0, Number(process.env.ROBOT_SIM_DELAY_SCALE || 1));
@@ -66,6 +65,8 @@ let robotWorker = null;
 let robotWorkerReady = false;
 let robotWorkerStarting = null;
 let robotStowPromise = null;
+let robotPoweroffPromise = null;
+let robotPoweredOff = false;
 let robotFilterPreviewPromise = null;
 let chassisNavigationPromise = null;
 let chassisRasterCache = null;
@@ -374,7 +375,7 @@ function normalizeOrderItems(items) {
         const name = String(item.name || '').trim();
         if (!name) throw new Error(`第 ${index + 1} 个商品缺少 name`);
         if (/\r|\n/.test(name)) throw new Error(`商品名称不能包含换行: ${name}`);
-        if (['**stow**', '__stow__', '__shutdown__', '__quit__', '__exit__'].includes(name)) {
+        if (['**stow**', '__stow__', '__shutdown__', '__poweroff__', '__shutdown_power__', '__quit__', '__exit__'].includes(name)) {
             throw new Error(`商品名称使用了保留控制词: ${name}`);
         }
 
@@ -699,6 +700,73 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    if (pathname === '/api/robot/status' && req.method === 'GET') {
+        if (!requireAdmin(req, res)) return;
+        const operation = currentRobotOperation();
+        sendJSON(res, {
+            code: 0,
+            data: {
+                status: currentRobotStatus(),
+                label: operation
+                    ? operation.label
+                    : !ROBOT_GRASP_REAL
+                        ? '模拟抓取模式'
+                        : robotWorkerReady
+                            ? '机器人已上电待机'
+                            : '机器人正在启动',
+                worker_ready: robotWorkerReady,
+                powered_off: robotPoweredOff,
+                busy: Boolean(operation && operation.status !== 'powered-off')
+            }
+        });
+        return;
+    }
+
+    if (pathname === '/api/robot/stow' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        const operation = currentRobotOperation();
+        if (operation) {
+            sendJSON(res, { code: 1, message: `${operation.label}，暂不能收起` }, 409);
+            return;
+        }
+        robotStowPromise = moveRobotToStowPose();
+        broadcastRobotStatus('stowing', '管理员正在收起机械臂');
+        try {
+            const result = await robotStowPromise;
+            log('✅ 管理员操作：机械臂已收起并保持上电');
+            sendJSON(res, { code: 0, message: '机械臂已收起并保持上电', data: result });
+        } catch (error) {
+            log(`❌ 管理员收起失败: ${error.message}`);
+            sendJSON(res, { code: 1, message: error.message }, 500);
+        } finally {
+            robotStowPromise = null;
+            broadcastRobotStatus();
+        }
+        return;
+    }
+
+    if (pathname === '/api/robot/poweroff' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        if (robotPoweredOff) {
+            sendJSON(res, { code: 0, message: '机器人已经断电关闭' });
+            return;
+        }
+        const operation = currentRobotOperation();
+        if (operation) {
+            sendJSON(res, { code: 1, message: `${operation.label}，暂不能断电关闭` }, 409);
+            return;
+        }
+        try {
+            const result = await powerOffRobotWorker();
+            log('⏻ 管理员操作：机器人已断电，抓取程序已关闭');
+            sendJSON(res, { code: 0, message: '机器人已断电，抓取程序已关闭', data: result });
+        } catch (error) {
+            log(`❌ 机器人断电关闭失败: ${error.message}`);
+            sendJSON(res, { code: 1, message: error.message }, 500);
+        }
+        return;
+    }
+
     // GET/PUT /api/chassis/navigation-config - 抓取/放置导航开关与放置点
     if (pathname === '/api/chassis/navigation-config' && req.method === 'GET') {
         if (!requireAdmin(req, res)) return;
@@ -881,6 +949,17 @@ server.listen(PORT, HOST, () => {
     const chassisSettings = readChassisSettings();
     log(`底盘接口: ${CHASSIS_HOST}:${CHASSIS_PORT}，栅格地图: ${CHASSIS_MAP_HTTP_PROTOCOL}://${CHASSIS_MAP_HTTP_HOST}:${CHASSIS_MAP_HTTP_PORT}`);
     log(`底盘导航: ${chassisSettings.navigation_enabled ? '已开启' : '已关闭'}，放置点: ${chassisSettings.place_marker}`);
+    if (ROBOT_GRASP_REAL) {
+        ensureRobotWorker()
+            .then(() => {
+                log('✅ 机器人启动上电完成，保持当前位置待机');
+                broadcastRobotStatus('ready', '机器人已上电待机');
+            })
+            .catch((error) => {
+                log(`❌ 机器人启动上电失败: ${error.message}`);
+                broadcastRobotStatus('standby', `机器人启动上电失败: ${error.message}`);
+            });
+    }
     refreshChassisMapSnapshot()
         .then((snapshot) => log(`底盘地图已更新到本地: ${snapshot.map.map_name || snapshot.map.hotel_id}/${snapshot.map.floor}`))
         .catch((error) => {
@@ -923,9 +1002,11 @@ function sendMessage(ws, message) {
 
 function currentRobotOperation() {
     if (chassisNavigationPromise) return { status: 'chassis-moving', label: '底盘正在运动' };
+    if (robotPoweroffPromise) return { status: 'powering-off', label: '机器人正在断电关闭' };
     if (robotStowPromise) return { status: 'stowing', label: '机械臂正在收起' };
     if (activeOrderId) return { status: 'busy', label: `订单 ${activeOrderId} 正在执行` };
     if (robotFilterPreviewPromise) return { status: 'busy', label: '正在采集层板过滤预览' };
+    if (robotPoweredOff) return { status: 'powered-off', label: '机器人已断电关闭，请重启服务重新上电' };
     return null;
 }
 
@@ -1480,6 +1561,7 @@ async function navigateChassisToMarkerUnlocked(markerName, { beforeMove, arriveO
 
 function ensureRobotWorker() {
     if (!ROBOT_GRASP_REAL) return Promise.resolve(null);
+    if (robotPoweredOff) return Promise.reject(new Error('机器人已由管理员断电关闭，请重启服务重新上电'));
     if (robotWorker && !robotWorker.killed && robotWorkerReady) return Promise.resolve(robotWorker);
     if (robotWorkerStarting) return robotWorkerStarting;
 
@@ -1496,7 +1578,8 @@ function ensureRobotWorker() {
                 CHASSIS_HOST,
                 CHASSIS_PORT: String(CHASSIS_PORT),
                 CHASSIS_SETTINGS_FILE,
-                SHELF_GRASP_WORKER: '1'
+                SHELF_GRASP_WORKER: '1',
+                SHELF_GRASP_IDLE_STARTUP: '1'
             }
         });
         robotWorker = child;
@@ -1550,55 +1633,8 @@ function ensureRobotWorker() {
     return robotWorkerStarting;
 }
 
-async function handleStowCommand(ws) {
-    if (!ROBOT_GRASP_REAL) {
-        sendStatus(ws, 'completed', { message: '模拟模式无需收起' });
-        return;
-    }
-    if (rejectIfRobotBusy(ws, '手动收起')) return;
-    if (!robotWorker || robotWorker.exitCode !== null) {
-        sendStatus(ws, 'completed', { message: '机器人 worker 未启动，无需收起' });
-        return;
-    }
-    sendStatus(ws, 'started', { message: '正在回收起姿态并关闭机器人连接' });
-
-    const worker = robotWorker;
-    robotWorkerReady = false;
-    robotStowPromise = new Promise((resolve, reject) => {
-        let settled = false;
-        const finish = (error) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            worker.off('close', onClose);
-            worker.off('error', onError);
-            if (error) reject(error);
-            else resolve();
-        };
-        const onClose = (code) => {
-            if (code === 0) finish();
-            else finish(new Error(`机器人 worker 收起时退出，退出码 ${code}`));
-        };
-        const onError = (error) => finish(error);
-        const timeout = setTimeout(() => {
-            finish(new Error(`机械臂收起超时 (${ROBOT_STOW_TIMEOUT_MS}ms)`));
-        }, ROBOT_STOW_TIMEOUT_MS);
-
-        worker.once('close', onClose);
-        worker.once('error', onError);
-        worker.stdin.write(`${ROBOT_STOW_COMMAND}\n`, (error) => {
-            if (error) finish(error);
-        });
-    });
-
-    try {
-        await robotStowPromise;
-        sendStatus(ws, 'completed', { progress: 100, message: '机械臂已收起' });
-    } catch (error) {
-        sendStatus(ws, 'error', { message: error.message });
-    } finally {
-        robotStowPromise = null;
-    }
+function handleStowCommand(ws) {
+    sendMessage(ws, { type: 'error', message: '收起操作仅可在管理页执行' });
 }
 
 // ========== 处理移动到层命令 ==========
@@ -2193,6 +2229,57 @@ async function moveRobotToStowPose() {
             if (error) finish(new Error(`无法发送安全收起命令: ${error.message}`));
         });
     });
+}
+
+async function powerOffRobotWorker() {
+    robotPoweredOff = true;
+    robotWorkerReady = false;
+
+    if (!ROBOT_GRASP_REAL) {
+        broadcastRobotStatus('powered-off', '模拟抓取程序已关闭');
+        return { mode: 'simulated' };
+    }
+
+    const worker = robotWorker;
+    if (!worker || worker.exitCode !== null) {
+        broadcastRobotStatus('powered-off', '机器人抓取程序已关闭');
+        return { mode: 'real', detail: 'worker 已退出' };
+    }
+
+    robotPoweroffPromise = new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            worker.off('close', onClose);
+            worker.off('error', onError);
+            if (error) reject(error);
+            else resolve({ mode: 'real', detail: '硬件已断电，worker 已退出' });
+        };
+        const onClose = (code) => {
+            if (code === 0) finish();
+            else finish(new Error(`机器人断电时 worker 异常退出，退出码 ${code}`));
+        };
+        const onError = (error) => finish(error);
+        const timeout = setTimeout(() => {
+            finish(new Error(`机器人断电关闭超时 (${ROBOT_STOW_TIMEOUT_MS}ms)`));
+        }, ROBOT_STOW_TIMEOUT_MS);
+
+        worker.once('close', onClose);
+        worker.once('error', onError);
+        worker.stdin.write('__poweroff__\n', (error) => {
+            if (error) finish(new Error(`无法发送断电关闭命令: ${error.message}`));
+        });
+    });
+
+    broadcastRobotStatus('powering-off', '正在断开灵巧手并关闭 DOBOT 使能');
+    try {
+        return await robotPoweroffPromise;
+    } finally {
+        robotPoweroffPromise = null;
+        broadcastRobotStatus('powered-off', '机器人已断电，抓取程序已关闭');
+    }
 }
 
 function inferGrabStage(line) {

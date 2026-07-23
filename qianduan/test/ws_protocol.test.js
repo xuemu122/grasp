@@ -160,7 +160,7 @@ async function startFakeChassisMapServer(port) {
     return { server, requests, png };
 }
 
-test('WebSocket real mode navigates before worker startup, moves to each layer, and stows', async (t) => {
+test('real mode powers on at startup, runs orders, and supports admin stow and poweroff', async (t) => {
     const port = await getFreePort();
     const wsPort = await getFreePort();
     const chassisPort = await getFreePort();
@@ -276,11 +276,30 @@ test('WebSocket real mode navigates before worker startup, moves to each layer, 
     await once(ws, 'open');
 
     const connected = await collector.waitFor((message) => message.type === 'connected');
-    assert.equal(connected.robotStatus, 'standby');
+    assert.ok(['standby', 'ready'].includes(connected.robotStatus));
+
+    let robotStatusPayload;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+        const robotStatusResponse = await fetch(`http://127.0.0.1:${port}/api/robot/status`, {
+            headers: { Cookie: cookie }
+        });
+        robotStatusPayload = await robotStatusResponse.json();
+        if (robotStatusPayload.data.status === 'ready') break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(robotStatusPayload.data.status, 'ready');
+    assert.equal(robotStatusPayload.data.worker_ready, true);
+    assert.match(serverOutput, /\[fake-worker-idle-startup\] 1/);
 
     ws.send(JSON.stringify({ type: 'ping' }));
     const pong = await collector.waitFor((message) => message.type === 'pong');
     assert.equal(typeof pong.time, 'number');
+
+    ws.send(JSON.stringify({ type: 'stow' }));
+    const publicStowError = await collector.waitFor(
+        (message) => message.type === 'error' && message.message === '收起操作仅可在管理页执行'
+    );
+    assert.equal(publicStowError.message, '收起操作仅可在管理页执行');
 
     ws.send(JSON.stringify({ type: 'grab', items: [] }));
     const protocolError = await collector.waitFor(
@@ -364,9 +383,10 @@ test('WebSocket real mode navigates before worker startup, moves to each layer, 
     const chassisMoveIndex = serverOutput.indexOf('底盘开始前往 shelf-a');
     const workerStartIndex = serverOutput.indexOf('启动常驻抓取 worker');
     assert.ok(chassisMoveIndex >= 0, serverOutput);
-    assert.ok(workerStartIndex > chassisMoveIndex, serverOutput);
+    assert.ok(workerStartIndex >= 0 && workerStartIndex < chassisMoveIndex, serverOutput);
     assert.match(serverOutput, /已从签名凭证恢复货架层和底盘点位/);
     assert.deepEqual(commands, [
+        '__stow_pose__',
         '__layer_2__',
         '灵巧手失败商品',
         '__layer_2__',
@@ -379,11 +399,43 @@ test('WebSocket real mode navigates before worker startup, moves to each layer, 
     assert.ok(fakeChassis.commands.some((command) => command.includes('marker=charge_point_1F_35744')));
     assert.equal(collector.messages.some((message) => message.type === 'robot_log'), false);
 
-    ws.send(JSON.stringify({ type: 'stow' }));
-    const stowed = await collector.waitFor(
-        (message) => message.type === 'status' && message.status === 'completed' && message.message === '机械臂已收起'
+    const unauthorizedPoweroff = await fetch(`http://127.0.0.1:${port}/api/robot/poweroff`, { method: 'POST' });
+    assert.equal(unauthorizedPoweroff.status, 401);
+
+    const stowResponse = await fetch(`http://127.0.0.1:${port}/api/robot/stow`, {
+        method: 'POST',
+        headers: { Cookie: cookie }
+    });
+    const stowPayload = await stowResponse.json();
+    assert.equal(stowResponse.status, 200);
+    assert.equal(stowPayload.code, 0);
+    assert.match(stowPayload.message, /保持上电/);
+
+    const poweroffResponse = await fetch(`http://127.0.0.1:${port}/api/robot/poweroff`, {
+        method: 'POST',
+        headers: { Cookie: cookie }
+    });
+    const poweroffPayload = await poweroffResponse.json();
+    assert.equal(poweroffResponse.status, 200);
+    assert.equal(poweroffPayload.code, 0);
+
+    const poweredOffStatusResponse = await fetch(`http://127.0.0.1:${port}/api/robot/status`, {
+        headers: { Cookie: cookie }
+    });
+    const poweredOffStatus = await poweredOffStatusResponse.json();
+    assert.equal(poweredOffStatus.data.status, 'powered-off');
+    assert.equal(poweredOffStatus.data.powered_off, true);
+
+    ws.send(JSON.stringify({
+        type: 'grab',
+        orderId: 'ORD-AFTER-POWEROFF',
+        items: [{ id: 1, name: '云端咖啡', qty: 1, shelf_layer: 2, chassis_marker: 'shelf-a' }]
+    }));
+    const poweredOffError = await collector.waitFor(
+        (message) => message.type === 'error' && /已断电关闭/.test(message.message)
     );
-    assert.equal(stowed.progress, 100);
+    assert.match(poweredOffError.message, /重启服务重新上电/);
+    assert.equal((serverOutput.match(/启动常驻抓取 worker/g) || []).length, 1);
 
     ws.close();
     child.kill('SIGTERM');

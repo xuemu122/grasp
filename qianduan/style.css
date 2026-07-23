@@ -161,23 +161,6 @@ body {
     color: var(--gray-700);
 }
 
-.btn-stow {
-    border: 1px solid var(--gray-300);
-    background: #fff;
-    color: var(--gray-700);
-    border-radius: 8px;
-    padding: 8px 12px;
-    font-size: 0.85rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.btn-stow:hover {
-    border-color: var(--primary);
-    color: var(--primary);
-}
-
 .status-dot {
     width: 8px;
     height: 8px;

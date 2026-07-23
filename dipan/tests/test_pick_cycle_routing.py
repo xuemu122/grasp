@@ -98,6 +98,17 @@ class PickCycleRoutingTests(unittest.TestCase):
         self.assertTrue(waiting_at_place)
         self.assertEqual(target, "云端咖啡")
 
+    def test_worker_poweroff_exits_without_stow_motion(self):
+        arm = Mock()
+        action, waiting_at_place, target = shelf_grasp._handle_worker_command(
+            "__poweroff__", arm, FakeHand(), None, None, None, True
+        )
+
+        self.assertEqual(action, "poweroff")
+        self.assertTrue(waiting_at_place)
+        self.assertIsNone(target)
+        arm.assert_not_called()
+
     def test_worker_layer_command_uses_safe_path_from_place(self):
         arm = Mock()
         hand = FakeHand()
