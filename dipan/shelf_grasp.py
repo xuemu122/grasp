@@ -1006,7 +1006,7 @@ def move_chassis_to_place(marker):
 
 
 def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_layer_idx: Optional[int]):
-    """抓取后放置并回到观察层。低层上撤走指定中转层, 下降回低层时走安全路径。"""
+    """抓取后放置并停在放置点, 下一单按目标层/货架继续移动。"""
     hand_ok = hand is not None and not SKIP_HAND
 
     if hand_ok and not hand.is_holding():
@@ -1027,16 +1027,12 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
     use_transfer_layer = bool(transfer_layers)
 
     if use_transfer_layer:
-        print(f"\n[Transfer] 第{current_layer_idx}层抓取后先回当前层观察位 ...")
-        if not go_to_layer(arm, current_layer_idx):
-            print("  [停止] 回当前层失败, 停在当前位置, 不继续放置流程")
-            return False
-        print(f"\n[Transfer] 直接上撤: {' → '.join(f'第{i}层' for i in transfer_layers)}, 再前往放置点 ...")
+        print(f"\n[Transfer] 抓取后直接安全上撤: {' → '.join(f'第{i}层' for i in transfer_layers)} ...")
         for layer_idx in transfer_layers:
             if layer_idx not in _shelf_layer_poses:
                 print(f"  [停止] 第{layer_idx}层未记录, 停在当前位置, 不继续放置流程")
                 return False
-            if not go_to_layer(arm, layer_idx):
+            if not go_to_layer_via_clearance(arm, layer_idx):
                 print(f"  [停止] 回第{layer_idx}层中转失败, 停在当前位置, 不继续放置流程")
                 return False
 
@@ -1058,31 +1054,12 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
 
     print(f"\n[Place] 前往放置点 ({_place_point_pose[1]}) ...")
     if not go_to_place_point(arm):
-        print("  [停止] 前往放置点失败, 停在当前位置, 不继续回层")
+        print("  [停止] 前往放置点失败, 停在当前位置, 不继续后续订单")
         return False
     if hand_ok:
         hand.open()
     time.sleep(MOTION_SETTLE_S)
-
-    if use_transfer_layer:
-        home_transfer_idx = transfer_layers[-1]
-        print(f"\n[Transfer] 放置后回第{home_transfer_idx}层中转 ...")
-        if not go_to_layer_smooth_from_place(arm, home_transfer_idx):
-            print(f"  [停止] 放置后回第{home_transfer_idx}层失败, 停在当前位置")
-            return False
-
-    if current_layer_idx in _shelf_layer_poses:
-        print(f"\n[Home] 回到第{current_layer_idx}层 ({_shelf_layer_poses[current_layer_idx][1]}) ...")
-        if use_transfer_layer:
-            ok = go_to_layer_via_clearance(arm, current_layer_idx)
-        else:
-            ok = go_to_layer_smooth_from_place(arm, current_layer_idx)
-        if not ok:
-            print("  [停止] 回当前层失败, 停在当前位置")
-            return False
-    else:
-        print("\n[Home] 回到 HOME ...")
-        arm.go_home()
+    print("[流程] 已放置并停在放置点, 下一单直接前往目标层或收起后切换货架")
     return True
 
 
@@ -1504,6 +1481,7 @@ def main():
         auto_attempt_pending = SHELF_GRASP_AUTO_ONCE
         auto_attempt_succeeded = False
         worker_stow_requested = False
+        waiting_at_place = False
 
         def worker_fail(message: str):
             if SHELF_GRASP_WORKER:
@@ -1524,6 +1502,7 @@ def main():
                 if cmd in ("__stow_pose__", "__safe_stow__"):
                     print("[前端常驻模式] 收到底盘移动前安全收起指令", flush=True)
                     if go_to_stow_pose(arm):
+                        waiting_at_place = False
                         print("[前端常驻模式][完成] 已到达收起姿态", flush=True)
                     else:
                         print("[前端常驻模式][失败] 移动到收起姿态失败", flush=True)
@@ -1547,7 +1526,9 @@ def main():
                 if layer_match:
                     target_layer = int(layer_match.group(1))
                     print(f"[前端常驻模式] 正在移动到第{target_layer}层...", flush=True)
-                    if go_to_layer(arm, target_layer):
+                    move_to_layer = go_to_layer_smooth_from_place if waiting_at_place else go_to_layer
+                    if move_to_layer(arm, target_layer):
+                        waiting_at_place = False
                         _current_layer_idx = target_layer
                         if hand is not None:
                             hand.open()
@@ -1562,6 +1543,7 @@ def main():
                     vals = [float(v) for v in movel_match.groups()]
                     print(f"[前端常驻模式][完成] 移动到指定位姿: {vals}")
                     if arm.movel(vals[0], vals[1], vals[2], vals[3], vals[4], vals[5], speed=100):
+                        waiting_at_place = False
                         print(f"[前端常驻模式][完成] 已到达目标位姿")
                     else:
                         print(f"[前端常驻模式][失败] 移动到指定位姿失败")
@@ -2208,25 +2190,28 @@ def main():
                 continue
             time.sleep(GRASP_SETTLE_S)
 
-            if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
-                if not go_to_layer(arm, _current_layer_idx):
-                    print("  [停止] 回观察位失败/报警, 停在当前位置, 不继续放置流程")
-                    worker_fail("回观察位失败/报警")
-                    continue
-            else:
-                arm.go_home()
-
             if not grasp_succeeded:
+                # Only failed grabs return to the original layer for a safe retry.
+                # A successful grab goes straight to placement; the next order
+                # will select its own layer or stow before changing shelves.
+                if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
+                    if not go_to_layer(arm, _current_layer_idx):
+                        print("  [停止] 回观察位失败/报警, 停在当前位置, 不继续放置流程")
+                        worker_fail("回观察位失败/报警")
+                        continue
+                else:
+                    arm.go_home()
                 if hand is not None and hand.ok:
                     hand.open()
                 worker_fail("灵巧手闭合/保持失败")
                 continue
 
-            # 6. 放置并回到当前层观察位
+            # 6. 放置并停在放置点, 下一单再按目标层移动
             if not finish_pick_cycle(arm, hand, _current_layer_idx):
-                print("  [停止] 放置/回层失败, 本次抓取未完成")
-                worker_fail("放置/回层失败")
+                print("  [停止] 放置失败, 本次抓取未完成")
+                worker_fail("放置失败")
                 continue
+            waiting_at_place = True
             time.sleep(MOTION_SETTLE_S)
             auto_attempt_succeeded = True
 
