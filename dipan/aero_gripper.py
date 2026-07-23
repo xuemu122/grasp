@@ -93,11 +93,16 @@ class AeroGripper:
     def __init__(self, port=None):
         self.hand = AeroHand(port=port)
         self.ok = True
-        self._hold_hz = max(1.0, float(os.getenv("AERO_HOLD_HZ", "20")))
+        # Match the official power-grasp example's 10ms CTRL_POS loop.
+        self._hold_hz = max(1.0, float(os.getenv("AERO_HOLD_HZ", "100")))
+        self._hold_max_errors = max(1, int(os.getenv("AERO_HOLD_MAX_ERRORS", "5")))
+        self._hold_log_interval_s = max(0.0, float(os.getenv("AERO_HOLD_LOG_INTERVAL_S", "10")))
         self._hold_pose = None
         self._hold_lock = threading.Lock()
         self._hold_stop = threading.Event()
         self._hold_thread = None
+        self._hold_sent = 0
+        self._hold_failures = 0
 
     def connect(self):
         print("[Aero] 已连接")
@@ -114,29 +119,65 @@ class AeroGripper:
             self.ok = False
             print(f"[Aero] 断开失败, 已禁用灵巧手: {e}")
 
-    def _hold_loop(self):
+    def _hold_loop(self, stop_event=None):
+        stop_event = stop_event or self._hold_stop
         period = 1.0 / self._hold_hz
-        while not self._hold_stop.wait(period):
+        next_tick = time.monotonic() + period
+        consecutive_errors = 0
+        last_log = time.monotonic()
+        while True:
+            if stop_event.wait(max(0.0, next_tick - time.monotonic())):
+                return
+            next_tick += period
             with self._hold_lock:
                 pose = self._hold_pose[:] if self._hold_pose is not None else None
             if pose is None or not self.ok:
                 continue
             try:
-                self.hand.set_joint_positions(pose)
+                result = self.hand.set_joint_positions(pose)
+                if result is False:
+                    raise RuntimeError("CTRL_POS 发送超时")
+                self._hold_sent += 1
+                if consecutive_errors:
+                    print(f"[Aero] 抓取姿态保持已恢复 (连续失败 {consecutive_errors} 次)")
+                    consecutive_errors = 0
+                if self._hold_log_interval_s and time.monotonic() - last_log >= self._hold_log_interval_s:
+                    print(
+                        f"[Aero] 保持心跳: CTRL_POS={self._hold_sent}, "
+                        f"失败={self._hold_failures}, 频率={self._hold_hz:.0f}Hz"
+                    )
+                    last_log = time.monotonic()
             except Exception as e:
-                self.ok = False
-                self._hold_stop.set()
-                print(f"[Aero] 抓取姿态保持失败, 已禁用灵巧手: {e}")
+                consecutive_errors += 1
+                self._hold_failures += 1
+                print(
+                    f"[Aero][警告] 抓取姿态保持发送失败 "
+                    f"({consecutive_errors}/{self._hold_max_errors}): {e}"
+                )
+                if consecutive_errors >= self._hold_max_errors:
+                    self.ok = False
+                    stop_event.set()
+                    print("[Aero] 抓取姿态保持连续失败, 已禁用灵巧手")
+                    return
+            if time.monotonic() - next_tick > period * 4:
+                # Do not spin after a long serial/OS stall; resume from now.
+                next_tick = time.monotonic() + period
 
     def _start_hold(self, pose):
         target = [float(value) for value in pose]
-        self.hand.set_joint_positions(target)
+        result = self.hand.set_joint_positions(target)
+        if result is False:
+            raise RuntimeError("CTRL_POS 初始发送超时")
         with self._hold_lock:
             self._hold_pose = target
+        stop_event = threading.Event()
+        self._hold_stop = stop_event
+        self._hold_sent = 0
+        self._hold_failures = 0
         if self._hold_thread is None or not self._hold_thread.is_alive():
-            self._hold_stop.clear()
             self._hold_thread = threading.Thread(
                 target=self._hold_loop,
+                args=(stop_event,),
                 name="aero-grasp-hold",
                 daemon=True,
             )
@@ -144,13 +185,25 @@ class AeroGripper:
         print(f"[Aero] 持续保持抓取姿态 ({self._hold_hz:.0f}Hz)")
 
     def _stop_hold(self):
-        self._hold_stop.set()
+        stop_event = self._hold_stop
+        stop_event.set()
         thread = self._hold_thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
-            thread.join(timeout=1.0)
+            thread.join(timeout=2.0)
         self._hold_thread = None
         with self._hold_lock:
             self._hold_pose = None
+
+    def is_holding(self):
+        """Return whether the active hold loop is still sending CTRL_POS."""
+        thread = self._hold_thread
+        return bool(
+            self.ok
+            and thread is not None
+            and thread.is_alive()
+            and self._hold_pose is not None
+            and not self._hold_stop.is_set()
+        )
 
     def open(self):
         if not self.ok:
@@ -158,7 +211,9 @@ class AeroGripper:
             return False
         try:
             self._stop_hold()
-            self.hand.set_joint_positions(self.OPEN)
+            result = self.hand.set_joint_positions(self.OPEN)
+            if result is False:
+                raise RuntimeError("CTRL_POS 张开发送超时")
             print("[Aero] 张开")
             return True
         except Exception as e:
@@ -216,6 +271,13 @@ class AeroGripper:
             )
             if not required_fingers:
                 required_fingers = {3, 4}
+            min_contacts = max(
+                1,
+                min(
+                    len(required_fingers),
+                    int(os.getenv("AERO_FLEX_MIN_CONTACTS", "2")),
+                ),
+            )
             missing_required = sorted(required_fingers - active_joints)
             if missing_required:
                 raise ValueError(f"required fingers 未激活: {missing_required}")
@@ -240,6 +302,7 @@ class AeroGripper:
 
             hit_counts = {idx: 0 for idx in required_fingers}
             locked = {}
+            contact_locked = set()
             print(
                 "[Aero] 柔性抓取开始: "
                 f"active={sorted(active_joints)} required={sorted(required_fingers)} "
@@ -289,6 +352,7 @@ class AeroGripper:
                         lock_value = min(max_cmd, values.get(idx, start) + extra_close)
                         values[idx] = lock_value
                         locked[idx] = lock_value
+                        contact_locked.add(idx)
                         if empty_profile:
                             _, profile_abs = _profile_abs_envelope(empty_profile, trigger_cmd, profile_window_deg)
                             reason = (
@@ -318,6 +382,13 @@ class AeroGripper:
                 if events:
                     print(f"[Aero] 柔性锁定: {', '.join(events)}")
                 if all(idx in locked for idx in required_fingers):
+                    if len(contact_locked) < min_contacts:
+                        print(
+                            "[Aero] 柔性抓取失败: "
+                            f"有效接触手指={sorted(contact_locked)}, "
+                            f"少于要求 {min_contacts}, 判定为空抓"
+                        )
+                        return False
                     final_pose = self._pose_from_values(thumb0, values)
                     self._start_hold(final_pose)
                     print(
@@ -328,9 +399,13 @@ class AeroGripper:
 
             pending = sorted(idx for idx in required_fingers if idx not in locked)
             print(f"[Aero][警告] 柔性抓取达到最大步数, 未完成: {pending}")
-            if locked:
+            if len(contact_locked) >= min_contacts:
                 self._start_hold(self._pose_from_values(thumb0, values))
                 return True
+            print(
+                "[Aero] 柔性抓取失败: "
+                f"有效接触手指={sorted(contact_locked)}, 少于要求 {min_contacts}"
+            )
             return False
         except Exception as e:
             self.ok = False

@@ -62,7 +62,10 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `AERO_FLEX_PROFILE_DELTA_MA`：相对空载曲线额外增加多少 mA 判定接触，默认 `180`。
 - `AERO_FLEX_PROFILE_WINDOW_DEG`：读取空载曲线时取附近角度电流上包络，默认 `6` 度；用于抑制某个角度空载电流异常偏低导致误触发。
 - `AERO_FLEX_EXTRA_CLOSE`：单根手指检测到接触后继续闭合多少度再锁住，默认 `8`。
-- `AERO_HOLD_HZ`：抓取成功后重复发送最终闭合目标的频率，默认 `20Hz`；一直保持到放置位调用张开，防止运输期间手指缓慢回开。
+- `AERO_FLEX_MIN_CONTACTS`：柔性抓取判定成功所需的最少接触手指数，默认 `2`；仅到达最大闭合角度、不满足接触数时判定为空抓并让订单失败。
+- `AERO_HOLD_HZ`：抓取成功后重复发送最终闭合目标的频率，默认 `100Hz`，与 Aero 官方 power-grasp 示例的 10ms 循环一致；一直保持到放置位调用张开，防止运输期间手指缓慢回开。
+- `AERO_HOLD_MAX_ERRORS`：保持期间允许的连续发送失败次数，默认 `5`；短暂串口抖动恢复后继续保持，连续失败才禁用灵巧手。
+- `AERO_HOLD_LOG_INTERVAL_S`：保持心跳日志间隔，默认 `10` 秒；设为 `0` 可关闭。心跳会显示实际发送数和失败数。
 - `AERO_RESPONSE_TIMEOUT_S`：等待灵巧手状态响应的单次超时，默认 `0.2` 秒。
 - `AERO_RESPONSE_RETRIES`：灵巧手状态查询失败后的总尝试次数，默认 `3`；读取时会自动跳过串口中的 `[BOOT]` 等非协议文本。
 - `ROBOT_POLL_S`：等待 DOBOT 运动完成时的状态轮询间隔，默认 `0.2` 秒。

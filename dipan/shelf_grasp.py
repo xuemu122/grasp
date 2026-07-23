@@ -1009,6 +1009,10 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
     """抓取后放置并回到观察层。低层上撤走指定中转层, 下降回低层时走安全路径。"""
     hand_ok = hand is not None and not SKIP_HAND
 
+    if hand_ok and not hand.is_holding():
+        print("  [停止] 灵巧手保持线程未运行, 不继续运输/放置流程")
+        return False
+
     if _place_point_pose is None:
         if hand_ok:
             hand.open()
@@ -1047,6 +1051,10 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
             if not move_chassis_to_place(place_marker):
                 print("  [停止] 底盘未能前往放置固定点, 不继续机械臂放置")
                 return False
+
+    if hand_ok and not hand.is_holding():
+        print("  [停止] 运输期间灵巧手保持失败, 不继续机械臂放置")
+        return False
 
     print(f"\n[Place] 前往放置点 ({_place_point_pose[1]}) ...")
     if not go_to_place_point(arm):
@@ -2174,18 +2182,22 @@ def main():
                 continue
             time.sleep(GRASP_SETTLE_S)
 
-            # 4. 抓取 (动作二) 并等待 5s 握紧
+            # 4. 抓取 (动作二) 并等待握紧。闭手失败只能安全退回，不能进入放置流程。
+            grasp_succeeded = SKIP_HAND
             if not SKIP_HAND:
                 if HAND_GRASP_MODE in ("flex", "flexible", "current"):
-                    hand_ok = hand.flexible_close()
+                    grasp_succeeded = hand.flexible_close()
                 else:
                     grasp_mode = "bottle" if HAND_GRASP_MODE == "bottle" and is_side_grasp else None
-                    hand_ok = hand.close(top=not is_side_grasp, mode=grasp_mode)
-                if hand_ok:
+                    grasp_succeeded = hand.close(top=not is_side_grasp, mode=grasp_mode)
+                if grasp_succeeded:
                     print(f"  灵巧手 → 闭合, 等待 {HAND_CLOSE_WAIT_S:.1f}s ...")
                     time.sleep(HAND_CLOSE_WAIT_S)
+                    if not hand.is_holding():
+                        grasp_succeeded = False
+                        print("  [抓取失败] 等待握紧期间灵巧手保持线程已停止")
                 else:
-                    print("  灵巧手不可用, 继续执行机械臂安全退回")
+                    print("  [抓取失败] 灵巧手闭合/保持失败，只执行机械臂安全退回，不调用底盘和放置流程")
 
             # 5. 后退: 先沿手指方向退回对齐位, 再离开货架
             retreat_pt = np.array([ax+offset_x, ay+offset_y, az+offset_z])
@@ -2203,6 +2215,12 @@ def main():
                     continue
             else:
                 arm.go_home()
+
+            if not grasp_succeeded:
+                if hand is not None and hand.ok:
+                    hand.open()
+                worker_fail("灵巧手闭合/保持失败")
+                continue
 
             # 6. 放置并回到当前层观察位
             if not finish_pick_cycle(arm, hand, _current_layer_idx):

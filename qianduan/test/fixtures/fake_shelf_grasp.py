@@ -25,6 +25,10 @@ for raw in sys.stdin:
         print(f"[前端常驻模式][完成] 已到达第{layer}层", flush=True)
         print("[前端常驻模式] 等待商品名 (**stow**=收起并退出) ...", flush=True)
         continue
+    if command == "灵巧手失败商品":
+        print("[前端常驻模式][失败] 灵巧手闭合/保持失败", flush=True)
+        print("[前端常驻模式] 等待商品名 (**stow**=收起并退出) ...", flush=True)
+        continue
     print("[深度护栏] 探入路径", flush=True)
     print(f"[前端常驻模式][完成] {command}", flush=True)
     print("[前端常驻模式] 等待商品名 (**stow**=收起并退出) ...", flush=True)

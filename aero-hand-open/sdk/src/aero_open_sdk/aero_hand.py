@@ -137,7 +137,7 @@ class AeroHand:
             positions[6], positions[6], positions[6],
         ]
 
-    def set_joint_positions(self, positions: list):
+    def set_joint_positions(self, positions: list) -> bool:
         """
         Set the joint positions of the Aero Hand.
 
@@ -170,7 +170,8 @@ class AeroHand:
             self._send_data(CTRL_POS, [int(a) for a in actuations])
         except SerialTimeoutException as e:
             print(f"Serial Timeout while sending joint positions: {e}")
-            return
+            return False
+        return True
 
     def tendon_to_actuations(self, tendon_extension: float) -> float:
         """

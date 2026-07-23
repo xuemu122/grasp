@@ -294,6 +294,22 @@ test('WebSocket real mode navigates before worker startup, moves to each layer, 
     );
     assert.match(markerError.message, /未配置底盘点位/);
 
+    ws.send(JSON.stringify({
+        type: 'grab',
+        orderId: 'ORD-HAND-FAIL',
+        items: [{ id: 999997, name: '灵巧手失败商品', qty: 1, shelf_layer: 2, chassis_marker: 'shelf-a' }]
+    }));
+    const handError = await collector.waitFor(
+        (message) => message.type === 'status' && message.status === 'error'
+            && message.orderId === 'ORD-HAND-FAIL'
+    );
+    assert.match(handError.message, /灵巧手闭合\/保持失败/);
+    assert.equal(
+        collector.messages.some((message) => message.type === 'status'
+            && message.status === 'completed' && message.orderId === 'ORD-HAND-FAIL'),
+        false
+    );
+
     ws.send('null');
     const objectError = await collector.waitFor(
         (message) => message.type === 'error' && message.message === 'JSON 指令必须是对象'
@@ -335,7 +351,14 @@ test('WebSocket real mode navigates before worker startup, moves to each layer, 
     assert.ok(chassisMoveIndex >= 0, serverOutput);
     assert.ok(workerStartIndex > chassisMoveIndex, serverOutput);
     assert.match(serverOutput, /已从签名凭证恢复货架层和底盘点位/);
-    assert.deepEqual(commands, ['__layer_2__', '云端咖啡', '__layer_2__', '云端咖啡']);
+    assert.deepEqual(commands, [
+        '__layer_2__',
+        '灵巧手失败商品',
+        '__layer_2__',
+        '云端咖啡',
+        '__layer_2__',
+        '云端咖啡'
+    ]);
     assert.equal(fakeChassis.commands.filter((command) => command.startsWith('/api/move?')).length, 1);
     assert.equal(collector.messages.some((message) => message.type === 'robot_log'), false);
 

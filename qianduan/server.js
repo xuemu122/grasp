@@ -1892,7 +1892,7 @@ async function runRealGrab(ws, orderId, item, progressBase, totalUnits, itemNo) 
                     message: messages[stage.stage]
                 });
             }
-            if (trimmed.includes('[前端常驻模式][完成]')) {
+            if (trimmed === `[前端常驻模式][完成] ${itemName}`) {
                 finishOk();
                 return;
             }
