@@ -35,6 +35,9 @@
 - `data/products.json`：默认 JSON 商品库。
 - `test/ws_protocol.test.js`：不连接真实机械臂的 WebSocket 集成测试。
 
+本地环境变量示例见 [`.env.example`](.env.example)。`.env` 只用于现场临时保存配置，已加入忽略列表；
+生产环境建议继续使用 `/etc/grasp-qianduan.env`，通过 `source` 注入进程环境，不要把真实密码和会话密钥提交到仓库。
+
 ## 云端部署
 
 云端 Nginx 直接托管静态文件，并使用以下两个反向代理：

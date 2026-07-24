@@ -21,3 +21,11 @@ dataset_captures/
 
 # Runtime chassis map snapshots
 qianduan/data/chassis_map_cache/
+
+# Local deployment configuration and runtime logs
+qianduan/.env
+qianduan/*.log
+*.log
+
+# Generated visual/debug artifacts
+dipan/calib_debug_*.png

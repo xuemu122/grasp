@@ -10,7 +10,7 @@ import json
 import argparse
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, Dict, Tuple
 
 from ultralytics import YOLO
 

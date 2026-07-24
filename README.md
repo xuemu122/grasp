@@ -74,14 +74,8 @@ curl http://192.168.124.90:9001/maps/shiyanshi_01/1/map.yaml
 
 第一条返回 JSON 说明盒子 HTTP 服务正常；第二条返回 `origin`、`resolution` 等 YAML 字段说明桥接后的底盘地图服务正常。Node 每次启动会更新一次 `qianduan/data/chassis_map_cache/` 本地地图快照，管理页平时读取本地 PNG/YAML 和点位元数据，底盘临时断网时继续使用上一次成功快照。管理页中的“抓取/放置前导航”默认关闭，放置点默认 `yaojia1`，开启后配置会保存到 `qianduan/data/chassis_settings.json`。首次订单保持机械臂现有的收起姿态，先让底盘到达商品点位；只有到点后才启动抓取 worker，依次进入 Home、初始观察位和商品对应层观察位。worker 已运行时，后续跨点位订单会先把机械臂收起，再移动底盘。到达目标观察层后会明确张开 Aero Hand，再开始拍照识别。导航开启时，未绑定底盘点位的商品会直接报错并停止，不会在错误位置继续抓取。
 
-历史/实验目录：
-
-```text
-drp/        DRP/Franka/pointnet2/robofin 实验代码，当前货架抓取主线不用
-orca_core1/ 旧 Orca 灵巧手代码，当前已经切换到 Aero Hand
-```
-
-如果当前仓库只保留 Nova5 + Aero Hand 货架抓取主线，可以删除 `drp/` 和 `orca_core1/`，并同步提交删除。
+仓库职责、生产依赖方向、工具脚本和清理边界见 [`CODEMAP.md`](CODEMAP.md)。旧 Orca 实验脚本
+`dipan/box_grasp.py` 仍保留在历史文件中，但不属于当前生产入口。
 
 ## 常用命令
 
@@ -206,27 +200,16 @@ cd /home/nvidia/grasp/识别
 - Nova5 自碰撞护栏默认开启，基于 URDF/SRDF 和胶囊近似在 MovL/MovJ 前检查。
 - 抓取主程序里 `b` 可切换底盘放置流程，开启后会调用 `move_robot.py place`。
 
-## 清理建议
+## 本地清理
 
-当前主线不需要以下历史目录：
-
-```bash
-git rm -r drp orca_core1
-```
-
-如果暂时不想提交删除，只想清掉未追踪依赖缓存：
+常见缓存和构建产物可以在确认没有 ROS2 进程使用后清理：
 
 ```bash
-rm -rf drp/pointnet2_ops drp/robofin
-```
-
-可随时清理的缓存/构建产物：
-
-```bash
-rm -rf dipan/__pycache__ 识别/__pycache__ drp/__pycache__
+rm -rf dipan/__pycache__ 识别/__pycache__
 rm -rf dobot_ws/build dobot_ws/log
 ```
 
-`dobot_ws/install/` 是 ROS2 安装产物；如果当前环境还依赖它，先不要删。
+`dobot_ws/install/` 是 ROS2 安装产物；如果当前环境还依赖它，先不要删。模型、标定和位姿 JSON
+属于运行资源，不要当作缓存删除。
 
 更多现场操作见 [dipan/README.md](dipan/README.md)。
