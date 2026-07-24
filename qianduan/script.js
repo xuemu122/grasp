@@ -20,9 +20,9 @@ function syncOrderButton() {
     if (!btnSubmit) return;
     const locked = !robotAcceptingOrders || Boolean(currentOrderId);
     btnSubmit.disabled = locked;
-    if (!currentOrderId) {
-        btnSubmit.textContent = robotAcceptingOrders ? '开始拣选' : '机器人移动中...';
-    }
+    btnSubmit.textContent = currentOrderId
+        ? '机器人运动中...'
+        : (robotAcceptingOrders ? '开始拣选' : '机器人移动中...');
 }
 
 function connectWebSocket() {
@@ -99,6 +99,10 @@ function handleWSMessage(msg) {
                 updateGrabProgress(msg);
             } else if (msg.status === 'layer-reached') {
                 updateRobotStatus('ready', msg.message || `已到达第${msg.layer}层`);
+            } else if (msg.status === 'order-ready') {
+                if (msg.orderId && currentOrderId && msg.orderId === currentOrderId) {
+                    onOrderReady(msg);
+                }
             } else if (msg.status === 'completed') {
                 if (msg.orderId && currentOrderId && msg.orderId === currentOrderId) {
                     onGrabCompleted(msg);
@@ -719,14 +723,16 @@ async function onGrabCompleted(msg) {
     const progressBar = document.getElementById('progressBar');
     const progressText = document.getElementById('progressText');
     const robotAnim = document.getElementById('robotAnim');
-    const overlay = document.getElementById('modalOverlay');
+    const modalTitle = document.querySelector('#modalContent .modal-title');
 
     if (progressBar) progressBar.style.width = '100%';
-    if (progressText) progressText.textContent = '✅ 抓取完成！请取走您的商品';
+    if (modalTitle) modalTitle.textContent = '商品已放置，机器人正在回充...';
+    if (progressText) progressText.textContent = '✅ 订单已完成，机器人运动中，请稍候...';
     if (robotAnim) {
-        robotAnim.classList.remove('moving');
-        robotAnim.textContent = '✅';
+        robotAnim.classList.add('moving');
+        robotAnim.textContent = '🚚';
     }
+    updateRobotStatus('busy', '商品已放置，机器人正在回充...');
 
     const items = currentOrderItems.map(item => ({ ...item }));
     try {
@@ -736,19 +742,21 @@ async function onGrabCompleted(msg) {
         alert(`抓取已完成，但库存更新失败: ${error.message}`);
     }
 
-    setTimeout(() => {
-        if (overlay) overlay.style.display = 'none';
-        updateRobotStatus('online', '机器人就绪');
-        showOrderToast(msg.orderId, items);
-        cart = {};
-        currentOrderId = null;
-        currentOrderToken = null;
-        currentOrderItems = [];
-        updateCartUI();
-        renderProducts();
+}
 
-        syncOrderButton();
-    }, 1500);
+function onOrderReady(msg) {
+    const overlay = document.getElementById('modalOverlay');
+    const items = currentOrderItems.map(item => ({ ...item }));
+    if (overlay) overlay.style.display = 'none';
+    updateRobotStatus('online', msg.message || '机器人已回到充电桩');
+    showOrderToast(msg.orderId, items);
+    cart = {};
+    currentOrderId = null;
+    currentOrderToken = null;
+    currentOrderItems = [];
+    updateCartUI();
+    renderProducts();
+    syncOrderButton();
 }
 
 // ========== 抓取失败 ==========

@@ -204,6 +204,7 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
             ROBOT_WORKER_READY_TIMEOUT_MS: '5000',
             ROBOT_GRAB_TIMEOUT_MS: '5000',
             ROBOT_STOW_TIMEOUT_MS: '5000',
+            ORDER_READY_CLOSE_DELAY_MS: '20',
             CHASSIS_NAVIGATION_ENABLE: '1',
             CHASSIS_HOST: '127.0.0.1',
             CHASSIS_PORT: String(chassisPort),
@@ -374,6 +375,10 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
         (message) => message.type === 'status' && message.status === 'completed' && message.orderId === orderId
     );
     assert.equal(completed.progress, 100);
+    const orderReady = await collector.waitFor(
+        (message) => message.type === 'status' && message.status === 'order-ready' && message.orderId === orderId
+    );
+    assert.equal(orderReady.progress, 100);
     assert.equal(
         collector.messages.filter((message) => message.orderId === orderId && message.stage === 'picking').length,
         2

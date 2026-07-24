@@ -47,6 +47,7 @@ const PRODUCT_UPLOAD_MAX_BYTES = Number(process.env.PRODUCT_UPLOAD_MAX_BYTES || 
 const ROBOT_WORKER_READY_TIMEOUT_MS = Number(process.env.ROBOT_WORKER_READY_TIMEOUT_MS || 90000);
 const ROBOT_GRAB_TIMEOUT_MS = Number(process.env.ROBOT_GRAB_TIMEOUT_MS || 120000);
 const ROBOT_STOW_TIMEOUT_MS = Number(process.env.ROBOT_STOW_TIMEOUT_MS || 120000);
+const ORDER_READY_CLOSE_DELAY_MS = Number(process.env.ORDER_READY_CLOSE_DELAY_MS || 3000);
 const ROBOT_FILTER_PREVIEW_TIMEOUT_MS = Number(process.env.ROBOT_FILTER_PREVIEW_TIMEOUT_MS || 30000);
 const ROBOT_MAX_ITEM_QTY = Number(process.env.ROBOT_MAX_ITEM_QTY || 20);
 const ROBOT_MAX_ORDER_UNITS = Number(process.env.ROBOT_MAX_ORDER_UNITS || 50);
@@ -1742,13 +1743,25 @@ async function executeOrderItems(ws, orderId, items, totalUnits) {
 }
 
 async function completeOrder(ws, orderId) {
-    await returnRobotToCharge(ws, orderId);
     const autoReturned = ROBOT_GRASP_REAL && ROBOT_AUTO_RETURN_CHARGE;
-    const message = autoReturned
-        ? '所有商品抓取完成，机器人已收起并回充'
-        : '所有商品抓取完成';
-    sendStatus(ws, 'completed', { orderId, message, progress: 100 });
-    log(`✅ 订单 ${orderId} 处理完成${autoReturned ? '，已回充' : ''}`);
+    sendStatus(ws, 'completed', {
+        orderId,
+        message: autoReturned
+            ? '商品已放置，订单完成，机器人正在收起并回充'
+            : '所有商品抓取完成',
+        progress: 100,
+        phase: 'placed'
+    });
+    log(`✅ 订单 ${orderId} 商品已放置并完成，机器人${autoReturned ? '继续收起回充' : '无需回充'}`);
+
+    await returnRobotToCharge(ws, orderId);
+    await sleep(ORDER_READY_CLOSE_DELAY_MS);
+    sendStatus(ws, 'order-ready', {
+        orderId,
+        message: '机器人已回到充电桩，可以继续点单',
+        progress: 100
+    });
+    log(`✅ 订单 ${orderId} 收尾完成，已等待 ${ORDER_READY_CLOSE_DELAY_MS}ms`);
 }
 
 // ========== 处理抓取命令 ==========
