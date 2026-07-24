@@ -15,8 +15,10 @@ import cv2
 import numpy as np
 from typing import Optional
 
-# ── 识别模块 ──
-sys.path.insert(0, "/home/nvidia/grasp/识别")
+# ── 识别模块：按仓库相对路径加载，避免部署目录变化后入口失效 ──
+VISION_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "识别"))
+if VISION_DIR not in sys.path:
+    sys.path.insert(0, VISION_DIR)
 from orbbec_detect import MedicineLocatorSystem, RealSenseCamera
 from orbbec_detect import _assess_lighting
 
@@ -118,6 +120,7 @@ TARGET_PRODUCT_QUERY = os.getenv("TARGET_PRODUCT_QUERY", os.getenv("TARGET_NAME"
 SHELF_GRASP_AUTO_ONCE = os.getenv("SHELF_GRASP_AUTO_ONCE", "0").lower() in ("1", "true", "yes", "on")
 SHELF_GRASP_WORKER = os.getenv("SHELF_GRASP_WORKER", "0").lower() in ("1", "true", "yes", "on")
 SHELF_GRASP_IDLE_STARTUP = os.getenv("SHELF_GRASP_IDLE_STARTUP", "0").lower() in ("1", "true", "yes", "on")
+SAVE_DEBUG_IMAGES = os.getenv("SAVE_DEBUG_IMAGES", "0").lower() in ("1", "true", "yes", "on")
 LAYER_ENTRY_SHELF = "shelf"
 LAYER_ENTRY_STOW = "stow"
 LAYER_ENTRY_UNKNOWN = "unknown"
@@ -1855,9 +1858,10 @@ def main():
                     for t in stable
                 )
                 print(f"  → 多帧稳定候选: {stable_text}")
-            cand_path = "/tmp/shelf_yolo_candidates.jpg"
-            if locator.save_candidate_debug_image(best_img, cand_path):
-                print(f"  → YOLO候选诊断图已保存: {cand_path} (绿=达阈值, 橙=低置信)")
+            if SAVE_DEBUG_IMAGES:
+                cand_path = "/tmp/shelf_yolo_candidates.jpg"
+                if locator.save_candidate_debug_image(best_img, cand_path):
+                    print(f"  → YOLO候选诊断图已保存: {cand_path} (绿=达阈值, 橙=低置信)")
             if not detections:
                 print("未检测到盒子")
                 # 保存原图排查
@@ -1948,35 +1952,36 @@ def main():
             )
             print(f"抓取点 ({grip_mode}): ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
 
-            # 重新画正确的抓取点 (覆盖上面简单画的黄点)
-            viz = best_img.copy()
-            if shelf_board_bounds and shelf_board_bounds.get("row_min") is not None:
-                filter_row_min = shelf_board_bounds["row_min"]
-                filter_row_max = shelf_board_bounds["row_max"]
-                filter_label = "动态层板范围"
-            else:
-                filter_row_min = TARGET_ROI_Y_MIN
-                filter_row_max = TARGET_ROI_Y_MAX
-                filter_label = "回退ROI"
-            cv2.line(viz, (0, filter_row_min), (viz.shape[1] - 1, filter_row_min), (255, 0, 0), 1)
-            cv2.line(viz, (0, filter_row_max), (viz.shape[1] - 1, filter_row_max), (255, 0, 0), 1)
-            cv2.putText(viz, filter_label, (8, max(18, int(filter_row_min) - 5)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 0), 1)
-            for d in detections:
-                is_target_box = d.class_id == target.class_id and _bbox_iou(d.bbox, target.bbox) >= DETECTION_STABILITY_IOU
-                col = (0, 0, 255) if is_target_box else (0, 255, 0)
-                cv2.rectangle(viz, (int(d.bbox[0]), int(d.bbox[1])),
-                              (int(d.bbox[2]), int(d.bbox[3])), col, 2)
-                cv2.putText(viz, f"{d.class_name or '?'} {d.depth_m:.2f}m" if d.depth_m else f"{d.class_name or '?'}",
-                            (int(d.bbox[0]), int(d.bbox[1]) - 8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
-            # 目标抓取点: 使用规划模块返回的真实像素点，避免调试图仍显示旧的 bbox 中点。
-            gx, gy = int(round(grip_pixel[0])), int(round(grip_pixel[1]))
-            cv2.circle(viz, (gx, gy), 6, (0, 255, 255), -1)
-            cv2.putText(viz, "GRIP", (gx + 8, gy - 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-            cv2.imwrite("/tmp/shelf_detection.jpg", viz)
-            print(f"  → 检测画面已保存: /tmp/shelf_detection.jpg  (蓝线={filter_label}, 绿框=检测, 红框=目标, 黄点=抓取点)")
+            if SAVE_DEBUG_IMAGES:
+                # 重新画正确的抓取点 (覆盖上面简单画的黄点)
+                viz = best_img.copy()
+                if shelf_board_bounds and shelf_board_bounds.get("row_min") is not None:
+                    filter_row_min = shelf_board_bounds["row_min"]
+                    filter_row_max = shelf_board_bounds["row_max"]
+                    filter_label = "动态层板范围"
+                else:
+                    filter_row_min = TARGET_ROI_Y_MIN
+                    filter_row_max = TARGET_ROI_Y_MAX
+                    filter_label = "回退ROI"
+                cv2.line(viz, (0, filter_row_min), (viz.shape[1] - 1, filter_row_min), (255, 0, 0), 1)
+                cv2.line(viz, (0, filter_row_max), (viz.shape[1] - 1, filter_row_max), (255, 0, 0), 1)
+                cv2.putText(viz, filter_label, (8, max(18, int(filter_row_min) - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 0), 1)
+                for d in detections:
+                    is_target_box = d.class_id == target.class_id and _bbox_iou(d.bbox, target.bbox) >= DETECTION_STABILITY_IOU
+                    col = (0, 0, 255) if is_target_box else (0, 255, 0)
+                    cv2.rectangle(viz, (int(d.bbox[0]), int(d.bbox[1])),
+                                  (int(d.bbox[2]), int(d.bbox[3])), col, 2)
+                    cv2.putText(viz, f"{d.class_name or '?'} {d.depth_m:.2f}m" if d.depth_m else f"{d.class_name or '?'}",
+                                (int(d.bbox[0]), int(d.bbox[1]) - 8),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
+                # 目标抓取点: 使用规划模块返回的真实像素点，避免调试图仍显示旧的 bbox 中点。
+                gx, gy = int(round(grip_pixel[0])), int(round(grip_pixel[1]))
+                cv2.circle(viz, (gx, gy), 6, (0, 255, 255), -1)
+                cv2.putText(viz, "GRIP", (gx + 8, gy - 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                cv2.imwrite("/tmp/shelf_detection.jpg", viz)
+                print(f"  → 检测画面已保存: /tmp/shelf_detection.jpg  (蓝线={filter_label}, 绿框=检测, 红框=目标, 黄点=抓取点)")
 
             # ── 用法兰局部轴计算法兰/悬停/抓取位姿 (世界坐标, 米) ──
             R_f = transformer._rpy_to_rot(flange_pose[3], flange_pose[4], flange_pose[5])

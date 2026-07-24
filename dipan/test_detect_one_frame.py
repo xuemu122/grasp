@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""拍一帧 → YOLO 识别 → 显示结果并保存图片"""
-import sys, cv2
-sys.path.insert(0, "/home/nvidia/grasp/识别1")
+"""拍一帧 -> YOLO 识别 -> 显示结果并保存图片（历史调试工具）。"""
+import os
+import sys
+
+import cv2
+
+VISION_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "识别"))
+sys.path.insert(0, VISION_DIR)
 from orbbec_detect import MedicineLocatorSystem, RealSenseCamera
 
-MODEL   = "/home/nvidia/grasp/识别1/best.pt"
-MAPPING = "/home/nvidia/grasp/识别1/shelf_mapping.yaml"
+MODEL   = os.path.join(VISION_DIR, "best.pt")
+MAPPING = os.path.join(VISION_DIR, "shelf_mapping.yaml")
 OUT     = "/tmp/test_detection.jpg"
 
 print("[1] 初始化相机 ...")

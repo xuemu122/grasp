@@ -59,6 +59,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `DETECTION_WARMUP_FRAMES`：相机自动曝光预热丢弃帧数，默认 `2`。
 - `DETECTION_EARLY_STOP_FRAMES`：至少采集多少有效帧后允许稳定目标提前结束，默认 `6`；设为 `0` 关闭提前结束。
 - `DETECTION_EARLY_STOP_SUPPORT`：提前结束所需的同目标稳定轨迹支持帧数，默认 `5`。
+- `SAVE_DEBUG_IMAGES`：是否保存识别候选图和抓取标注图，默认 `0`；需要现场排查时设为 `1`，失败原图仍会单独保存。
 - `TARGET_DEPTH_REFINE_RADIUS_PX`：最终参考帧上重新采样目标中心深度的半径，默认 `10` px；用于让抓取点深度与实际用于抓取的图像帧一致。
 - `TARGET_DEPTH_REFINE_MAX_DELTA_M`：目标深度重采样允许偏离融合深度的最大值，默认 `0.08` m；超过则认为可能采到背景并跳过校正。
 - `MOTION_SETTLE_S`：普通运动完成后的短缓冲，默认 `0.2` 秒。
