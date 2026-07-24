@@ -375,10 +375,29 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
         (message) => message.type === 'status' && message.status === 'completed' && message.orderId === orderId
     );
     assert.equal(completed.progress, 100);
+    assert.equal(completed.phase, 'placed');
+    assert.match(completed.message, /商品已放置/);
+
+    ws.send(JSON.stringify({
+        type: 'grab',
+        orderId: 'ORD-WHILE-RETURNING',
+        items: [{ id: 1, name: '云端咖啡', qty: 1, shelf_layer: 2, chassis_marker: 'shelf-a' }]
+    }));
+    const returningBusyError = await collector.waitFor(
+        (message) => message.type === 'error' && /暂不能提交新订单/.test(message.message)
+    );
+    assert.match(returningBusyError.message, /暂不能提交新订单/);
+
     const orderReady = await collector.waitFor(
         (message) => message.type === 'status' && message.status === 'order-ready' && message.orderId === orderId
     );
     assert.equal(orderReady.progress, 100);
+    const completedIndex = collector.messages.indexOf(completed);
+    const returningIndex = collector.messages.findIndex(
+        (message) => message.type === 'status' && message.status === 'returning' && message.orderId === orderId
+    );
+    const orderReadyIndex = collector.messages.indexOf(orderReady);
+    assert.ok(completedIndex >= 0 && returningIndex > completedIndex && orderReadyIndex > returningIndex);
     assert.equal(
         collector.messages.filter((message) => message.orderId === orderId && message.stage === 'picking').length,
         2
