@@ -1476,7 +1476,10 @@ async function navigateChassisToMarker(markerName, options = {}) {
     }
     const operation = navigateChassisToMarkerUnlocked(markerName, options);
     chassisNavigationPromise = operation;
-    broadcastRobotStatus('chassis-moving', `底盘正在前往 ${markerName}`);
+    broadcastRobotStatus(
+        'chassis-moving',
+        options.statusMessage || `底盘正在前往 ${markerName}`
+    );
     try {
         return await operation;
     } finally {
@@ -1689,6 +1692,7 @@ async function returnRobotToCharge(ws, orderId) {
     sendStatus(ws, 'returning', {
         orderId,
         progress: 99,
+        phase: 'stowing',
         message: '订单已拣选完成，机械臂正在收起...'
     });
     broadcastRobotStatus('stowing', '订单完成，机械臂正在收起');
@@ -1697,9 +1701,20 @@ async function returnRobotToCharge(ws, orderId) {
     sendStatus(ws, 'returning', {
         orderId,
         progress: 99,
-        message: `机械臂已收起，底盘正在回充电桩 ${CHASSIS_CHARGE_MARKER}...`
+        phase: 'charging',
+        message: '机械臂已收起，底盘正在回充电桩...'
     });
-    await navigateChassisToMarker(CHASSIS_CHARGE_MARKER, { arriveOnDocking: true });
+    await navigateChassisToMarker(CHASSIS_CHARGE_MARKER, {
+        arriveOnDocking: true,
+        statusMessage: '订单已完成，底盘正在回充电桩'
+    });
+    sendStatus(ws, 'returning', {
+        orderId,
+        progress: 100,
+        phase: 'settling',
+        message: `机器人已到达充电桩，等待 ${Math.round(ORDER_READY_CLOSE_DELAY_MS / 1000)} 秒后恢复点单...`
+    });
+    broadcastRobotStatus('returning', '机器人已到达充电桩，正在等待系统稳定');
 }
 
 function resolveOrderItems(msg, orderId) {
@@ -1754,11 +1769,13 @@ async function completeOrder(ws, orderId) {
     });
     log(`✅ 订单 ${orderId} 商品已放置并完成，机器人${autoReturned ? '继续收起回充' : '无需回充'}`);
 
-    await returnRobotToCharge(ws, orderId);
-    await sleep(ORDER_READY_CLOSE_DELAY_MS);
+    if (autoReturned) {
+        await returnRobotToCharge(ws, orderId);
+        await sleep(ORDER_READY_CLOSE_DELAY_MS);
+    }
     sendStatus(ws, 'order-ready', {
         orderId,
-        message: '机器人已回到充电桩，可以继续点单',
+        message: autoReturned ? '机器人已回到充电桩，可以继续点单' : '机器人可以继续点单',
         progress: 100
     });
     log(`✅ 订单 ${orderId} 收尾完成，已等待 ${ORDER_READY_CLOSE_DELAY_MS}ms`);

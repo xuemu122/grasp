@@ -392,6 +392,15 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
         (message) => message.type === 'status' && message.status === 'order-ready' && message.orderId === orderId
     );
     assert.equal(orderReady.progress, 100);
+    const returnPhases = collector.messages
+        .filter((message) => message.type === 'status' && message.status === 'returning' && message.orderId === orderId)
+        .map((message) => message.phase);
+    assert.deepEqual(returnPhases, ['stowing', 'charging', 'settling']);
+    assert.ok(collector.messages.some((message) =>
+        message.type === 'robot_status'
+        && message.status === 'chassis-moving'
+        && /回充电桩/.test(message.message)
+    ));
     const completedIndex = collector.messages.indexOf(completed);
     const returningIndex = collector.messages.findIndex(
         (message) => message.type === 'status' && message.status === 'returning' && message.orderId === orderId

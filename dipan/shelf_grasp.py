@@ -1069,9 +1069,10 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
         return True
 
     if current_layer_idx == 4:
-        transfer_layers = [3, 1]
+        # 第4层位于低位空间，先逐层上撤到第3层，再由第2层安全转向放置区。
+        transfer_layers = [3, 2]
     elif current_layer_idx == 3:
-        transfer_layers = [1]
+        transfer_layers = [2]
     else:
         transfer_layers = []
     use_transfer_layer = bool(transfer_layers)

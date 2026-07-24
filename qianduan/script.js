@@ -56,7 +56,7 @@ function logWS(msg) {
     console.log(`[WS] ${msg}`);
 }
 
-function updateConnectionStatus(status) {
+function updateConnectionStatus(status, message = '') {
     const robotStatus = document.getElementById('robotStatus');
     if (!robotStatus) return;
     robotAcceptingOrders = !['busy', 'stowing', 'chassis-moving', 'returning'].includes(status);
@@ -65,9 +65,9 @@ function updateConnectionStatus(status) {
     } else if (status === 'ready') {
         robotStatus.innerHTML = '<span class="status-dot online"></span> 机器人就绪';
     } else if (status === 'busy' || status === 'stowing') {
-        robotStatus.innerHTML = `<span class="status-dot busy"></span> ${status === 'stowing' ? '机械臂收起中' : '机器人执行中'}`;
+        robotStatus.innerHTML = `<span class="status-dot busy"></span> ${message || (status === 'stowing' ? '机械臂收起中' : '机器人执行中')}`;
     } else if (status === 'chassis-moving' || status === 'returning') {
-        robotStatus.innerHTML = `<span class="status-dot busy"></span> ${status === 'chassis-moving' ? '底盘运动中' : '订单收尾/回充中'}`;
+        robotStatus.innerHTML = `<span class="status-dot busy"></span> ${message || (status === 'chassis-moving' ? '底盘运动中' : '订单收尾/回充中')}`;
     } else if (status === 'simulated') {
         robotStatus.innerHTML = '<span class="status-dot busy"></span> 模拟后端在线';
     } else {
@@ -83,7 +83,7 @@ function handleWSMessage(msg) {
             updateConnectionStatus(msg.robotStatus || 'backend');
             break;
         case 'robot_status':
-            updateConnectionStatus(msg.status || 'backend');
+            updateConnectionStatus(msg.status || 'backend', msg.message || '');
             if (msg.message) logWS(msg.message);
             break;
         case 'status':
@@ -94,6 +94,14 @@ function handleWSMessage(msg) {
             } else if (msg.status === 'returning') {
                 updateRobotStatus('busy', msg.message || '订单收尾中...');
                 updateGrabProgress(msg);
+                const modalTitle = document.querySelector('#modalContent .modal-title');
+                const robotAnim = document.getElementById('robotAnim');
+                if (modalTitle) {
+                    modalTitle.textContent = msg.phase === 'settling'
+                        ? '机器人已到充电桩'
+                        : (msg.phase === 'charging' ? '机器人正在回充...' : '机械臂正在收起...');
+                }
+                if (robotAnim) robotAnim.textContent = msg.phase === 'stowing' ? '🤖' : '🚚';
             } else if (msg.status === 'layer-moving') {
                 updateRobotStatus('busy', msg.message || `移动中: 第${msg.layer}层`);
                 updateGrabProgress(msg);

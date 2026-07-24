@@ -54,12 +54,22 @@ class PickCycleRoutingTests(unittest.TestCase):
         go_layer.assert_not_called()
         go_layer_from_place.assert_not_called()
 
-    def test_low_layer_uses_only_required_outbound_transfers(self):
+    def test_layer_three_transfers_through_layer_two(self):
+        result, hand, transfer_calls, go_place, go_layer, go_layer_from_place = self.run_cycle(3)
+
+        self.assertTrue(result)
+        self.assertEqual(hand.open_calls, 1)
+        self.assertEqual(transfer_calls, [2])
+        go_place.assert_called_once_with(ANY)
+        go_layer.assert_not_called()
+        go_layer_from_place.assert_not_called()
+
+    def test_low_layer_uses_layer_three_then_layer_two(self):
         result, hand, transfer_calls, go_place, go_layer, go_layer_from_place = self.run_cycle(4)
 
         self.assertTrue(result)
         self.assertEqual(hand.open_calls, 1)
-        self.assertEqual(transfer_calls, [3, 1])
+        self.assertEqual(transfer_calls, [3, 2])
         go_place.assert_called_once_with(ANY)
         go_layer.assert_not_called()
         go_layer_from_place.assert_not_called()
