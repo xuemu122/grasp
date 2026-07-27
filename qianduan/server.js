@@ -768,7 +768,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // GET/PUT /api/chassis/navigation-config - 抓取/放置导航开关与放置点
+    // GET/PUT /api/chassis/navigation-config - 底盘导航、自动回充开关与放置点
     if (pathname === '/api/chassis/navigation-config' && req.method === 'GET') {
         if (!requireAdmin(req, res)) return;
         sendJSON(res, { code: 0, data: readChassisSettings() });
@@ -777,8 +777,10 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/chassis/navigation-config' && req.method === 'PUT') {
         if (!requireAdmin(req, res)) return;
         const body = await parseBody(req);
-        if (!body || (body.enabled !== undefined && typeof body.enabled !== 'boolean')) {
-            sendJSON(res, { code: 1, message: 'enabled 必须是布尔值' }, 400);
+        if (!body ||
+            (body.enabled !== undefined && typeof body.enabled !== 'boolean') ||
+            (body.auto_return_charge !== undefined && typeof body.auto_return_charge !== 'boolean')) {
+            sendJSON(res, { code: 1, message: 'enabled 和 auto_return_charge 必须是布尔值' }, 400);
             return;
         }
         try {
@@ -788,10 +790,13 @@ const server = http.createServer(async (req, res) => {
                 : validateChassisMarkerName(body.place_marker);
             const settings = {
                 navigation_enabled: body.enabled === undefined ? current.navigation_enabled : body.enabled,
-                place_marker: placeMarker
+                place_marker: placeMarker,
+                auto_return_charge: body.auto_return_charge === undefined
+                    ? current.auto_return_charge
+                    : body.auto_return_charge
             };
             writeChassisSettings(settings);
-            log(`🚙 底盘导航已${settings.navigation_enabled ? '开启' : '关闭'}，放置点=${settings.place_marker}`);
+            log(`🚙 底盘导航已${settings.navigation_enabled ? '开启' : '关闭'}，自动回充已${settings.auto_return_charge ? '开启' : '关闭'}，放置点=${settings.place_marker}`);
             sendJSON(res, { code: 0, data: settings });
         } catch (error) {
             sendJSON(res, { code: 1, message: error.message }, 500);
@@ -949,7 +954,7 @@ server.listen(PORT, HOST, () => {
     log(`抓取模式: ${ROBOT_GRASP_REAL ? '真实机械臂' : '模拟'} (${ROBOT_GRASP_MODE})`);
     const chassisSettings = readChassisSettings();
     log(`底盘接口: ${CHASSIS_HOST}:${CHASSIS_PORT}，栅格地图: ${CHASSIS_MAP_HTTP_PROTOCOL}://${CHASSIS_MAP_HTTP_HOST}:${CHASSIS_MAP_HTTP_PORT}`);
-    log(`底盘导航: ${chassisSettings.navigation_enabled ? '已开启' : '已关闭'}，放置点: ${chassisSettings.place_marker}`);
+    log(`底盘导航: ${chassisSettings.navigation_enabled ? '已开启' : '已关闭'}，自动回充: ${chassisSettings.auto_return_charge ? '已开启' : '已关闭'}，放置点: ${chassisSettings.place_marker}`);
     if (ROBOT_GRASP_REAL) {
         ensureRobotWorker()
             .then(() => {
@@ -1154,16 +1159,27 @@ function broadcastRobotStatus(status = currentRobotStatus(), message = '') {
 function readChassisSettings() {
     try {
         if (!fs.existsSync(CHASSIS_SETTINGS_FILE)) {
-            return { navigation_enabled: CHASSIS_NAVIGATION_DEFAULT_ENABLE, place_marker: CHASSIS_PLACE_MARKER_DEFAULT };
+            return {
+                navigation_enabled: CHASSIS_NAVIGATION_DEFAULT_ENABLE,
+                auto_return_charge: ROBOT_AUTO_RETURN_CHARGE,
+                place_marker: CHASSIS_PLACE_MARKER_DEFAULT
+            };
         }
         const data = JSON.parse(fs.readFileSync(CHASSIS_SETTINGS_FILE, 'utf8'));
         return {
             navigation_enabled: Boolean(data.navigation_enabled),
+            auto_return_charge: data.auto_return_charge === undefined
+                ? ROBOT_AUTO_RETURN_CHARGE
+                : Boolean(data.auto_return_charge),
             place_marker: validateChassisMarkerName(data.place_marker || CHASSIS_PLACE_MARKER_DEFAULT)
         };
     } catch (error) {
         log(`⚠️ 底盘设置读取失败: ${error.message}`);
-        return { navigation_enabled: CHASSIS_NAVIGATION_DEFAULT_ENABLE, place_marker: CHASSIS_PLACE_MARKER_DEFAULT };
+        return {
+            navigation_enabled: CHASSIS_NAVIGATION_DEFAULT_ENABLE,
+            auto_return_charge: ROBOT_AUTO_RETURN_CHARGE,
+            place_marker: CHASSIS_PLACE_MARKER_DEFAULT
+        };
     }
 }
 
@@ -1686,8 +1702,8 @@ async function handleGotoLayerCommand(ws, msg) {
     }
 }
 
-async function returnRobotToCharge(ws, orderId) {
-    if (!ROBOT_GRASP_REAL || !ROBOT_AUTO_RETURN_CHARGE) return;
+async function returnRobotToCharge(ws, orderId, enabled = readChassisSettings().auto_return_charge) {
+    if (!ROBOT_GRASP_REAL || !enabled) return;
 
     sendStatus(ws, 'returning', {
         orderId,
@@ -1758,7 +1774,7 @@ async function executeOrderItems(ws, orderId, items, totalUnits) {
 }
 
 async function completeOrder(ws, orderId) {
-    const autoReturned = ROBOT_GRASP_REAL && ROBOT_AUTO_RETURN_CHARGE;
+    const autoReturned = ROBOT_GRASP_REAL && readChassisSettings().auto_return_charge;
     sendStatus(ws, 'completed', {
         orderId,
         message: autoReturned
@@ -1770,7 +1786,7 @@ async function completeOrder(ws, orderId) {
     log(`✅ 订单 ${orderId} 商品已放置并完成，机器人${autoReturned ? '继续收起回充' : '无需回充'}`);
 
     if (autoReturned) {
-        await returnRobotToCharge(ws, orderId);
+        await returnRobotToCharge(ws, orderId, autoReturned);
         await sleep(ORDER_READY_CLOSE_DELAY_MS);
     }
     sendStatus(ws, 'order-ready', {

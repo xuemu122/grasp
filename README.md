@@ -72,7 +72,7 @@ curl http://127.0.0.1:3000/api/admin/session
 curl http://192.168.124.90:9001/maps/shiyanshi_01/1/map.yaml
 ```
 
-第一条返回 JSON 说明盒子 HTTP 服务正常；第二条返回 `origin`、`resolution` 等 YAML 字段说明桥接后的底盘地图服务正常。Node 每次启动会更新一次 `qianduan/data/chassis_map_cache/` 本地地图快照，管理页平时读取本地 PNG/YAML 和点位元数据，底盘临时断网时继续使用上一次成功快照。管理页中的“抓取/放置前导航”默认关闭，放置点默认 `yaojia1`，开启后配置会保存到 `qianduan/data/chassis_settings.json`。首次订单保持机械臂现有的收起姿态，先让底盘到达商品点位；只有到点后才启动抓取 worker，依次进入 Home、初始观察位和商品对应层观察位。worker 已运行时，后续跨点位订单会先把机械臂收起，再移动底盘。到达目标观察层后会明确张开 Aero Hand，再开始拍照识别。导航开启时，未绑定底盘点位的商品会直接报错并停止，不会在错误位置继续抓取。
+第一条返回 JSON 说明盒子 HTTP 服务正常；第二条返回 `origin`、`resolution` 等 YAML 字段说明桥接后的底盘地图服务正常。Node 每次启动会更新一次 `qianduan/data/chassis_map_cache/` 本地地图快照，管理页平时读取本地 PNG/YAML 和点位元数据，底盘临时断网时继续使用上一次成功快照。管理页中的“抓取/放置前导航”默认关闭，“订单结束自动回充”默认开启，放置点默认 `yaojia1`，设置会保存到 `qianduan/data/chassis_settings.json`。首次订单保持机械臂现有的收起姿态，先让底盘到达商品点位；只有到点后才启动抓取 worker，依次进入 Home、初始观察位和商品对应层观察位。worker 已运行时，后续跨点位订单会先把机械臂收起，再移动底盘。到达目标观察层后会明确张开 Aero Hand，再开始拍照识别。导航开启时，未绑定底盘点位的商品会直接报错并停止，不会在错误位置继续抓取。
 
 仓库职责、生产依赖方向、工具脚本和清理边界见 [`CODEMAP.md`](CODEMAP.md)。旧 Orca 实验脚本
 `dipan/box_grasp.py` 仍保留在历史文件中，但不属于当前生产入口。

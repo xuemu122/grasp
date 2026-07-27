@@ -178,6 +178,11 @@
                     <span>抓取/放置前导航</span>
                 </label>
                 <label class="toggle-control">
+                    <input type="checkbox" id="autoReturnChargeToggle" onchange="updateChassisNavigationConfig()">
+                    <span class="toggle-track"></span>
+                    <span>订单结束自动回充</span>
+                </label>
+                <label class="toggle-control">
                     <span>放置点</span>
                     <select class="select-box" id="chassisPlaceMarker" onchange="updateChassisNavigationConfig()">
                         <option value="yaojia1">yaojia1</option>
@@ -372,7 +377,7 @@
         };
         let shelfLayers = {};
         let chassisMapData = { map: {}, markers: [] };
-        let chassisNavigationConfig = { navigation_enabled: false, place_marker: 'yaojia1' };
+        let chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'yaojia1' };
 
         // ========== 登录与初始化 ==========
         document.addEventListener('DOMContentLoaded', async () => {
@@ -647,7 +652,9 @@
 
         async function loadChassisNavigationConfig() {
             const toggle = document.getElementById('chassisNavigationToggle');
+            const autoReturnToggle = document.getElementById('autoReturnChargeToggle');
             toggle.disabled = true;
+            autoReturnToggle.disabled = true;
             try {
                 const res = await adminFetch('/api/chassis/navigation-config', { cache: 'no-store', preserveSession: true });
                 const json = await res.json();
@@ -655,45 +662,58 @@
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '底盘导航设置读取失败');
                 chassisNavigationConfig = {
                     navigation_enabled: Boolean(json.data?.navigation_enabled),
+                    auto_return_charge: json.data?.auto_return_charge !== false,
                     place_marker: json.data?.place_marker || 'yaojia1'
                 };
                 toggle.checked = chassisNavigationConfig.navigation_enabled;
+                autoReturnToggle.checked = chassisNavigationConfig.auto_return_charge;
                 updateChassisPlaceMarkerOptions(chassisNavigationConfig.place_marker);
             } catch (error) {
                 toggle.checked = false;
-                chassisNavigationConfig = { navigation_enabled: false, place_marker: 'yaojia1' };
+                autoReturnToggle.checked = true;
+                chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'yaojia1' };
                 updateChassisPlaceMarkerOptions();
             } finally {
                 toggle.disabled = false;
+                autoReturnToggle.disabled = false;
             }
         }
 
         async function updateChassisNavigationConfig() {
             const toggle = document.getElementById('chassisNavigationToggle');
+            const autoReturnToggle = document.getElementById('autoReturnChargeToggle');
             const placeMarker = document.getElementById('chassisPlaceMarker');
             const enabled = toggle.checked;
+            const autoReturnCharge = autoReturnToggle.checked;
             const previous = { ...chassisNavigationConfig };
             toggle.disabled = true;
+            autoReturnToggle.disabled = true;
             placeMarker.disabled = true;
             try {
                 const res = await adminFetch('/api/chassis/navigation-config', {
                     preserveSession: true,
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ enabled, place_marker: placeMarker.value || 'yaojia1' })
+                    body: JSON.stringify({
+                        enabled,
+                        auto_return_charge: autoReturnCharge,
+                        place_marker: placeMarker.value || 'yaojia1'
+                    })
                 });
                 const json = await res.json();
                 if (res.status === 401) throw new Error('盒子端管理员会话配置不一致');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '设置保存失败');
                 chassisNavigationConfig = json.data;
-                showToast(`底盘导航已${enabled ? '开启' : '关闭'}，放置点 ${chassisNavigationConfig.place_marker}`, 'success');
+                showToast(`底盘导航${enabled ? '开启' : '关闭'}，自动回充${autoReturnCharge ? '开启' : '关闭'}，放置点 ${chassisNavigationConfig.place_marker}`, 'success');
             } catch (error) {
                 chassisNavigationConfig = previous;
                 toggle.checked = previous.navigation_enabled;
+                autoReturnToggle.checked = previous.auto_return_charge !== false;
                 updateChassisPlaceMarkerOptions(previous.place_marker);
                 showToast(error.message, 'error');
             } finally {
                 toggle.disabled = false;
+                autoReturnToggle.disabled = false;
                 placeMarker.disabled = false;
             }
         }

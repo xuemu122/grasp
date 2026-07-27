@@ -102,14 +102,16 @@ test('completed orders decrement inventory once', async (t) => {
     });
     const navigationConfig = await navigationConfigResponse.json();
     assert.equal(navigationConfig.data.navigation_enabled, false);
+    assert.equal(navigationConfig.data.auto_return_charge, true);
     assert.equal(navigationConfig.data.place_marker, 'yaojia1');
     const updateNavigationResponse = await fetch(`${baseUrl}/api/chassis/navigation-config`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
-        body: JSON.stringify({ enabled: true, place_marker: 'delivery-a' })
+        body: JSON.stringify({ enabled: true, auto_return_charge: false, place_marker: 'delivery-a' })
     });
     const updatedNavigationConfig = await updateNavigationResponse.json();
     assert.equal(updatedNavigationConfig.data.navigation_enabled, true);
+    assert.equal(updatedNavigationConfig.data.auto_return_charge, false);
     assert.equal(updatedNavigationConfig.data.place_marker, 'delivery-a');
 
     const shelfLayersResponse = await fetch(`${baseUrl}/api/shelf/layers`);

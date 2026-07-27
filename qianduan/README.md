@@ -109,7 +109,7 @@ Cookie 使用 `HttpOnly`、`Secure` 和 `SameSite=Strict`，默认有效期为 8
 
 管理页的底盘地图接口通过 `/api/chassis/` 转发到盒子。云端和盒子必须设置相同的 `ADMIN_USERNAME` 与 `ADMIN_SESSION_SECRET`，盒子才能验证云端登录签发的管理员 Cookie。盒子每次启动从底盘 Web 服务的 `/maps/<地图名>/<楼层>/map.yaml` 和 `map.png` 更新一次本地地图快照，默认保存到 `data/chassis_map_cache/`：`current.json` 保存地图元数据和 marker，按地图/楼层目录保存原始 YAML 和 PNG。管理页普通刷新只读本地快照；底盘临时不可达时继续使用上一次成功快照。点击“刷新地图”才会强制重新从底盘更新，且没有可用快照时才降级为坐标网格。
 
-管理页顶部的“抓取/放置前导航”开关和放置点保存在盒子的 `chassis_settings.json`。首次没有设置文件时默认关闭导航，默认放置点为 `yaojia1`。开启导航后，首次订单保持机械臂现有收起姿态，先判断并前往商品绑定的 `chassis_marker`；底盘到点后才启动 worker，进入 Home、初始观察位和商品层观察位。worker 已运行时，后续跨点位订单会先收起机械臂再导航。到达目标观察层后 worker 会明确张开 Aero Hand，再开始拍照识别。导航开启但商品未绑定点位时，订单会直接失败，不会在错误位置继续抓取。抓取完成后检查底盘是否已在配置的放置点，已在点位则直接执行机械臂放置，否则先收起机械臂、导航到放置点并等待到达后再放置。整单完成后默认自动收起机械臂并回充；收起和底盘导航期间服务端会拒绝新订单。常驻 worker 每次放置前重新读取配置，管理页修改后无需重启 worker。
+管理页顶部的“抓取/放置前导航”“订单结束自动回充”开关和放置点保存在盒子的 `chassis_settings.json`。首次没有设置文件时默认关闭导航、开启自动回充，默认放置点为 `yaojia1`。开启导航后，首次订单保持机械臂现有收起姿态，先判断并前往商品绑定的 `chassis_marker`；底盘到点后才启动 worker，进入 Home、初始观察位和商品层观察位。worker 已运行时，后续跨点位订单会先收起机械臂再导航。到达目标观察层后 worker 会明确张开 Aero Hand，再开始拍照识别。导航开启但商品未绑定点位时，订单会直接失败，不会在错误位置继续抓取。抓取完成后检查底盘是否已在配置的放置点，已在点位则直接执行机械臂放置，否则先收起机械臂、导航到放置点并等待到达后再放置。自动回充开启时，整单完成后自动收起机械臂并回充；关闭时只完成放置，不调用收起和底盘回充。收起和底盘导航期间服务端会拒绝新订单。常驻 worker 每次放置前重新读取配置，管理页修改后无需重启 worker。
 
 ## 盒子部署
 
@@ -173,11 +173,11 @@ curl http://192.168.124.90:9001/maps/shiyanshi_01/1/map.yaml
 
 本机管理页地址为 `http://localhost:3000/admin.html`，内网管理员账号为 `admin`、密码为 `admin123`。云端页面出现“盒子端管理员会话配置不一致”时，需要确认云端和盒子使用完全相同的 `ADMIN_USERNAME` 与 `ADMIN_SESSION_SECRET`，重启两端服务后退出管理页并重新登录。
 
-“抓取/放置前导航”默认关闭，默认放置 marker 为 `yaojia1`。在管理页开启并修改点位后，配置写入 `data/chassis_settings.json`；常驻 worker 在每次放置前重新读取，无需重启 worker。
+“抓取/放置前导航”默认关闭，默认放置 marker 为 `yaojia1`；“订单结束自动回充”默认开启。管理页修改任一开关或点位后，配置写入 `data/chassis_settings.json`，订单结束时实时读取，无需重启 Node 或 worker。
 
 `server.js` 在收到第一单时懒启动常驻 `../dipan/shelf_grasp.py` worker。worker 准备完成后保持 DOBOT 和 Aero Hand 连接及使能，后续订单直接向其标准输入写入商品名。
 
-真实模式启动日志会同时打印底盘 TCP 地址、栅格地图 HTTP 地址、导航开关和放置点。若订单没有调用底盘，先看启动日志中的 `底盘导航: 已关闭`；管理页打开开关后会写入 `data/chassis_settings.json`，无需重启 Node。地图区域显示不可用时，先用上面的 `curl` 验证 `map.yaml`，再确认启动日志中的地图地址与可访问地址一致。
+真实模式启动日志会同时打印底盘 TCP 地址、栅格地图 HTTP 地址、导航开关、自动回充开关和放置点。若订单没有调用底盘，先看启动日志中的 `底盘导航: 已关闭` 或 `自动回充: 已关闭`；管理页修改开关后会写入 `data/chassis_settings.json`，无需重启 Node。地图区域显示不可用时，先用上面的 `curl` 验证 `map.yaml`，再确认启动日志中的地图地址与可访问地址一致。
 
 盒子真实模式直接信任订单中的 `id/name`，不要求盒子商品库与云端同步。每个商品按 `qty` 逐件执行。
 
@@ -358,8 +358,8 @@ __filter_preview__\n
 | `CHASSIS_NAVIGATION_ENABLE` | 空/关闭 | 设为 `1` 时在抓取前导航到商品绑定的 marker |
 | `CHASSIS_PLACE_MARKER` | `yaojia1` | 首次没有设置文件时使用的默认放置 marker |
 | `CHASSIS_CHARGE_MARKER` | `charge_point_1F_35744` | 订单结束后自动回充的充电桩 marker |
-| `ROBOT_AUTO_RETURN_CHARGE` | `1` | 设为 `0` 可关闭订单结束后的自动收起和回充 |
-| `CHASSIS_SETTINGS_FILE` | 商品 JSON 同目录下的 `chassis_settings.json` | 管理页底盘导航开关持久化文件 |
+| `ROBOT_AUTO_RETURN_CHARGE` | `1` | 管理页没有保存设置时的自动回充默认值，设为 `0` 可默认关闭 |
+| `CHASSIS_SETTINGS_FILE` | 商品 JSON 同目录下的 `chassis_settings.json` | 管理页底盘导航、自动回充开关和放置点持久化文件 |
 | `CHASSIS_REQUEST_TIMEOUT_MS` | `10000` | 单次底盘 TCP 请求超时 |
 | `CHASSIS_NAVIGATION_TIMEOUT_MS` | `180000` | 抓取前导航任务总超时 |
 | `CHASSIS_NAVIGATION_DISTANCE_TOLERANCE_M` | `0.15` | 判断已在目标点的距离容差（米） |
