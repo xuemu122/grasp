@@ -152,4 +152,18 @@ test('completed orders decrement inventory once', async (t) => {
     });
     assert.equal(insufficient.response.status, 400);
     assert.match(insufficient.json.message, /库存不足/);
+
+    const emergencyResponse = await fetch(`${baseUrl}/api/robot/emergency-stop`, {
+        method: 'POST',
+        headers: { Cookie: adminCookie }
+    });
+    const emergency = await emergencyResponse.json();
+    assert.equal(emergencyResponse.status, 200);
+    assert.equal(emergency.code, 0);
+    const emergencyStatusResponse = await fetch(`${baseUrl}/api/robot/status`, {
+        headers: { Cookie: adminCookie }
+    });
+    const emergencyStatus = await emergencyStatusResponse.json();
+    assert.equal(emergencyStatus.data.status, 'emergency-stopped');
+    assert.equal(emergencyStatus.data.emergency_stopped, true);
 });

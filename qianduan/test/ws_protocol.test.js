@@ -479,13 +479,14 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
     assert.equal(stowPayload.code, 0);
     assert.match(stowPayload.message, /保持上电/);
 
-    const poweroffResponse = await fetch(`http://127.0.0.1:${port}/api/robot/poweroff`, {
+    const poweroffResponse = await fetch(`http://127.0.0.1:${port}/api/robot/shutdown`, {
         method: 'POST',
         headers: { Cookie: cookie }
     });
     const poweroffPayload = await poweroffResponse.json();
     assert.equal(poweroffResponse.status, 200);
     assert.equal(poweroffPayload.code, 0);
+    assert.match(poweroffPayload.message, /收起、断电并回到充电桩/);
 
     const poweredOffStatusResponse = await fetch(`http://127.0.0.1:${port}/api/robot/status`, {
         headers: { Cookie: cookie }

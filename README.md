@@ -63,7 +63,7 @@ HTTP 服务已启动: http://0.0.0.0:3000
 WebSocket 服务已启动: ws://0.0.0.0:3001
 ```
 
-本机管理页是 `http://localhost:3000/admin.html`。通过云端访问时，Nginx/FRP 仍分别把 `/api/chassis/` 和 `/ws/` 转发到盒子 `3000/3001`。管理员账号是 `admin`，当前内网密码是 `admin123`。
+本机管理页是 `http://localhost:3000/admin.html`。通过云端访问时，Nginx/FRP 仍分别把 `/api/chassis/` 和 `/ws/` 转发到盒子 `3000/3001`。管理员账号是 `admin`，当前内网密码是 `admin123`。管理页的“关闭并回充”会收起、断电并让底盘回充；“急停”会直接停止 DOBOT 和底盘，急停后必须人工检查并重启后端。
 
 启动后可在另一个终端检查：
 

@@ -11,6 +11,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const net = require('node:net');
 const { spawn } = require('child_process');
 const { WebSocket, WebSocketServer } = require('ws');
 const { ChassisClient } = require('./chassis_client');
@@ -24,6 +25,7 @@ const ROBOT_GRASP_REAL = ['real', 'robot', 'hardware'].includes(ROBOT_GRASP_MODE
 const GRASP_SCRIPT = process.env.GRASP_SCRIPT || path.resolve(__dirname, '../dipan/shelf_grasp.py');
 const GRASP_CWD = path.dirname(GRASP_SCRIPT);
 const DOBOT_IP = process.env.DOBOT_IP || '192.168.5.1';
+const DOBOT_PORT = Number(process.env.DOBOT_PORT || 29999);
 const CHASSIS_HOST = process.env.CHASSIS_HOST || process.env.MOVE_ROBOT_HOST || '192.168.124.90';
 const CHASSIS_PORT = Number(process.env.CHASSIS_PORT || process.env.MOVE_ROBOT_PORT || 31001);
 const CHASSIS_MAP_HTTP_PROTOCOL = String(process.env.CHASSIS_MAP_HTTP_PROTOCOL || 'http').replace(/:$/, '');
@@ -67,7 +69,10 @@ let robotWorkerReady = false;
 let robotWorkerStarting = null;
 let robotStowPromise = null;
 let robotPoweroffPromise = null;
+let robotShutdownPromise = null;
+let robotEmergencyPromise = null;
 let robotPoweredOff = false;
+let robotEmergencyStopped = false;
 let robotFilterPreviewPromise = null;
 let chassisNavigationPromise = null;
 let chassisRasterCache = null;
@@ -717,6 +722,7 @@ const server = http.createServer(async (req, res) => {
                             : '机器人正在启动',
                 worker_ready: robotWorkerReady,
                 powered_off: robotPoweredOff,
+                emergency_stopped: robotEmergencyStopped,
                 busy: Boolean(operation && operation.status !== 'powered-off')
             }
         });
@@ -742,6 +748,78 @@ const server = http.createServer(async (req, res) => {
         } finally {
             robotStowPromise = null;
             broadcastRobotStatus();
+        }
+        return;
+    }
+
+    if (pathname === '/api/robot/shutdown' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        if (robotEmergencyStopped) {
+            sendJSON(res, { code: 1, message: '急停已触发，请人工检查并重启后端' }, 409);
+            return;
+        }
+        const operation = currentRobotOperation();
+        if (operation) {
+            sendJSON(res, { code: 1, message: `${operation.label}，暂不能关闭` }, 409);
+            return;
+        }
+        robotShutdownPromise = (async () => {
+            broadcastRobotStatus('shutting-down', '正在收起机械臂');
+            await moveRobotToStowPose();
+            broadcastRobotStatus('powering-off', '机械臂已收起，正在断电关闭');
+            await powerOffRobotWorker();
+            if (!ROBOT_GRASP_REAL) {
+                return { mode: 'simulated', detail: '模拟模式已关闭' };
+            }
+            broadcastRobotStatus('chassis-moving', `机器人已关闭，底盘正在回充电桩 ${CHASSIS_CHARGE_MARKER}`);
+            await navigateChassisToMarker(CHASSIS_CHARGE_MARKER, {
+                arriveOnDocking: true,
+                statusMessage: `机器人已关闭，底盘正在回充电桩 ${CHASSIS_CHARGE_MARKER}`
+            });
+            return { mode: ROBOT_GRASP_REAL ? 'real' : 'simulated', detail: '已收起、断电并回到充电桩' };
+        })();
+        try {
+            const result = await robotShutdownPromise;
+            log('⏻ 管理员操作：机器人已收起、断电并回到充电桩');
+            sendJSON(res, { code: 0, message: '机器人已收起、断电并回到充电桩', data: result });
+        } catch (error) {
+            log(`❌ 关闭并回充失败: ${error.message}`);
+            sendJSON(res, { code: 1, message: error.message }, 500);
+        } finally {
+            robotShutdownPromise = null;
+            broadcastRobotStatus();
+        }
+        return;
+    }
+
+    if (pathname === '/api/robot/emergency-stop' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        if (robotEmergencyStopped) {
+            sendJSON(res, { code: 0, message: '急停已经触发，请人工检查并重启后端' });
+            return;
+        }
+        if (robotEmergencyPromise) {
+            try {
+                await robotEmergencyPromise;
+                sendJSON(res, { code: 0, message: '急停已触发，请人工检查并重启后端' });
+            } catch (error) {
+                sendJSON(res, { code: 1, message: error.message }, 500);
+            }
+            return;
+        }
+        robotEmergencyStopped = true;
+        robotPoweredOff = true;
+        robotWorkerReady = false;
+        robotEmergencyPromise = emergencyStopRobot();
+        try {
+            await robotEmergencyPromise;
+            sendJSON(res, { code: 0, message: '急停已触发，机械臂和底盘已停止，请人工检查并重启后端' });
+        } catch (error) {
+            log(`❌ 急停执行异常: ${error.message}`);
+            sendJSON(res, { code: 1, message: `急停指令执行异常: ${error.message}` }, 500);
+        } finally {
+            robotEmergencyPromise = null;
+            broadcastRobotStatus('emergency-stopped', '急停已触发，请人工检查并重启后端');
         }
         return;
     }
@@ -1007,7 +1085,10 @@ function sendMessage(ws, message) {
 }
 
 function currentRobotOperation() {
+    if (robotEmergencyPromise) return { status: 'emergency-stopping', label: '正在执行急停' };
+    if (robotEmergencyStopped) return { status: 'emergency-stopped', label: '急停已触发，请人工检查并重启后端' };
     if (chassisNavigationPromise) return { status: 'chassis-moving', label: '底盘正在运动' };
+    if (robotShutdownPromise) return { status: 'shutting-down', label: '机器人正在收起、断电并回充' };
     if (robotPoweroffPromise) return { status: 'powering-off', label: '机器人正在断电关闭' };
     if (robotStowPromise) return { status: 'stowing', label: '机械臂正在收起' };
     if (activeOrderId) return { status: 'busy', label: `订单 ${activeOrderId} 正在执行` };
@@ -2289,6 +2370,67 @@ async function moveRobotToStowPose() {
             if (error) finish(new Error(`无法发送安全收起命令: ${error.message}`));
         });
     });
+}
+
+function sendDobotDashboardCommand(command, timeoutMs = 1500) {
+    return new Promise((resolve, reject) => {
+        const socket = net.createConnection({ host: DOBOT_IP, port: DOBOT_PORT });
+        let response = '';
+        let settled = false;
+        const finish = (error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            socket.destroy();
+            if (error) reject(error);
+            else resolve(response.trim());
+        };
+        const timer = setTimeout(() => finish(new Error(`DOBOT ${command} 超时`)), timeoutMs);
+        socket.once('error', (error) => finish(new Error(`DOBOT ${command} 连接失败: ${error.message}`)));
+        socket.on('data', (chunk) => {
+            response += chunk.toString();
+            if (response.includes(';') || response.includes('}')) finish();
+        });
+        socket.once('connect', () => socket.write(`${command}\n`));
+    });
+}
+
+async function emergencyStopRobot() {
+    const errors = [];
+    let successfulCommands = 0;
+    if (ROBOT_GRASP_REAL) {
+        for (const command of ['EmergencyStop()', 'Stop()']) {
+            try {
+                const response = await sendDobotDashboardCommand(command);
+                successfulCommands += 1;
+                log(`🛑 DOBOT ${command} 响应: ${response}`);
+            } catch (error) {
+                errors.push(error.message);
+                log(`🛑 DOBOT ${command} 失败: ${error.message}`);
+            }
+        }
+        const worker = robotWorker;
+        if (worker && worker.exitCode === null) {
+            worker.kill('SIGTERM');
+        }
+    }
+
+    if (chassisNavigationPromise) {
+        try {
+            await chassisClient().request('/api/move/cancel');
+            log('🛑 底盘当前导航任务已取消');
+        } catch (error) {
+            errors.push(error.message);
+            log(`🛑 底盘取消导航失败: ${error.message}`);
+        }
+    }
+
+    if (errors.length && successfulCommands === 0 && ROBOT_GRASP_REAL) {
+        throw new Error(errors.join('；'));
+    }
+    if (errors.length) log(`🛑 急停部分指令失败，但已有 ${successfulCommands} 条停止指令成功发送`);
+    broadcastRobotStatus('emergency-stopped', '急停已触发，请人工检查并重启后端');
+    return { mode: ROBOT_GRASP_REAL ? 'real' : 'simulated', detail: '急停指令已发送' };
 }
 
 async function powerOffRobotWorker() {
