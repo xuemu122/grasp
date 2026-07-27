@@ -453,6 +453,18 @@
             return res;
         }
 
+        async function readAdminJson(res, fallbackMessage) {
+            const text = await res.text();
+            try {
+                return JSON.parse(text);
+            } catch (error) {
+                if (text.trimStart().startsWith('<')) {
+                    throw new Error('管理接口返回了网页，请检查 Nginx/API 是否指向同一个盒子服务');
+                }
+                throw new Error(fallbackMessage || '管理接口返回了无效数据');
+            }
+        }
+
         function renderRobotStatus(data) {
             const badge = document.getElementById('robotControlBadge');
             const status = document.getElementById('robotControlStatus');
@@ -475,7 +487,7 @@
         async function loadRobotStatus() {
             try {
                 const res = await adminFetch('/api/robot/status', { cache: 'no-store', preserveSession: true });
-                const json = await res.json();
+                const json = await readAdminJson(res, '机器人状态接口返回了无效数据');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '读取机器人状态失败');
                 renderRobotStatus(json.data);
             } catch (error) {
@@ -491,7 +503,7 @@
             document.getElementById('robotControlStatus').textContent = pendingText;
             try {
                 const res = await adminFetch(endpoint, { method: 'POST' });
-                const json = await res.json();
+                const json = await readAdminJson(res, '机器人操作接口返回了无效数据');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '机器人操作失败');
                 showToast(json.message || successFallback, 'success');
             } catch (error) {
@@ -618,7 +630,7 @@
             try {
                 const endpoint = forceRefresh ? '/api/chassis/map?refresh=1' : '/api/chassis/map';
                 const res = await adminFetch(endpoint, { cache: 'no-store', preserveSession: true });
-                const json = await res.json();
+                const json = await readAdminJson(res, '底盘地图接口返回了无效数据');
                 if (res.status === 401) throw new Error('盒子端管理员会话配置不一致');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '地图读取失败');
                 chassisMapData = json.data || { map: {}, markers: [] };
@@ -657,7 +669,7 @@
             autoReturnToggle.disabled = true;
             try {
                 const res = await adminFetch('/api/chassis/navigation-config', { cache: 'no-store', preserveSession: true });
-                const json = await res.json();
+                const json = await readAdminJson(res, '底盘导航设置接口返回了无效数据');
                 if (res.status === 401) throw new Error('盒子端管理员会话配置不一致');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '底盘导航设置读取失败');
                 chassisNavigationConfig = {
@@ -700,7 +712,7 @@
                         place_marker: placeMarker.value || 'yaojia1'
                     })
                 });
-                const json = await res.json();
+                const json = await readAdminJson(res, '底盘设置保存接口返回了无效数据');
                 if (res.status === 401) throw new Error('盒子端管理员会话配置不一致');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '设置保存失败');
                 chassisNavigationConfig = json.data;

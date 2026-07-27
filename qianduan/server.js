@@ -1702,9 +1702,8 @@ async function handleGotoLayerCommand(ws, msg) {
     }
 }
 
-async function returnRobotToCharge(ws, orderId, enabled = readChassisSettings().auto_return_charge) {
-    if (!ROBOT_GRASP_REAL || !enabled) return;
-
+async function returnRobotToCharge(ws, orderId, autoReturnCharge = readChassisSettings().auto_return_charge) {
+    if (!ROBOT_GRASP_REAL) return;
     sendStatus(ws, 'returning', {
         orderId,
         progress: 99,
@@ -1713,6 +1712,17 @@ async function returnRobotToCharge(ws, orderId, enabled = readChassisSettings().
     });
     broadcastRobotStatus('stowing', '订单完成，机械臂正在收起');
     await moveRobotToStowPose();
+
+    if (!autoReturnCharge) {
+        sendStatus(ws, 'returning', {
+            orderId,
+            progress: 100,
+            phase: 'stowed',
+            message: '机械臂已收起，自动回充已关闭，保持当前位置'
+        });
+        broadcastRobotStatus('returning', '机械臂已收起，自动回充已关闭');
+        return;
+    }
 
     sendStatus(ws, 'returning', {
         orderId,
@@ -1774,24 +1784,28 @@ async function executeOrderItems(ws, orderId, items, totalUnits) {
 }
 
 async function completeOrder(ws, orderId) {
-    const autoReturned = ROBOT_GRASP_REAL && readChassisSettings().auto_return_charge;
+    const autoReturnCharge = ROBOT_GRASP_REAL && readChassisSettings().auto_return_charge;
     sendStatus(ws, 'completed', {
         orderId,
-        message: autoReturned
-            ? '商品已放置，订单完成，机器人正在收起并回充'
+        message: ROBOT_GRASP_REAL
+            ? (autoReturnCharge
+                ? '商品已放置，订单完成，机器人正在收起并回充'
+                : '商品已放置，订单完成，机器人正在收起，自动回充已关闭')
             : '所有商品抓取完成',
         progress: 100,
         phase: 'placed'
     });
-    log(`✅ 订单 ${orderId} 商品已放置并完成，机器人${autoReturned ? '继续收起回充' : '无需回充'}`);
+    log(`✅ 订单 ${orderId} 商品已放置并完成，机器人${ROBOT_GRASP_REAL ? (autoReturnCharge ? '继续收起回充' : '继续收起但不回充') : '无需回充'}`);
 
-    if (autoReturned) {
-        await returnRobotToCharge(ws, orderId, autoReturned);
+    if (ROBOT_GRASP_REAL) {
+        await returnRobotToCharge(ws, orderId, autoReturnCharge);
         await sleep(ORDER_READY_CLOSE_DELAY_MS);
     }
     sendStatus(ws, 'order-ready', {
         orderId,
-        message: autoReturned ? '机器人已回到充电桩，可以继续点单' : '机器人可以继续点单',
+        message: !ROBOT_GRASP_REAL
+            ? '机器人可以继续点单'
+            : (autoReturnCharge ? '机器人已回到充电桩，可以继续点单' : '机器人已收起，可以继续点单'),
         progress: 100
     });
     log(`✅ 订单 ${orderId} 收尾完成，已等待 ${ORDER_READY_CLOSE_DELAY_MS}ms`);

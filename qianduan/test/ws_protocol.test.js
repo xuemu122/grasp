@@ -432,6 +432,41 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
     assert.ok(fakeChassis.commands.some((command) => command.includes('marker=charge_point_1F_35744')));
     assert.equal(collector.messages.some((message) => message.type === 'robot_log'), false);
 
+    const disableReturnResponse = await fetch(`http://127.0.0.1:${port}/api/chassis/navigation-config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie },
+        body: JSON.stringify({ auto_return_charge: false })
+    });
+    const disabledReturn = await disableReturnResponse.json();
+    assert.equal(disableReturnResponse.status, 200);
+    assert.equal(disabledReturn.data.auto_return_charge, false);
+    const noReturnOrderId = 'ORD-NO-AUTO-RETURN';
+    ws.send(JSON.stringify({
+        type: 'grab',
+        orderId: noReturnOrderId,
+        items: [{ id: 1, name: '云端咖啡', qty: 1, shelf_layer: 2, chassis_marker: 'shelf-a' }]
+    }));
+    const noReturnCompleted = await collector.waitFor(
+        (message) => message.type === 'status' && message.status === 'completed' && message.orderId === noReturnOrderId
+    );
+    assert.match(noReturnCompleted.message, /正在收起/);
+    const noReturnStowed = await collector.waitFor(
+        (message) => message.type === 'status' && message.status === 'returning'
+            && message.orderId === noReturnOrderId && message.phase === 'stowed'
+    );
+    assert.match(noReturnStowed.message, /自动回充已关闭/);
+    const noReturnReady = await collector.waitFor(
+        (message) => message.type === 'status' && message.status === 'order-ready' && message.orderId === noReturnOrderId
+    );
+    assert.match(noReturnReady.message, /已收起/);
+    assert.equal(
+        collector.messages.some((message) =>
+            message.type === 'status' && message.status === 'returning'
+            && message.orderId === noReturnOrderId && message.phase === 'charging'
+        ),
+        false
+    );
+
     const unauthorizedPoweroff = await fetch(`http://127.0.0.1:${port}/api/robot/poweroff`, { method: 'POST' });
     assert.equal(unauthorizedPoweroff.status, 401);
 

@@ -97,11 +97,12 @@ function handleWSMessage(msg) {
                 const modalTitle = document.querySelector('#modalContent .modal-title');
                 const robotAnim = document.getElementById('robotAnim');
                 if (modalTitle) {
-                    modalTitle.textContent = msg.phase === 'settling'
-                        ? '机器人已到充电桩'
-                        : (msg.phase === 'charging' ? '机器人正在回充...' : '机械臂正在收起...');
+                    if (msg.phase === 'settling') modalTitle.textContent = '机器人已到充电桩';
+                    else if (msg.phase === 'stowed') modalTitle.textContent = '机械臂已收起';
+                    else if (msg.phase === 'charging') modalTitle.textContent = '机器人正在回充...';
+                    else modalTitle.textContent = '机械臂正在收起...';
                 }
-                if (robotAnim) robotAnim.textContent = msg.phase === 'stowing' ? '🤖' : '🚚';
+                if (robotAnim) robotAnim.textContent = ['stowing', 'stowed'].includes(msg.phase) ? '🤖' : '🚚';
             } else if (msg.status === 'layer-moving') {
                 updateRobotStatus('busy', msg.message || `移动中: 第${msg.layer}层`);
                 updateGrabProgress(msg);
