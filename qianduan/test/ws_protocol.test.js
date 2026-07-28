@@ -386,9 +386,11 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
         items: [{ id: 1, name: '云端咖啡', qty: 1, shelf_layer: 2, chassis_marker: 'shelf-a' }]
     }));
     const returningBusyError = await collector.waitFor(
-        (message) => message.type === 'error' && /暂不能提交新订单/.test(message.message)
+        (message) => message.type === 'error' && /暂不接受新订单/.test(message.message)
     );
-    assert.match(returningBusyError.message, /暂不能提交新订单/);
+    assert.match(returningBusyError.message, /稍后重试/);
+    assert.equal(returningBusyError.retryable, true);
+    assert.equal(returningBusyError.refundTriggered, false);
 
     const orderReady = await collector.waitFor(
         (message) => message.type === 'status' && message.status === 'order-ready' && message.orderId === orderId

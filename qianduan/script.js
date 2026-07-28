@@ -11,6 +11,8 @@ let searchKeyword = '';      // 搜索关键词
 let currentOrderId = null;
 let currentOrderToken = null;
 let currentOrderItems = [];
+let currentOrderPayload = null;
+let orderRetryTimer = null;
 let shelfLayers = {};        // 货架层位姿缓存 { "1": {pose:[...], name:"第1层"}, ... }
 
 // ========== WebSocket 连接 ==========
@@ -124,12 +126,17 @@ function handleWSMessage(msg) {
                 }
             } else if (msg.status === 'error') {
                 alert('抓取失败: ' + msg.message);
-                onGrabFailed(msg.message, msg.refundTriggered !== true);
+                if (msg.retryable) scheduleOrderRetry(msg.message);
+                else onGrabFailed(msg.message, msg.refundTriggered !== true);
             }
             break;
         case 'error':
-            alert('后端错误: ' + msg.message);
-            onGrabFailed(msg.message);
+            if (msg.retryable) {
+                scheduleOrderRetry(msg.message);
+            } else {
+                alert('后端错误: ' + msg.message);
+                onGrabFailed(msg.message);
+            }
             break;
         case 'pong':
             break;
@@ -561,6 +568,7 @@ async function submitOrder() {
         }),
         timestamp: Date.now()
     };
+    currentOrderPayload = payload;
 
     logWS('📤 发送抓取命令: ' + JSON.stringify(payload));
     try {
@@ -613,6 +621,26 @@ function showPaymentModal(orderId, payment, totalAmount) {
         catch { showPaymentStatus('复制失败，请手动长按/复制支付链接'); }
     };
     document.getElementById('cancelPayment').onclick = () => { paymentCancelled = true; overlay.style.display = 'none'; };
+}
+
+function scheduleOrderRetry(reason) {
+    if (!currentOrderId || !currentOrderPayload) return;
+    updateRobotStatus('busy', `${reason}，等待机器人空闲后重试`);
+    if (orderRetryTimer) clearTimeout(orderRetryTimer);
+    orderRetryTimer = setTimeout(() => {
+        orderRetryTimer = null;
+        if (!currentOrderId || !currentOrderPayload) return;
+        if (!wsConnected || !robotAcceptingOrders) {
+            scheduleOrderRetry('机器人仍然繁忙');
+            return;
+        }
+        logWS(`🔁 重新发送订单 ${currentOrderId}`);
+        try {
+            ws.send(JSON.stringify(currentOrderPayload));
+        } catch (error) {
+            scheduleOrderRetry(`订单重试发送失败：${error.message}`);
+        }
+    }, 3000);
 }
 
 function showPaymentStatus(message) {
@@ -868,6 +896,9 @@ function onOrderReady(msg) {
     currentOrderId = null;
     currentOrderToken = null;
     currentOrderItems = [];
+    currentOrderPayload = null;
+    if (orderRetryTimer) clearTimeout(orderRetryTimer);
+    orderRetryTimer = null;
     updateCartUI();
     renderProducts();
     syncOrderButton();
@@ -886,6 +917,9 @@ async function onGrabFailed(reason = '机器人未能完成抓取和放置', req
     currentOrderId = null;
     currentOrderToken = null;
     currentOrderItems = [];
+    currentOrderPayload = null;
+    if (orderRetryTimer) clearTimeout(orderRetryTimer);
+    orderRetryTimer = null;
 
     syncOrderButton();
 }

@@ -2478,11 +2478,16 @@ async function handleGrabCommand(ws, msg) {
     }
     const currentOperation = currentRobotOperation();
     if (currentOperation) {
-        if (activeOrderId === orderId) {
-            sendMessage(ws, { type: 'error', orderId, message: `订单 ${orderId} 已在执行，忽略重复提交`, refundTriggered: false });
-            return;
-        }
-        await rejectOrderWithRefund(ws, msg, `${currentOperation.label}，暂不能提交新订单`);
+        const message = activeOrderId === orderId
+            ? `订单 ${orderId} 已在执行，忽略重复提交`
+            : `${currentOperation.label}，暂不接受新订单，请稍后重试`;
+        sendMessage(ws, {
+            type: 'error',
+            orderId,
+            message,
+            retryable: true,
+            refundTriggered: false
+        });
         return;
     }
     try {
