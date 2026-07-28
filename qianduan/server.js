@@ -49,6 +49,10 @@ const PAYMENT_API_TOKEN = process.env.PAYMENT_API_TOKEN || '';
 const PAYMENT_DEVICE_SN = process.env.PAYMENT_DEVICE_SN || 'GRASP-ROBOT-01';
 const PAYMENT_REQUEST_TIMEOUT_MS = Number(process.env.PAYMENT_REQUEST_TIMEOUT_MS || 15000);
 const ALLOW_FREE_ORDERS = /^(1|true|yes|on)$/i.test(process.env.ALLOW_FREE_ORDERS || '') || PAYMENT_MODE === 'free';
+const ORDER_STATUS_CALLBACK_URL = String(process.env.ORDER_STATUS_CALLBACK_URL || '').replace(/\/$/, '');
+const ORDER_STATUS_CALLBACK_SECRET = process.env.ORDER_STATUS_CALLBACK_SECRET || '';
+const ORDER_EXECUTION_REFUND_TIMEOUT_MS = Number(process.env.ORDER_EXECUTION_REFUND_TIMEOUT_MS || 30 * 60 * 1000);
+const ORDER_REFUND_SWEEP_INTERVAL_MS = Number(process.env.ORDER_REFUND_SWEEP_INTERVAL_MS || 60 * 1000);
 const paymentClient = new PaymentClient({
     baseUrl: PAYMENT_API_BASE_URL,
     token: PAYMENT_API_TOKEN,
@@ -430,9 +434,13 @@ function publicOrder(order) {
         statusLabel: orderStatusLabel(order.status),
         paymentCodeUrl: order.paymentCodeUrl || null,
         refundId: order.refundId || null,
+        refundStatus: order.refundStatus || null,
         refundReason: order.refundReason || null,
+        refundTrigger: order.refundTrigger || null,
+        failureReason: order.failureReason || null,
         createdAt: order.createdAt,
         paidAt: order.paidAt || null,
+        placedAt: order.placedAt || null,
         completedAt: order.completedAt || null,
         refundedAt: order.refundedAt || null,
         updatedAt: order.updatedAt || null,
@@ -451,6 +459,198 @@ function markOrderPaid(order, source = 'payment') {
     if (!order.paidAt) order.paidAt = new Date().toISOString();
     order.paidSource = source;
     return setOrderStatus(order, 'PAID', 'PAID');
+}
+
+function orderCallbackSignature(timestamp, orderId, completionToken, reason) {
+    return crypto.createHmac('sha256', ORDER_STATUS_CALLBACK_SECRET)
+        .update(`${timestamp}:${orderId}:${completionToken}:${reason}`)
+        .digest('base64url');
+}
+
+function verifyOrderCallback(req, orderId, completionToken, reason) {
+    if (!ORDER_STATUS_CALLBACK_SECRET) return false;
+    const timestamp = String(req.headers['x-grasp-timestamp'] || '');
+    const signature = String(req.headers['x-grasp-signature'] || '');
+    if (!/^\d{10,16}$/.test(timestamp) || Math.abs(Date.now() - Number(timestamp)) > 5 * 60 * 1000) return false;
+    return safeEqual(signature, orderCallbackSignature(timestamp, orderId, completionToken, reason));
+}
+
+function restoreCompletedOrderInventory(order) {
+    if (order.stockRestoredAt || !order.completedAt) return false;
+    const store = readProductStore();
+    if (!store.completedOrders[order.orderId]) return false;
+    for (const item of normalizeInventoryItems(order.items || [])) {
+        const product = store.products.find((candidate) => Number(candidate.id) === item.id);
+        if (product) product.stock = Number(product.stock) + item.qty;
+    }
+    writeProductStore(store);
+    order.stockRestoredAt = new Date().toISOString();
+    return true;
+}
+
+async function refundOrder(order, reason, trigger = 'admin') {
+    if (order.status === 'REFUNDED' || order.paymentStatus === 'REFUNDED') return order;
+    if (order.status === 'REFUNDING' || order.paymentStatus === 'REFUNDING') return order;
+    if (order.paymentStatus !== 'PAID') throw new Error('订单尚未支付，不能退款');
+
+    order.refundReason = reason;
+    order.refundTrigger = trigger;
+    order.refundRequestedAt = order.refundRequestedAt || new Date().toISOString();
+    setOrderStatus(order, 'REFUNDING', 'REFUNDING');
+
+    let refund;
+    try {
+        if (order.paymentMode === 'free') {
+            refund = { refundId: `FREE-${Date.now().toString(36).toUpperCase()}`, refundStatus: 'SUCCESS' };
+        } else {
+            if (!order.externalOrderId) throw new Error('订单没有外部支付订单号');
+            refund = await paymentClient.refund(order.externalOrderId, reason);
+        }
+    } catch (error) {
+        order.refundStatus = 'FAIL';
+        order.refundReason = `${reason} (${error.message})`;
+        setOrderStatus(order, 'FAILED', 'PAID');
+        throw error;
+    }
+
+    order.refundId = refund.refundId || order.refundId || null;
+    order.refundStatus = refund.refundStatus;
+    if (refund.refundStatus === 'SUCCESS') {
+        order.refundedAt = new Date().toISOString();
+        restoreCompletedOrderInventory(order);
+        setOrderStatus(order, 'REFUNDED', 'REFUNDED');
+    } else {
+        setOrderStatus(order, 'REFUNDING', 'REFUNDING');
+    }
+    return order;
+}
+
+function postOrderStatusCallback(pathname, body, headers = {}) {
+    return new Promise((resolve, reject) => {
+        const target = new URL(pathname, `${ORDER_STATUS_CALLBACK_URL}/`);
+        const transport = target.protocol === 'https:' ? https : http;
+        const payload = Buffer.from(JSON.stringify(body));
+        const request = transport.request({
+            protocol: target.protocol,
+            hostname: target.hostname,
+            port: target.port || undefined,
+            path: `${target.pathname}${target.search}`,
+            method: 'POST',
+            timeout: PAYMENT_REQUEST_TIMEOUT_MS,
+            rejectUnauthorized: false,
+            headers: { 'Content-Type': 'application/json', 'Content-Length': payload.length, ...headers }
+        }, (response) => {
+            const chunks = [];
+            response.on('data', (chunk) => chunks.push(chunk));
+            response.once('end', () => {
+                const text = Buffer.concat(chunks).toString('utf8');
+                let data;
+                try { data = text ? JSON.parse(text) : {}; }
+                catch { reject(new Error(`自动退款回调返回非 JSON (${response.statusCode})`)); return; }
+                if (response.statusCode < 200 || response.statusCode >= 300 || data.code !== 0) {
+                    reject(new Error(data.message || `自动退款回调失败 (${response.statusCode})`));
+                    return;
+                }
+                resolve(data);
+            });
+        });
+        request.once('timeout', () => request.destroy(new Error('自动退款回调超时')));
+        request.once('error', reject);
+        request.end(payload);
+    });
+}
+
+async function refundFailedExecution(orderId, completionToken, reason) {
+    const localOrder = orderById(orderId);
+    if (localOrder && localOrder.paymentStatus === 'PAID') {
+        localOrder.failureReason = reason;
+        localOrder.failedAt = new Date().toISOString();
+        saveOrder(localOrder);
+        return publicOrder(await refundOrder(localOrder, reason, 'robot-failure'));
+    }
+    if (!ORDER_STATUS_CALLBACK_URL || !ORDER_STATUS_CALLBACK_SECRET) {
+        throw new Error('未配置 ORDER_STATUS_CALLBACK_URL/SECRET，无法通知云端自动退款');
+    }
+    const timestamp = String(Date.now());
+    const body = { orderId, completionToken, reason };
+    const signature = orderCallbackSignature(timestamp, orderId, completionToken, reason);
+    const response = await postOrderStatusCallback(`/api/orders/${encodeURIComponent(orderId)}/failure`, body, {
+        'X-Grasp-Timestamp': timestamp,
+        'X-Grasp-Signature': signature
+    });
+    return response.data;
+}
+
+async function notifyRemoteOrderCompleted(orderId, completionToken) {
+    if (!ORDER_STATUS_CALLBACK_URL || !completionToken) return null;
+    let lastError;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+            return await postOrderStatusCallback(
+                `/api/orders/${encodeURIComponent(orderId)}/complete`,
+                { completionToken }
+            );
+        } catch (error) {
+            lastError = error;
+            if (attempt < 4) await sleep(1000 * (attempt + 1));
+        }
+    }
+    throw lastError;
+}
+
+let refundSweepRunning = false;
+async function refundTimedOutOrders() {
+    if (refundSweepRunning || PAYMENT_MODE !== 'lyorder') return;
+    refundSweepRunning = true;
+    try {
+        const now = Date.now();
+        const timedOut = readOrderStore().orders.filter((order) => (
+            order.status === 'PROCESSING'
+            && order.paymentStatus === 'PAID'
+            && !order.placedAt
+            && Number.isFinite(Date.parse(order.executionStartedAt))
+            && now - Date.parse(order.executionStartedAt) >= ORDER_EXECUTION_REFUND_TIMEOUT_MS
+        ));
+        for (const order of timedOut) {
+            try {
+                const reason = `机器人执行超过 ${Math.round(ORDER_EXECUTION_REFUND_TIMEOUT_MS / 60000)} 分钟且未确认成功放置`;
+                order.failureReason = reason;
+                order.failedAt = new Date().toISOString();
+                saveOrder(order);
+                await refundOrder(order, reason, 'execution-timeout');
+                log(`💸 订单 ${order.orderId} 执行超时，已触发自动退款`);
+            } catch (error) {
+                log(`❌ 订单 ${order.orderId} 超时自动退款失败: ${error.message}`);
+            }
+        }
+    } finally {
+        refundSweepRunning = false;
+    }
+}
+
+async function notifyOrderExecutionStarted(orderId, completionToken) {
+    const localOrder = orderById(orderId);
+    if (localOrder) {
+        if (localOrder.paymentStatus !== 'PAID' || !['PAID', 'PROCESSING'].includes(localOrder.status)) {
+            throw new Error(`订单状态不允许开始抓取: ${localOrder.status}/${localOrder.paymentStatus}`);
+        }
+        if (!localOrder.executionStartedAt) localOrder.executionStartedAt = new Date().toISOString();
+        setOrderStatus(localOrder, 'PROCESSING', 'PAID');
+        return publicOrder(localOrder);
+    }
+    if (!completionToken) return null;
+    if (!ORDER_STATUS_CALLBACK_URL || !ORDER_STATUS_CALLBACK_SECRET) {
+        throw new Error('未配置 ORDER_STATUS_CALLBACK_URL/SECRET，不能安全开始支付订单');
+    }
+    const reason = 'started';
+    const timestamp = String(Date.now());
+    const signature = orderCallbackSignature(timestamp, orderId, completionToken, reason);
+    const response = await postOrderStatusCallback(
+        `/api/orders/${encodeURIComponent(orderId)}/started`,
+        { orderId, completionToken },
+        { 'X-Grasp-Timestamp': timestamp, 'X-Grasp-Signature': signature }
+    );
+    return response.data;
 }
 
 function nextProductId(products) {
@@ -757,6 +957,96 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    const startedOrderMatch = pathname.match(/^\/api\/orders\/([^/]+)\/started$/);
+    if (startedOrderMatch && req.method === 'POST') {
+        const body = await parseBody(req);
+        const orderId = decodeURIComponent(startedOrderMatch[1]);
+        const completionToken = String(body && body.completionToken || '');
+        const tokenOrder = readOrderToken(completionToken);
+        if (!tokenOrder || tokenOrder.orderId !== orderId || !verifyOrderCallback(req, orderId, completionToken, 'started')) {
+            sendJSON(res, { code: 1, message: '订单开始回调签名无效' }, 401);
+            return;
+        }
+        const order = orderById(orderId);
+        if (!order) { sendJSON(res, { code: 1, message: '订单不存在' }, 404); return; }
+        if (order.paymentStatus !== 'PAID' || !['PAID', 'PROCESSING'].includes(order.status)) {
+            sendJSON(res, { code: 1, message: `订单状态不允许开始抓取: ${order.status}/${order.paymentStatus}` }, 409);
+            return;
+        }
+        if (!order.executionStartedAt) order.executionStartedAt = new Date().toISOString();
+        setOrderStatus(order, 'PROCESSING', 'PAID');
+        sendJSON(res, { code: 0, data: publicOrder(order) });
+        return;
+    }
+
+    const failureOrderMatch = pathname.match(/^\/api\/orders\/([^/]+)\/failure$/);
+    if (failureOrderMatch && req.method === 'POST') {
+        const body = await parseBody(req);
+        const orderId = decodeURIComponent(failureOrderMatch[1]);
+        const completionToken = String(body && body.completionToken || '');
+        const reason = String(body && body.reason || '机器人未能完成抓取和放置').slice(0, 500);
+        const tokenOrder = readOrderToken(completionToken);
+        if (!tokenOrder || tokenOrder.orderId !== orderId || !verifyOrderCallback(req, orderId, completionToken, reason)) {
+            sendJSON(res, { code: 1, message: '自动退款回调签名无效' }, 401);
+            return;
+        }
+        const order = orderById(orderId);
+        if (!order) { sendJSON(res, { code: 1, message: '订单不存在' }, 404); return; }
+        if (order.completedAt || order.status === 'COMPLETED') {
+            sendJSON(res, { code: 0, skipped: true, message: '订单已成功放置，不执行自动退款', data: publicOrder(order) });
+            return;
+        }
+        try {
+            order.failureReason = reason;
+            order.failedAt = new Date().toISOString();
+            saveOrder(order);
+            const refunded = await refundOrder(order, reason, 'robot-failure');
+            sendJSON(res, { code: 0, data: publicOrder(refunded) });
+        } catch (error) {
+            order.refundStatus = 'FAIL';
+            order.refundReason = `${reason} (${error.message})`;
+            setOrderStatus(order, 'FAILED', order.paymentStatus);
+            sendJSON(res, { code: 1, message: `自动退款失败: ${error.message}` }, 502);
+        }
+        return;
+    }
+
+    const customerRefundMatch = pathname.match(/^\/api\/orders\/([^/]+)\/refund$/);
+    if (customerRefundMatch && req.method === 'POST') {
+        const body = await parseBody(req);
+        const orderId = decodeURIComponent(customerRefundMatch[1]);
+        const completionToken = String(body && body.completionToken || '');
+        const reason = String(body && body.reason || '订单未能开始或完成抓取放置').slice(0, 500);
+        const tokenOrder = readOrderToken(completionToken);
+        if (!tokenOrder || tokenOrder.orderId !== orderId) {
+            sendJSON(res, { code: 1, message: '订单凭证无效或已过期' }, 401);
+            return;
+        }
+        const order = orderById(orderId);
+        if (!order) { sendJSON(res, { code: 1, message: '订单不存在' }, 404); return; }
+        if (order.completedAt || order.placedAt || order.status === 'COMPLETED') {
+            sendJSON(res, { code: 0, skipped: true, message: '订单已成功放置，不执行自动退款', data: publicOrder(order) });
+            return;
+        }
+        if (order.status === 'PROCESSING' || order.executionStartedAt) {
+            sendJSON(res, { code: 1, message: '机器人已经开始执行，只能由盒子失败回调触发退款' }, 409);
+            return;
+        }
+        try {
+            order.failureReason = reason;
+            order.failedAt = new Date().toISOString();
+            saveOrder(order);
+            const refunded = await refundOrder(order, reason, 'client-fallback');
+            sendJSON(res, { code: 0, data: publicOrder(refunded) });
+        } catch (error) {
+            order.refundStatus = 'FAIL';
+            order.refundReason = `${reason} (${error.message})`;
+            setOrderStatus(order, 'FAILED', order.paymentStatus);
+            sendJSON(res, { code: 1, message: `自动退款失败: ${error.message}` }, 502);
+        }
+        return;
+    }
+
     const completeOrderMatch = pathname.match(/^\/api\/orders\/([^/]+)\/complete$/);
     if (completeOrderMatch && req.method === 'POST') {
         const body = await parseBody(req);
@@ -812,37 +1102,13 @@ const server = http.createServer(async (req, res) => {
             const body = await parseBody(req);
             const order = orderById(orderId);
             if (!order) { sendJSON(res, { code: 1, message: '订单不存在' }, 404); return; }
-            if (!['PAID', 'COMPLETED'].includes(order.status) || order.paymentStatus !== 'PAID') {
+            if (!['PAID', 'COMPLETED', 'FAILED'].includes(order.status) || order.paymentStatus !== 'PAID') {
                 sendJSON(res, { code: 1, message: '仅已支付或已完成订单可退款' }, 409); return;
             }
             const reason = String(body && body.reason || '管理员退款').slice(0, 200);
             try {
-                let refund;
-                if (order.paymentMode === 'free') {
-                    refund = { refundId: `FREE-${Date.now().toString(36).toUpperCase()}`, refundStatus: 'SUCCESS' };
-                } else {
-                    if (!order.externalOrderId) throw new Error('订单没有外部支付订单号');
-                    refund = await paymentClient.refund(order.externalOrderId, reason);
-                }
-                order.refundId = refund.refundId || null;
-                order.refundStatus = refund.refundStatus;
-                order.refundReason = reason;
-                order.refundedAt = refund.refundStatus === 'SUCCESS' ? new Date().toISOString() : null;
-                if (refund.refundStatus === 'SUCCESS') {
-                    if (!order.stockRestoredAt) {
-                        const store = readProductStore();
-                        for (const item of normalizeInventoryItems(order.items || [])) {
-                            const product = store.products.find((candidate) => Number(candidate.id) === item.id);
-                            if (product) product.stock = Number(product.stock) + item.qty;
-                        }
-                        writeProductStore(store);
-                        order.stockRestoredAt = new Date().toISOString();
-                    }
-                    setOrderStatus(order, 'REFUNDED', 'REFUNDED');
-                } else {
-                    setOrderStatus(order, 'REFUNDING', 'REFUNDING');
-                }
-                sendJSON(res, { code: 0, data: publicOrder(order) });
+                const refunded = await refundOrder(order, reason, 'admin');
+                sendJSON(res, { code: 0, data: publicOrder(refunded) });
             } catch (error) {
                 order.refundStatus = 'FAIL';
                 order.refundReason = `${reason} (${error.message})`;
@@ -1305,6 +1571,10 @@ server.listen(PORT, HOST, () => {
     log(`商品管理页面: http://localhost:${PORT}/admin.html`);
     log(`抓取模式: ${ROBOT_GRASP_REAL ? '真实机械臂' : '模拟'} (${ROBOT_GRASP_MODE})`);
     log(`支付模式: ${PAYMENT_MODE}${PAYMENT_MODE === 'lyorder' ? `，支付 API: ${PAYMENT_API_BASE_URL || '未配置'}` : '（免费/测试）'}`);
+    if (PAYMENT_MODE === 'lyorder') {
+        setInterval(refundTimedOutOrders, Math.max(10000, ORDER_REFUND_SWEEP_INTERVAL_MS)).unref();
+        refundTimedOutOrders().catch((error) => log(`⚠️ 超时退款巡检失败: ${error.message}`));
+    }
     const chassisSettings = readChassisSettings();
     log(`底盘接口: ${CHASSIS_HOST}:${CHASSIS_PORT}，栅格地图: ${CHASSIS_MAP_HTTP_PROTOCOL}://${CHASSIS_MAP_HTTP_HOST}:${CHASSIS_MAP_HTTP_PORT}`);
     log(`底盘导航: ${chassisSettings.navigation_enabled ? '已开启' : '已关闭'}，自动回充: ${chassisSettings.auto_return_charge ? '已开启' : '已关闭'}，放置点: ${chassisSettings.place_marker}`);
@@ -1386,6 +1656,23 @@ function rejectIfRobotBusy(ws, action, responseType = 'error') {
     if (responseType !== 'error') response.status = 'error';
     sendMessage(ws, response);
     return true;
+}
+
+async function rejectOrderWithRefund(ws, msg, reason) {
+    const orderId = String(msg && msg.orderId || '').trim();
+    let message = reason;
+    let refundTriggered = false;
+    if (orderId) {
+        try {
+            const refunded = await refundFailedExecution(orderId, msg.completionToken, reason);
+            refundTriggered = true;
+            message = `${reason}；订单已${refunded.status === 'REFUNDED' ? '自动退款' : '提交退款'}`;
+        } catch (refundError) {
+            message = `${reason}；自动退款失败，请联系管理员：${refundError.message}`;
+            log(`❌ 订单 ${orderId} 拒绝执行后的自动退款失败: ${refundError.message}`);
+        }
+    }
+    sendMessage(ws, { type: 'error', orderId: orderId || undefined, message, refundTriggered });
 }
 
 wss.on('connection', (ws) => {
@@ -2186,15 +2473,29 @@ async function handleGrabCommand(ws, msg) {
     try {
         ({ items, totalUnits } = resolveOrderItems(msg, orderId));
     } catch (error) {
-        sendMessage(ws, { type: 'error', message: error.message });
+        await rejectOrderWithRefund(ws, msg, error.message);
         return;
     }
-    if (rejectIfRobotBusy(ws, '提交新订单')) return;
+    const currentOperation = currentRobotOperation();
+    if (currentOperation) {
+        if (activeOrderId === orderId) {
+            sendMessage(ws, { type: 'error', orderId, message: `订单 ${orderId} 已在执行，忽略重复提交`, refundTriggered: false });
+            return;
+        }
+        await rejectOrderWithRefund(ws, msg, `${currentOperation.label}，暂不能提交新订单`);
+        return;
+    }
+    try {
+        await notifyOrderExecutionStarted(orderId, msg.completionToken);
+    } catch (error) {
+        await rejectOrderWithRefund(ws, msg, error.message);
+        return;
+    }
 
     log(`🤖 开始处理订单 ${orderId}，共 ${totalUnits} 件商品`);
-    if (savedOrder) setOrderStatus(savedOrder, 'PROCESSING', 'PAID');
     activeOrderId = orderId;
     broadcastRobotStatus('busy', `正在处理订单 ${orderId}`);
+    let fulfilled = false;
 
     try {
         sendStatus(ws, 'started', {
@@ -2203,12 +2504,48 @@ async function handleGrabCommand(ws, msg) {
         });
 
         await executeOrderItems(ws, orderId, items, totalUnits);
+        fulfilled = true;
+        const placedOrder = orderById(orderId);
+        if (placedOrder) {
+            placedOrder.placedAt = new Date().toISOString();
+            saveOrder(placedOrder);
+        } else if (ORDER_STATUS_CALLBACK_URL) {
+            try {
+                await notifyRemoteOrderCompleted(orderId, msg.completionToken);
+                log(`✅ 订单 ${orderId} 已通知云端完成并扣减库存`);
+            } catch (callbackError) {
+                log(`⚠️ 订单 ${orderId} 已成功放置，但云端完成回调失败: ${callbackError.message}`);
+            }
+        }
         await completeOrder(ws, orderId);
     } catch (e) {
         log(`❌ 订单 ${orderId} 失败: ${e.message}`);
         const failedOrder = orderById(orderId);
-        if (failedOrder) setOrderStatus(failedOrder, 'FAILED', failedOrder.paymentStatus);
-        sendStatus(ws, 'error', { orderId, message: e.message });
+        let failureMessage = e.message;
+        if (!fulfilled) {
+            if (failedOrder) {
+                failedOrder.failureReason = e.message;
+                failedOrder.failedAt = new Date().toISOString();
+                saveOrder(failedOrder);
+            }
+            try {
+                const refunded = await refundFailedExecution(orderId, msg.completionToken, e.message);
+                failureMessage = `${e.message}；订单已${refunded.status === 'REFUNDED' ? '自动退款' : '提交退款'}`;
+                log(`💸 订单 ${orderId} 未完成抓取放置，已触发自动退款`);
+            } catch (refundError) {
+                failureMessage = `${e.message}；自动退款失败，请联系管理员：${refundError.message}`;
+                log(`❌ 订单 ${orderId} 自动退款失败: ${refundError.message}`);
+                const latest = orderById(orderId);
+                if (latest) setOrderStatus(latest, 'FAILED', latest.paymentStatus);
+            }
+        } else {
+            failureMessage = `${e.message}；商品已成功放置，不自动退款`;
+            if (failedOrder) {
+                failedOrder.postDeliveryError = e.message;
+                saveOrder(failedOrder);
+            }
+        }
+        sendStatus(ws, 'error', { orderId, message: failureMessage, refundTriggered: !fulfilled });
     } finally {
         activeOrderId = null;
         broadcastRobotStatus();

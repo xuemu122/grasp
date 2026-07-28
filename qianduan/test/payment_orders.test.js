@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
@@ -45,7 +46,8 @@ test('free payment order is persisted, completed and refundable', async (t) => {
             ROBOT_GRASP_MODE: 'sim', PRODUCTS_DB_FILE: productsFile, ORDERS_DB_FILE: ordersFile,
             PAYMENT_MODE: 'free', ALLOW_FREE_ORDERS: '1',
             ADMIN_USERNAME: 'test-admin', ADMIN_PASSWORD: 'test-password',
-            ADMIN_SESSION_SECRET: 'test-admin-session-secret-32-bytes', ORDER_TOKEN_SECRET: 'test-order-secret'
+            ADMIN_SESSION_SECRET: 'test-admin-session-secret-32-bytes', ORDER_TOKEN_SECRET: 'test-order-secret',
+            ORDER_STATUS_CALLBACK_SECRET: 'test-callback-secret'
         },
         stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -86,9 +88,63 @@ test('free payment order is persisted, completed and refundable', async (t) => {
 
     const completed = await postJson(`${base}/api/orders/${prepared.json.orderId}/complete`, { completionToken: prepared.json.completionToken });
     assert.equal(completed.response.status, 200);
+    const postDeliveryReason = '回充失败';
+    const postDeliveryTimestamp = String(Date.now());
+    const postDeliverySignature = crypto.createHmac('sha256', 'test-callback-secret')
+        .update(`${postDeliveryTimestamp}:${prepared.json.orderId}:${prepared.json.completionToken}:${postDeliveryReason}`)
+        .digest('base64url');
+    const postDeliveryFailure = await postJson(
+        `${base}/api/orders/${prepared.json.orderId}/failure`,
+        { completionToken: prepared.json.completionToken, reason: postDeliveryReason },
+        { 'X-Grasp-Timestamp': postDeliveryTimestamp, 'X-Grasp-Signature': postDeliverySignature }
+    );
+    assert.equal(postDeliveryFailure.response.status, 200);
+    assert.equal(postDeliveryFailure.json.skipped, true);
+    assert.equal(postDeliveryFailure.json.data.status, 'COMPLETED');
+
     const refunded = await postJson(`${base}/api/admin/orders/${prepared.json.orderId}/refund`, { reason: '测试退款' }, { Cookie: cookie });
     assert.equal(refunded.response.status, 200);
     assert.equal(refunded.json.data.status, 'REFUNDED');
     const products = await (await fetch(`${base}/api/products`)).json();
     assert.equal(products.data[0].stock, 5);
+
+    const failedPrepared = await postJson(`${base}/api/orders/prepare`, { items: [{ id: 1, qty: 1 }] });
+    const startedTimestamp = String(Date.now());
+    const startedSignature = crypto.createHmac('sha256', 'test-callback-secret')
+        .update(`${startedTimestamp}:${failedPrepared.json.orderId}:${failedPrepared.json.completionToken}:started`)
+        .digest('base64url');
+    const started = await postJson(
+        `${base}/api/orders/${failedPrepared.json.orderId}/started`,
+        { completionToken: failedPrepared.json.completionToken },
+        { 'X-Grasp-Timestamp': startedTimestamp, 'X-Grasp-Signature': startedSignature }
+    );
+    assert.equal(started.response.status, 200);
+    assert.equal(started.json.data.status, 'PROCESSING');
+    const unsafeClientRefund = await postJson(
+        `${base}/api/orders/${failedPrepared.json.orderId}/refund`,
+        { completionToken: failedPrepared.json.completionToken, reason: '浏览器重复退款' }
+    );
+    assert.equal(unsafeClientRefund.response.status, 409);
+
+    const reason = '识别失败：未找到可抓取目标';
+    const timestamp = String(Date.now());
+    const signature = crypto.createHmac('sha256', 'test-callback-secret')
+        .update(`${timestamp}:${failedPrepared.json.orderId}:${failedPrepared.json.completionToken}:${reason}`)
+        .digest('base64url');
+    const failure = await postJson(
+        `${base}/api/orders/${failedPrepared.json.orderId}/failure`,
+        { completionToken: failedPrepared.json.completionToken, reason },
+        { 'X-Grasp-Timestamp': timestamp, 'X-Grasp-Signature': signature }
+    );
+    assert.equal(failure.response.status, 200);
+    assert.equal(failure.json.data.status, 'REFUNDED');
+    const duplicateFailure = await postJson(
+        `${base}/api/orders/${failedPrepared.json.orderId}/failure`,
+        { completionToken: failedPrepared.json.completionToken, reason },
+        { 'X-Grasp-Timestamp': timestamp, 'X-Grasp-Signature': signature }
+    );
+    assert.equal(duplicateFailure.response.status, 200);
+    assert.equal(duplicateFailure.json.data.refundId, failure.json.data.refundId);
+    const productsAfterFailure = await (await fetch(`${base}/api/products`)).json();
+    assert.equal(productsAfterFailure.data[0].stock, 5);
 });

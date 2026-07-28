@@ -837,7 +837,7 @@
                 body.innerHTML = json.data.map((order) => {
                     const statusLabel = adminOrderStatusLabels[order.status] || order.status;
                     const items = (order.items || []).map((item) => `${esc(item.name)} × ${item.qty}`).join('<br>');
-                    const canRefund = ['PAID', 'COMPLETED'].includes(order.status) && order.paymentStatus === 'PAID';
+                    const canRefund = ['PAID', 'COMPLETED', 'FAILED'].includes(order.status) && order.paymentStatus === 'PAID';
                     return `<tr>
                         <td><strong>${esc(order.orderId)}</strong><br><small>${esc(order.paymentMode || '')}</small></td>
                         <td class="order-items-summary">${items || '-'}</td>

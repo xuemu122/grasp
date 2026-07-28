@@ -124,12 +124,12 @@ function handleWSMessage(msg) {
                 }
             } else if (msg.status === 'error') {
                 alert('抓取失败: ' + msg.message);
-                onGrabFailed();
+                onGrabFailed(msg.message, msg.refundTriggered !== true);
             }
             break;
         case 'error':
             alert('后端错误: ' + msg.message);
-            onGrabFailed();
+            onGrabFailed(msg.message);
             break;
         case 'pong':
             break;
@@ -528,6 +528,7 @@ async function submitOrder() {
 
     if (!wsConnected) {
         alert('⚠️ 后端服务未连接，请先启动后端！\n\n在终端执行: node server.js');
+        await requestAutomaticRefund(orderId, prepared.completionToken, '支付成功后机器人连接断开，订单未开始');
         currentOrderId = null;
         currentOrderToken = null;
         currentOrderItems = [];
@@ -562,7 +563,29 @@ async function submitOrder() {
     };
 
     logWS('📤 发送抓取命令: ' + JSON.stringify(payload));
-    ws.send(JSON.stringify(payload));
+    try {
+        ws.send(JSON.stringify(payload));
+    } catch (error) {
+        await requestAutomaticRefund(orderId, prepared.completionToken, `抓取命令发送失败：${error.message}`);
+        onGrabFailed(error.message, false);
+    }
+}
+
+async function requestAutomaticRefund(orderId, completionToken, reason) {
+    if (!orderId || !completionToken) return null;
+    try {
+        const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/refund`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ completionToken, reason })
+        });
+        const json = await res.json();
+        if (!res.ok || json.code !== 0) throw new Error(json.message || '自动退款失败');
+        return json;
+    } catch (error) {
+        alert(`自动退款失败，请联系管理员处理订单 ${orderId}：${error.message}`);
+        return null;
+    }
 }
 
 let paymentCancelled = false;
@@ -851,10 +874,15 @@ function onOrderReady(msg) {
 }
 
 // ========== 抓取失败 ==========
-function onGrabFailed() {
+async function onGrabFailed(reason = '机器人未能完成抓取和放置', requestRefund = true) {
     const overlay = document.getElementById('modalOverlay');
     if (overlay) overlay.style.display = 'none';
     updateRobotStatus('online', '机器人就绪');
+    const failedOrderId = currentOrderId;
+    const failedOrderToken = currentOrderToken;
+    if (requestRefund && failedOrderId && failedOrderToken) {
+        await requestAutomaticRefund(failedOrderId, failedOrderToken, reason);
+    }
     currentOrderId = null;
     currentOrderToken = null;
     currentOrderItems = [];

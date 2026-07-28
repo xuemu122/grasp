@@ -28,6 +28,21 @@ POST /api/admin/orders/:orderId/refund   {"reason":"用户取消"}
 
 免费订单退款只恢复本地库存；真实订单退款会转发到 LyOrder `/api/WeChatPay/refund`。只有已支付或已完成订单可以退款，库存恢复具有幂等标记。
 
+支付订单以“所有商品均成功抓取并放置”为履约边界。识别失败、无目标、碰撞/安全检查失败、导航失败、机械臂动作失败或放置失败，都会由盒子签名回调云端并自动退款；商品已经成功放置后，收起或回充失败只记录异常，不退款。云端还会巡检长时间停留在 `PROCESSING` 且没有 `placedAt` 的订单，默认 30 分钟后自动退款，用于覆盖盒子断电或进程崩溃。
+
+云端与盒子必须配置同一份随机回调密钥。云端不设置回调地址；盒子设置云端 API 地址：
+
+```text
+# 云端商品/支付服务
+ORDER_STATUS_CALLBACK_SECRET=<32字节以上随机值>
+
+# 盒子执行服务
+ORDER_STATUS_CALLBACK_URL=https://rzza.dxtxl.com:8083
+ORDER_STATUS_CALLBACK_SECRET=<与云端相同>
+```
+
+订单执行顺序是“盒子签名锁单为 PROCESSING → 开始运动 → 成功放置后回调 complete”。失败回调和退款均是幂等的，重复上报不会重复退款；未完成扣库存的失败订单不会错误增加库存。自动退款失败时订单保留为 `FAILED/PAID`，管理页仍显示退款按钮供管理员重试。
+
 ## 架构
 
 ```text
