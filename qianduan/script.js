@@ -143,6 +143,36 @@ function handleWSMessage(msg) {
     }
 }
 
+// ========== 熄屏唤醒 ==========
+(function initSplash() {
+    const splash = document.getElementById('splashScreen');
+    if (!splash) return;
+
+    let awake = false;
+    function wakeUp() {
+        if (awake) return;
+        awake = true;
+        splash.classList.add('hidden');
+
+        if ('speechSynthesis' in window) {
+            setTimeout(() => {
+                const utter = new SpeechSynthesisUtterance('你好，请点单');
+                utter.lang = 'zh-CN';
+                utter.rate = 0.9;
+                utter.pitch = 1.1;
+                utter.volume = 1;
+                window.speechSynthesis.speak(utter);
+            }, 500);
+        }
+    }
+
+    splash.addEventListener('click', wakeUp);
+    splash.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        wakeUp();
+    });
+})();
+
 // ========== 初始化 ==========
 async function init() {
     connectWebSocket();
