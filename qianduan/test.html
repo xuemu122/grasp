@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>机器人点单测试页</title>
+    <script>
+        window.GRASP_TEST_MODE = true;
+        fetch('/index.html', { cache: 'no-store' })
+            .then((response) => response.text())
+            .then((html) => {
+                document.open();
+                document.write(html);
+                document.close();
+            })
+            .catch(() => { document.body.textContent = '测试页面加载失败'; });
+    </script>
+</head>
+<body><p>正在加载测试页面...</p></body>
+</html>

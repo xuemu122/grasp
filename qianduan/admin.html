@@ -91,6 +91,13 @@
         .robot-control-card { grid-column: 1 / -1; }
         .robot-control-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
         .robot-control-status { flex: 1; min-width: 240px; color: var(--gray-600); font-size: 0.9rem; }
+        .order-admin-card { grid-column: 1 / -1; }
+        .order-toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+        .order-toolbar .search-box { min-width: 220px; }
+        .order-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 14px; color: var(--gray-500); font-size: 0.84rem; }
+        .order-pagination button { border: 1px solid var(--gray-300); background: white; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+        .order-pagination button:disabled { opacity: 0.45; cursor: not-allowed; }
+        .order-items-summary { max-width: 300px; color: var(--gray-600); white-space: normal; }
         .map-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
         .map-toolbar .map-status { flex: 1; min-width: 220px; color: var(--gray-500); font-size: 0.84rem; }
         .toggle-control { display: inline-flex; align-items: center; gap: 8px; color: var(--gray-700); font-size: 0.86rem; font-weight: 600; cursor: pointer; }
@@ -192,6 +199,38 @@
                 <span class="map-status" id="chassisMapStatus">尚未读取底盘地图</span>
             </div>
             <div class="chassis-map" id="chassisMap"><div class="map-empty">暂无地图数据</div></div>
+        </div>
+
+        <div class="card order-admin-card">
+            <div class="card-title">
+                <span>订单管理 <span class="count" id="adminOrderCount">0 条</span></span>
+                <button class="btn btn-primary btn-sm" type="button" onclick="loadAdminOrders(1)">刷新订单</button>
+            </div>
+            <div class="order-toolbar">
+                <input class="search-box" id="adminOrderSearch" placeholder="搜索订单号或商品" onkeydown="if(event.key === 'Enter') loadAdminOrders(1)">
+                <select class="select-box" id="adminOrderStatus" onchange="loadAdminOrders(1)">
+                    <option value="">全部状态</option>
+                    <option value="PENDING_PAYMENT">待支付</option>
+                    <option value="PAID">已支付</option>
+                    <option value="PROCESSING">抓取中</option>
+                    <option value="COMPLETED">已完成</option>
+                    <option value="REFUNDING">退款中</option>
+                    <option value="REFUNDED">已退款</option>
+                    <option value="FAILED">失败</option>
+                    <option value="CLOSED">已关闭</option>
+                </select>
+            </div>
+            <div class="table-wrapper">
+                <table>
+                    <thead><tr><th>订单号</th><th>商品</th><th>金额</th><th>支付状态</th><th>订单状态</th><th>创建时间</th><th>操作</th></tr></thead>
+                    <tbody id="adminOrderTableBody"><tr><td colspan="7" class="loading">加载中...</td></tr></tbody>
+                </table>
+            </div>
+            <div class="order-pagination">
+                <button id="adminOrderPrev" type="button" onclick="loadAdminOrders(adminOrderPage - 1)">上一页</button>
+                <span id="adminOrderPageInfo">第 1 / 1 页</span>
+                <button id="adminOrderNext" type="button" onclick="loadAdminOrders(adminOrderPage + 1)">下一页</button>
+            </div>
         </div>
 
         <!-- 左侧：商品列表 -->
@@ -304,6 +343,10 @@
                         <option value="">未设置</option>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label>LyOrder 菜品 ID（正式支付必填）</label>
+                    <input type="number" min="1" step="1" class="form-input" id="formPaymentMenuItemId" placeholder="与支付系统 MenuItem ID 一致">
+                </div>
                 <div class="form-row-3">
                     <div class="form-group">
                         <label>X坐标</label>
@@ -379,6 +422,8 @@
         let shelfLayers = {};
         let chassisMapData = { map: {}, markers: [] };
         let chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'yaojia1' };
+        let adminOrderPage = 1;
+        let adminOrderTotalPages = 1;
 
         // ========== 登录与初始化 ==========
         document.addEventListener('DOMContentLoaded', async () => {
@@ -426,7 +471,7 @@
         async function showAdmin() {
             document.getElementById('loginOverlay').hidden = true;
             await Promise.all([loadShelfLayers(), loadChassisMap(), loadChassisNavigationConfig(), loadRobotStatus()]);
-            await Promise.all([loadProducts(), loadCategories()]);
+            await Promise.all([loadProducts(), loadCategories(), loadAdminOrders(1)]);
         }
 
         function showLogin(message = '') {
@@ -754,6 +799,91 @@
             }
         }
 
+        const adminOrderStatusLabels = {
+            PENDING_PAYMENT: '待支付', PAID: '已支付', PROCESSING: '抓取中',
+            COMPLETED: '已完成', REFUNDING: '退款中', REFUNDED: '已退款',
+            FAILED: '失败', CLOSED: '已关闭'
+        };
+
+        function adminOrderTime(value) {
+            if (!value) return '-';
+            const date = new Date(value);
+            return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false });
+        }
+
+        async function loadAdminOrders(page = 1) {
+            const body = document.getElementById('adminOrderTableBody');
+            if (!body) return;
+            const params = new URLSearchParams({ page: String(Math.max(1, page)), pageSize: '10' });
+            const status = document.getElementById('adminOrderStatus').value;
+            const search = document.getElementById('adminOrderSearch').value.trim();
+            if (status) params.set('status', status);
+            if (search) params.set('search', search);
+            body.innerHTML = '<tr><td colspan="7" class="loading">加载中...</td></tr>';
+            try {
+                const res = await adminFetch(`/api/admin/orders?${params.toString()}`);
+                const json = await readAdminJson(res, '订单接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '订单读取失败');
+                adminOrderPage = json.page;
+                adminOrderTotalPages = json.totalPages;
+                document.getElementById('adminOrderCount').textContent = `${json.total} 条`;
+                document.getElementById('adminOrderPageInfo').textContent = `第 ${adminOrderPage} / ${adminOrderTotalPages} 页`;
+                document.getElementById('adminOrderPrev').disabled = adminOrderPage <= 1;
+                document.getElementById('adminOrderNext').disabled = adminOrderPage >= adminOrderTotalPages;
+                if (!json.data.length) {
+                    body.innerHTML = '<tr><td colspan="7" class="empty-state">暂无订单</td></tr>';
+                    return;
+                }
+                body.innerHTML = json.data.map((order) => {
+                    const statusLabel = adminOrderStatusLabels[order.status] || order.status;
+                    const items = (order.items || []).map((item) => `${esc(item.name)} × ${item.qty}`).join('<br>');
+                    const canRefund = ['PAID', 'COMPLETED'].includes(order.status) && order.paymentStatus === 'PAID';
+                    return `<tr>
+                        <td><strong>${esc(order.orderId)}</strong><br><small>${esc(order.paymentMode || '')}</small></td>
+                        <td class="order-items-summary">${items || '-'}</td>
+                        <td style="color:var(--primary);font-weight:700;">¥${Number(order.totalAmount || 0).toFixed(2)}</td>
+                        <td>${esc(order.paymentStatus || '-')}</td>
+                        <td><span class="status-badge ${order.status === 'REFUNDED' ? 'off' : (order.status === 'COMPLETED' ? 'on' : 'warn')}" title="${esc(statusLabel)}">${esc(statusLabel)}</span></td>
+                        <td>${esc(adminOrderTime(order.createdAt))}</td>
+                        <td class="actions"><button class="btn btn-primary btn-sm" type="button" onclick="showAdminOrderDetail('${esc(order.orderId)}')">详情</button>${canRefund ? `<button class="btn btn-danger btn-sm" type="button" onclick="refundAdminOrder('${esc(order.orderId)}')">退款</button>` : ''}</td>
+                    </tr>`;
+                }).join('');
+            } catch (error) {
+                body.innerHTML = `<tr><td colspan="7" class="empty-state">${esc(error.message)}</td></tr>`;
+            }
+        }
+
+        async function showAdminOrderDetail(orderId) {
+            try {
+                const res = await adminFetch(`/api/admin/orders/${encodeURIComponent(orderId)}`);
+                const json = await readAdminJson(res, '订单详情接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '订单读取失败');
+                const order = json.data;
+                const items = (order.items || []).map((item) => `${item.name} × ${item.qty}`).join('、');
+                alert(`订单号：${order.orderId}\n商品：${items}\n金额：¥${Number(order.totalAmount || 0).toFixed(2)}\n状态：${adminOrderStatusLabels[order.status] || order.status}\n支付：${order.paymentStatus}\n创建：${adminOrderTime(order.createdAt)}`);
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function refundAdminOrder(orderId) {
+            const reason = window.prompt('请输入退款原因', '管理员退款');
+            if (reason === null) return;
+            try {
+                const res = await adminFetch(`/api/admin/orders/${encodeURIComponent(orderId)}/refund`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reason: reason.trim() || '管理员退款' })
+                });
+                const json = await readAdminJson(res, '退款接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '退款失败');
+                showToast('退款申请已提交', 'success');
+                await loadAdminOrders(adminOrderPage);
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
         function renderChassisMap() {
             const container = document.getElementById('chassisMap');
             const floor = Number(document.getElementById('chassisMapFloor').value || chassisMapData.map?.floor || 0);
@@ -1015,6 +1145,7 @@
                 document.getElementById('formLocation').value = p.location || '';
                 document.getElementById('formShelfLayer').value = String(parseShelfLayer(p.location) || '');
                 updateChassisMarkerOptions(p.chassis_marker || '');
+                document.getElementById('formPaymentMenuItemId').value = p.payment_menu_item_id || '';
                 document.getElementById('formShelfX').value = p.shelf_x || 0;
                 document.getElementById('formShelfY').value = p.shelf_y || 0;
                 document.getElementById('formShelfZ').value = p.shelf_z || 50;
@@ -1043,7 +1174,8 @@
             document.getElementById('formEmoji').value = '📦';
             document.getElementById('formShelfZ').value = 50;
             document.getElementById('formShelfLayer').value = '';
-            updateChassisMarkerOptions('');
+                updateChassisMarkerOptions('');
+                document.getElementById('formPaymentMenuItemId').value = '';
             document.getElementById('formStock').value = 100;
             document.getElementById('formStatus').value = 1;
             document.getElementById('formTitle').textContent = '➕ 新增商品';
@@ -1078,6 +1210,7 @@
                     document.getElementById('formShelfLayer').value
                 ),
                 chassis_marker: document.getElementById('formChassisMarker').value,
+                payment_menu_item_id: parseInt(document.getElementById('formPaymentMenuItemId').value) || null,
                 shelf_x: parseInt(document.getElementById('formShelfX').value) || 0,
                 shelf_y: parseInt(document.getElementById('formShelfY').value) || 0,
                 shelf_z: parseInt(document.getElementById('formShelfZ').value) || 50,

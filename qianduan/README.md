@@ -2,6 +2,32 @@
 
 本目录包含静态点单页面、商品 REST API 和盒子端订单 WebSocket 服务。生产环境采用“云端页面和商品库、盒子执行机械臂”的部署方式。
 
+## 支付、测试页与订单管理
+
+订单记录保存在 `ORDERS_DB_FILE`（默认 `data/orders.json`），商品库存仍保存在 `PRODUCTS_DB_FILE`。订单准备接口会先校验库存并落库；`PAYMENT_MODE=free` 时直接标记为测试支付成功，`PAYMENT_MODE=lyorder` 时调用 LyOrder 的 `/api/Order/create` 和 `/api/WeChatPay/native`，支付状态通过 `/api/orders/:orderId/payment` 查单确认后才允许抓取。
+
+正式服务不要把支付密钥写进仓库，使用环境文件配置：
+
+```text
+PAYMENT_MODE=lyorder
+PAYMENT_API_BASE_URL=http://127.0.0.1:8080
+PAYMENT_API_TOKEN=...
+PAYMENT_DEVICE_SN=GRASP-ROBOT-01
+ALLOW_FREE_ORDERS=0
+```
+
+测试服务使用单独的 Node/WS 端口和数据目录，设置 `PAYMENT_MODE=free`、`ALLOW_FREE_ORDERS=1`，并把测试虚拟主机（例如现有的 `8083text`）的 `/`、`/api/`、`/ws/` 全部代理到该实例。也可以把同一静态目录的 `/test.html` 暴露为测试入口；它复用点单页面但自动请求免费模式。不要让正式虚拟主机把 `ALLOW_FREE_ORDERS` 设为 `1`。
+
+管理员页面新增订单分页接口：
+
+```text
+GET  /api/admin/orders?page=1&pageSize=10&status=COMPLETED&search=咖啡
+GET  /api/admin/orders/:orderId
+POST /api/admin/orders/:orderId/refund   {"reason":"用户取消"}
+```
+
+免费订单退款只恢复本地库存；真实订单退款会转发到 LyOrder `/api/WeChatPay/refund`。只有已支付或已完成订单可以退款，库存恢复具有幂等标记。
+
 ## 架构
 
 ```text

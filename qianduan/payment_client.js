@@ -1,0 +1,109 @@
+const http = require('node:http');
+const https = require('node:https');
+
+class PaymentClient {
+    constructor({ baseUrl, token = '', timeoutMs = 15000 } = {}) {
+        this.baseUrl = String(baseUrl || '').replace(/\/$/, '');
+        this.token = String(token || '');
+        this.timeoutMs = Number(timeoutMs) || 15000;
+    }
+
+    enabled() {
+        return Boolean(this.baseUrl);
+    }
+
+    request(method, pathname, body) {
+        if (!this.enabled()) throw new Error('未配置 PAYMENT_API_BASE_URL');
+        const target = new URL(pathname, `${this.baseUrl}/`);
+        const transport = target.protocol === 'https:' ? https : http;
+        const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
+        const headers = { Accept: 'application/json' };
+        if (payload) {
+            headers['Content-Type'] = 'application/json';
+            headers['Content-Length'] = payload.length;
+        }
+        if (this.token) headers.Authorization = `Bearer ${this.token}`;
+
+        return new Promise((resolve, reject) => {
+            const req = transport.request({
+                protocol: target.protocol,
+                hostname: target.hostname,
+                port: target.port || undefined,
+                path: `${target.pathname}${target.search}`,
+                method,
+                headers,
+                timeout: this.timeoutMs,
+                rejectUnauthorized: false
+            }, (res) => {
+                const chunks = [];
+                res.on('data', (chunk) => chunks.push(chunk));
+                res.once('end', () => {
+                    const text = Buffer.concat(chunks).toString('utf8');
+                    let data;
+                    try { data = text ? JSON.parse(text) : {}; }
+                    catch { reject(new Error(`支付 API 返回非 JSON (${res.statusCode})`)); return; }
+                    if (res.statusCode < 200 || res.statusCode >= 300 || data.code === 1 || data.success === false) {
+                        reject(new Error(data.message || data.msg || `支付 API 请求失败 (${res.statusCode})`));
+                        return;
+                    }
+                    resolve(data);
+                });
+            });
+            req.once('timeout', () => req.destroy(new Error('支付 API 请求超时')));
+            req.once('error', reject);
+            if (payload) req.write(payload);
+            req.end();
+        });
+    }
+
+    async createBusinessOrder({ deviceSn, items }) {
+        const response = await this.request('POST', '/api/Order/create', {
+            deviceSn,
+            payChannel: 'wechat',
+            items: items.map((item) => ({
+                menuItemId: Number(item.paymentMenuItemId),
+                quantity: Number(item.qty),
+                unitPrice: Number(item.unitPrice)
+            }))
+        });
+        const data = response.data || response.result || response;
+        const orderId = data.orderId || data.order_id;
+        if (!orderId) throw new Error('支付业务订单接口未返回 orderId');
+        const totalAmount = Number(data.totalPrice ?? data.total_price);
+        return { orderId: String(orderId), totalAmount: Number.isFinite(totalAmount) ? totalAmount : null, raw: response };
+    }
+
+    async createNativePayment(orderId, description) {
+        const response = await this.request('POST', '/api/WeChatPay/native', {
+            orderId,
+            description
+        });
+        const data = response.data || response.result || response;
+        const codeUrl = data.codeUrl || data.code_url || data.qrCodeUrl;
+        if (!codeUrl) throw new Error('支付接口未返回 codeUrl');
+        const qrCodeBase64 = data.qrCodeBase64 || data.qr_code_base64 || null;
+        return { codeUrl: String(codeUrl), qrCodeBase64: qrCodeBase64 ? String(qrCodeBase64) : null, raw: response };
+    }
+
+    async query(orderId) {
+        const response = await this.request('GET', `/api/WeChatPay/query/${encodeURIComponent(orderId)}`);
+        const data = response.data || response.result || response;
+        return {
+            tradeState: String(data.tradeState || data.trade_state || '').toUpperCase(),
+            tradeStateDesc: data.tradeStateDesc || data.trade_state_desc || '',
+            raw: response
+        };
+    }
+
+    async refund(orderId, reason) {
+        const response = await this.request('POST', '/api/WeChatPay/refund', { orderId, reason });
+        const data = response.data || response.result || response;
+        return {
+            refundId: data.refundId || data.refund_id || null,
+            refundStatus: String(data.refundStatus || data.refund_status || 'PROCESSING').toUpperCase(),
+            raw: response
+        };
+    }
+}
+
+module.exports = { PaymentClient };

@@ -881,6 +881,48 @@ body {
     animation: scaleIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 
+.payment-code-box {
+    margin: 18px auto;
+    max-width: 520px;
+    padding: 14px;
+    border: 1px solid var(--gray-300);
+    border-radius: var(--radius);
+    background: var(--gray-50);
+    color: var(--gray-700);
+    word-break: break-all;
+    text-align: left;
+    font-size: 0.82rem;
+}
+
+.payment-qr-code {
+    width: min(280px, 72vw);
+    height: auto;
+    display: block;
+    margin: 18px auto;
+    border-radius: var(--radius);
+    background: #fff;
+}
+
+.payment-actions {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 18px;
+}
+
+.payment-actions button {
+    border: 0;
+    border-radius: var(--radius);
+    padding: 10px 16px;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 600;
+}
+
+.payment-actions .btn-primary { background: var(--primary); color: #fff; }
+.payment-actions .btn-secondary { background: var(--gray-200); color: var(--gray-700); }
+
 @keyframes scaleIn {
     from { opacity: 0; transform: scale(0.8); }
     to { opacity: 1; transform: scale(1); }

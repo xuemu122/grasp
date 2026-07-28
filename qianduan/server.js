@@ -15,6 +15,7 @@ const net = require('node:net');
 const { spawn } = require('child_process');
 const { WebSocket, WebSocketServer } = require('ws');
 const { ChassisClient } = require('./chassis_client');
+const { PaymentClient } = require('./payment_client');
 
 const PORT = Number(process.env.PORT || 3000);
 const WS_PORT = Number(process.env.WS_PORT || 3001);
@@ -41,6 +42,18 @@ const CHASSIS_NAVIGATION_DISTANCE_TOLERANCE_M = Number(process.env.CHASSIS_NAVIG
 const CHASSIS_NAVIGATION_THETA_TOLERANCE_RAD = Number(process.env.CHASSIS_NAVIGATION_THETA_TOLERANCE_RAD || 0.25);
 const CHASSIS_NAVIGATION_POLL_MS = Number(process.env.CHASSIS_NAVIGATION_POLL_MS || 1000);
 const PRODUCTS_DB_FILE = process.env.PRODUCTS_DB_FILE || path.join(__dirname, 'data', 'products.json');
+const ORDERS_DB_FILE = process.env.ORDERS_DB_FILE || path.join(path.dirname(PRODUCTS_DB_FILE), 'orders.json');
+const PAYMENT_MODE = String(process.env.PAYMENT_MODE || 'lyorder').trim().toLowerCase();
+const PAYMENT_API_BASE_URL = process.env.PAYMENT_API_BASE_URL || '';
+const PAYMENT_API_TOKEN = process.env.PAYMENT_API_TOKEN || '';
+const PAYMENT_DEVICE_SN = process.env.PAYMENT_DEVICE_SN || 'GRASP-ROBOT-01';
+const PAYMENT_REQUEST_TIMEOUT_MS = Number(process.env.PAYMENT_REQUEST_TIMEOUT_MS || 15000);
+const ALLOW_FREE_ORDERS = /^(1|true|yes|on)$/i.test(process.env.ALLOW_FREE_ORDERS || '') || PAYMENT_MODE === 'free';
+const paymentClient = new PaymentClient({
+    baseUrl: PAYMENT_API_BASE_URL,
+    token: PAYMENT_API_TOKEN,
+    timeoutMs: PAYMENT_REQUEST_TIMEOUT_MS
+});
 const CHASSIS_SETTINGS_FILE = process.env.CHASSIS_SETTINGS_FILE || path.join(path.dirname(PRODUCTS_DB_FILE), 'chassis_settings.json');
 const CHASSIS_MAP_CACHE_DIR = process.env.CHASSIS_MAP_CACHE_DIR || path.join(path.dirname(PRODUCTS_DB_FILE), 'chassis_map_cache');
 const CHASSIS_MAP_SNAPSHOT_FILE = path.join(CHASSIS_MAP_CACHE_DIR, 'current.json');
@@ -317,6 +330,7 @@ function normalizeProduct(raw, fallbackId = 1) {
         photo_back: raw.photo_back || '',
         location: raw.location || '',
         chassis_marker: raw.chassis_marker || raw.marker_name || '',
+        payment_menu_item_id: Number(raw.payment_menu_item_id || 0) || null,
         shelf_x: Number(raw.shelf_x || 0),
         shelf_y: Number(raw.shelf_y || 0),
         shelf_z: Number(raw.shelf_z || 50),
@@ -355,6 +369,88 @@ function writeProductStore(store) {
 function writeProducts(products) {
     const store = readProductStore();
     writeProductStore({ ...store, products });
+}
+
+function readOrderStore() {
+    if (!fs.existsSync(ORDERS_DB_FILE)) return { orders: [] };
+    try {
+        const data = JSON.parse(fs.readFileSync(ORDERS_DB_FILE, 'utf8'));
+        return { orders: Array.isArray(data.orders) ? data.orders : [] };
+    } catch (error) {
+        log(`⚠️ 订单数据读取失败: ${error.message}`);
+        return { orders: [] };
+    }
+}
+
+function writeOrderStore(store) {
+    fs.mkdirSync(path.dirname(ORDERS_DB_FILE), { recursive: true });
+    const temporary = `${ORDERS_DB_FILE}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify({ orders: store.orders || [] }, null, 2), 'utf8');
+    fs.renameSync(temporary, ORDERS_DB_FILE);
+}
+
+function orderById(orderId) {
+    return readOrderStore().orders.find((item) => item.orderId === orderId) || null;
+}
+
+function saveOrder(order) {
+    const store = readOrderStore();
+    const index = store.orders.findIndex((item) => item.orderId === order.orderId);
+    order.updatedAt = new Date().toISOString();
+    if (index >= 0) store.orders[index] = order;
+    else store.orders.push(order);
+    store.orders.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    if (store.orders.length > 10000) store.orders.length = 10000;
+    writeOrderStore(store);
+    return order;
+}
+
+function orderStatusLabel(status) {
+    return ({
+        PENDING_PAYMENT: '待支付',
+        PAID: '已支付',
+        PROCESSING: '抓取中',
+        COMPLETED: '已完成',
+        FAILED: '失败',
+        REFUNDING: '退款中',
+        REFUNDED: '已退款',
+        CLOSED: '已关闭'
+    })[status] || status || '未知';
+}
+
+function publicOrder(order) {
+    return {
+        orderId: order.orderId,
+        externalOrderId: order.externalOrderId || null,
+        items: order.items || [],
+        totalAmount: Number(order.totalAmount || 0),
+        paymentMode: order.paymentMode || PAYMENT_MODE,
+        paymentStatus: order.paymentStatus || 'PENDING_PAYMENT',
+        status: order.status || 'PENDING_PAYMENT',
+        statusLabel: orderStatusLabel(order.status),
+        paymentCodeUrl: order.paymentCodeUrl || null,
+        refundId: order.refundId || null,
+        refundReason: order.refundReason || null,
+        createdAt: order.createdAt,
+        paidAt: order.paidAt || null,
+        completedAt: order.completedAt || null,
+        refundedAt: order.refundedAt || null,
+        updatedAt: order.updatedAt || null,
+        source: order.source || 'web'
+    };
+}
+
+function setOrderStatus(order, status, paymentStatus = order.paymentStatus) {
+    order.status = status;
+    order.paymentStatus = paymentStatus;
+    order.updatedAt = new Date().toISOString();
+    return saveOrder(order);
+}
+
+function markOrderPaid(order, source = 'payment') {
+    if (!order.paidAt) order.paidAt = new Date().toISOString();
+    order.paidSource = source;
+    return setOrderStatus(order, 'PAID', 'PAID');
 }
 
 function nextProductId(products) {
@@ -544,21 +640,119 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/api/orders/prepare' && req.method === 'POST') {
         const body = await parseBody(req);
+        let paymentStarted = false;
         try {
             const items = normalizeInventoryItems(body && body.items);
             const products = readProducts();
-            for (const item of items) {
+            const pricedItems = items.map((item) => {
                 const product = products.find((candidate) => Number(candidate.id) === item.id);
                 if (!product || Number(product.status) !== 1) throw new Error(`商品不可用: ${item.name || item.id}`);
                 if (Number(product.stock) < item.qty) throw new Error(`${product.name} 库存不足，当前库存 ${product.stock}`);
-                item.name = product.name;
-                item.shelf_layer = parseLayerFromLocation(product.location);
-                item.chassis_marker = product.chassis_marker || null;
-            }
+                const unitPrice = Number(product.price || 0);
+                return {
+                    ...item,
+                    name: product.name,
+                    spec: product.spec || '',
+                    unitPrice,
+                    lineTotal: Number((unitPrice * item.qty).toFixed(2)),
+                    paymentMenuItemId: Number(product.payment_menu_item_id || 0) || null,
+                    shelf_layer: parseLayerFromLocation(product.location),
+                    chassis_marker: product.chassis_marker || null
+                };
+            });
+            const totalAmount = Number(pricedItems.reduce((sum, item) => sum + item.lineTotal, 0).toFixed(2));
             const orderId = `ORD-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-            sendJSON(res, { code: 0, orderId, items, completionToken: createOrderToken(orderId, items) });
+            const requestedMode = String(body && body.payment_mode || '').trim().toLowerCase();
+            const paymentMode = requestedMode === 'free' && ALLOW_FREE_ORDERS ? 'free' : PAYMENT_MODE;
+            if (!['free', 'lyorder'].includes(paymentMode)) throw new Error(`不支持的支付模式: ${paymentMode}`);
+            if (paymentMode === 'lyorder') {
+                for (const item of pricedItems) {
+                    if (!Number.isInteger(item.paymentMenuItemId) || item.paymentMenuItemId < 1) {
+                        throw new Error(`商品 ${item.name} 未配置 LyOrder 菜品 ID`);
+                    }
+                }
+            }
+
+            let order = {
+                orderId,
+                items: pricedItems,
+                totalAmount,
+                paymentMode,
+                paymentStatus: paymentMode === 'free' ? 'PAID' : 'PENDING_PAYMENT',
+                status: paymentMode === 'free' ? 'PAID' : 'PENDING_PAYMENT',
+                source: String(body && body.source || 'web').slice(0, 32),
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            };
+            saveOrder(order);
+
+            if (paymentMode === 'free') {
+                order = markOrderPaid(order, 'free');
+                sendJSON(res, {
+                    code: 0,
+                    orderId,
+                    items: pricedItems,
+                    totalAmount,
+                    paymentRequired: false,
+                    paymentStatus: order.paymentStatus,
+                    completionToken: createOrderToken(orderId, pricedItems)
+                });
+                return;
+            }
+
+            paymentStarted = true;
+            const business = await paymentClient.createBusinessOrder({ deviceSn: PAYMENT_DEVICE_SN, items: pricedItems });
+            if (business.totalAmount !== null && Math.abs(business.totalAmount - totalAmount) > 0.001) {
+                throw new Error(`支付系统金额 ¥${business.totalAmount.toFixed(2)} 与本地金额 ¥${totalAmount.toFixed(2)} 不一致`);
+            }
+            const native = await paymentClient.createNativePayment(business.orderId, `机器人商品订单-${orderId}`);
+            order.externalOrderId = business.orderId;
+            order.paymentCodeUrl = native.codeUrl;
+            order.paymentQrCodeBase64 = native.qrCodeBase64 || null;
+            saveOrder(order);
+            sendJSON(res, {
+                code: 0,
+                orderId,
+                items: pricedItems,
+                totalAmount,
+                paymentRequired: true,
+                paymentStatus: order.paymentStatus,
+                payment: { codeUrl: native.codeUrl, qrCodeBase64: native.qrCodeBase64 || null },
+                completionToken: createOrderToken(orderId, pricedItems)
+            });
         } catch (error) {
-            sendJSON(res, { code: 1, message: error.message }, 400);
+            sendJSON(res, { code: 1, message: error.message }, paymentStarted ? 502 : 400);
+        }
+        return;
+    }
+
+    const paymentStatusMatch = pathname.match(/^\/api\/orders\/([^/]+)\/payment$/);
+    if (paymentStatusMatch && req.method === 'GET') {
+        const orderId = decodeURIComponent(paymentStatusMatch[1]);
+        const orderToken = readOrderToken(url.searchParams.get('token'));
+        if (!orderToken || orderToken.orderId !== orderId) {
+            sendJSON(res, { code: 1, message: '订单凭证无效或已过期' }, 401);
+            return;
+        }
+        const order = orderById(orderId);
+        if (!order) {
+            sendJSON(res, { code: 1, message: '订单不存在' }, 404);
+            return;
+        }
+        try {
+            if (order.paymentStatus !== 'PAID' && order.paymentMode === 'lyorder') {
+                if (!order.externalOrderId) throw new Error('支付业务订单尚未创建');
+                const payment = await paymentClient.query(order.externalOrderId);
+                if (payment.tradeState === 'SUCCESS') markOrderPaid(order, 'query');
+                else if (payment.tradeState === 'CLOSED') setOrderStatus(order, 'CLOSED', 'CLOSED');
+                order.paymentTradeState = payment.tradeState;
+                order.paymentTradeStateDesc = payment.tradeStateDesc;
+                saveOrder(order);
+            }
+            const latest = orderById(orderId) || order;
+            sendJSON(res, { code: 0, orderId, paid: latest.paymentStatus === 'PAID', paymentStatus: latest.paymentStatus, status: latest.status, tradeState: latest.paymentTradeState || null });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 502);
         }
         return;
     }
@@ -567,19 +761,26 @@ const server = http.createServer(async (req, res) => {
     if (completeOrderMatch && req.method === 'POST') {
         const body = await parseBody(req);
         const orderId = decodeURIComponent(completeOrderMatch[1]);
-        const order = readOrderToken(body && body.completionToken);
-        if (!order || order.orderId !== orderId) {
+        const tokenOrder = readOrderToken(body && body.completionToken);
+        if (!tokenOrder || tokenOrder.orderId !== orderId) {
             sendJSON(res, { code: 1, message: '订单凭证无效或已过期' }, 401);
+            return;
+        }
+        const savedOrder = orderById(orderId);
+        if (!savedOrder || savedOrder.paymentStatus !== 'PAID') {
+            sendJSON(res, { code: 1, message: '订单尚未支付，不能完成抓取' }, 402);
             return;
         }
         try {
             const store = readProductStore();
             if (store.completedOrders[orderId]) {
+                const existing = savedOrder || orderById(orderId);
+                if (existing && existing.status !== 'COMPLETED') setOrderStatus(existing, 'COMPLETED', 'PAID');
                 sendJSON(res, { code: 0, alreadyCompleted: true, updated: store.completedOrders[orderId].updated });
                 return;
             }
             const updated = [];
-            for (const item of normalizeInventoryItems(order.items)) {
+            for (const item of normalizeInventoryItems(tokenOrder.items)) {
                 const product = store.products.find((candidate) => Number(candidate.id) === item.id);
                 if (!product) throw new Error(`商品不存在: ${item.name || item.id}`);
                 if (Number(product.stock) < item.qty) throw new Error(`${product.name} 库存不足，当前库存 ${product.stock}`);
@@ -588,15 +789,88 @@ const server = http.createServer(async (req, res) => {
             }
             store.completedOrders[orderId] = { completedAt: Date.now(), updated };
             const orderIds = Object.keys(store.completedOrders);
-            for (const oldOrderId of orderIds.slice(0, Math.max(0, orderIds.length - 1000))) {
-                delete store.completedOrders[oldOrderId];
-            }
+            for (const oldOrderId of orderIds.slice(0, Math.max(0, orderIds.length - 1000))) delete store.completedOrders[oldOrderId];
             writeProductStore(store);
+            savedOrder.completedAt = new Date().toISOString();
+            setOrderStatus(savedOrder, 'COMPLETED', 'PAID');
             log(`📉 订单 ${orderId} 已扣减库存: ${updated.map((item) => `${item.name} x${item.qty}`).join(', ')}`);
             sendJSON(res, { code: 0, alreadyCompleted: false, updated });
         } catch (error) {
+            const latest = orderById(orderId);
+            if (latest) setOrderStatus(latest, 'FAILED', latest.paymentStatus);
             sendJSON(res, { code: 1, message: error.message }, 409);
         }
+        return;
+    }
+
+    const adminOrderMatch = pathname.match(/^\/api\/admin\/orders(?:\/([^/]+))?(?:\/refund)?$/);
+    if (adminOrderMatch && pathname.startsWith('/api/admin/orders')) {
+        if (!requireAdmin(req, res)) return;
+        const orderId = adminOrderMatch[1] ? decodeURIComponent(adminOrderMatch[1]) : null;
+        const isRefund = /\/refund$/.test(pathname);
+        if (isRefund && req.method === 'POST' && orderId) {
+            const body = await parseBody(req);
+            const order = orderById(orderId);
+            if (!order) { sendJSON(res, { code: 1, message: '订单不存在' }, 404); return; }
+            if (!['PAID', 'COMPLETED'].includes(order.status) || order.paymentStatus !== 'PAID') {
+                sendJSON(res, { code: 1, message: '仅已支付或已完成订单可退款' }, 409); return;
+            }
+            const reason = String(body && body.reason || '管理员退款').slice(0, 200);
+            try {
+                let refund;
+                if (order.paymentMode === 'free') {
+                    refund = { refundId: `FREE-${Date.now().toString(36).toUpperCase()}`, refundStatus: 'SUCCESS' };
+                } else {
+                    if (!order.externalOrderId) throw new Error('订单没有外部支付订单号');
+                    refund = await paymentClient.refund(order.externalOrderId, reason);
+                }
+                order.refundId = refund.refundId || null;
+                order.refundStatus = refund.refundStatus;
+                order.refundReason = reason;
+                order.refundedAt = refund.refundStatus === 'SUCCESS' ? new Date().toISOString() : null;
+                if (refund.refundStatus === 'SUCCESS') {
+                    if (!order.stockRestoredAt) {
+                        const store = readProductStore();
+                        for (const item of normalizeInventoryItems(order.items || [])) {
+                            const product = store.products.find((candidate) => Number(candidate.id) === item.id);
+                            if (product) product.stock = Number(product.stock) + item.qty;
+                        }
+                        writeProductStore(store);
+                        order.stockRestoredAt = new Date().toISOString();
+                    }
+                    setOrderStatus(order, 'REFUNDED', 'REFUNDED');
+                } else {
+                    setOrderStatus(order, 'REFUNDING', 'REFUNDING');
+                }
+                sendJSON(res, { code: 0, data: publicOrder(order) });
+            } catch (error) {
+                order.refundStatus = 'FAIL';
+                order.refundReason = `${reason} (${error.message})`;
+                saveOrder(order);
+                sendJSON(res, { code: 1, message: `退款失败: ${error.message}` }, 502);
+            }
+            return;
+        }
+        if (orderId && req.method === 'GET') {
+            const order = orderById(orderId);
+            if (!order) { sendJSON(res, { code: 1, message: '订单不存在' }, 404); return; }
+            sendJSON(res, { code: 0, data: publicOrder(order) });
+            return;
+        }
+        if (!orderId && req.method === 'GET') {
+            const page = Math.max(1, Number(url.searchParams.get('page') || 1));
+            const pageSize = Math.min(100, Math.max(1, Number(url.searchParams.get('pageSize') || url.searchParams.get('size') || 10)));
+            const status = String(url.searchParams.get('status') || '').trim();
+            const search = String(url.searchParams.get('search') || '').trim().toLowerCase();
+            let orders = readOrderStore().orders;
+            if (status) orders = orders.filter((item) => item.status === status || item.paymentStatus === status);
+            if (search) orders = orders.filter((item) => [item.orderId, item.externalOrderId, ...(item.items || []).map((i) => i.name)].some((value) => String(value || '').toLowerCase().includes(search)));
+            const total = orders.length;
+            const data = orders.slice((page - 1) * pageSize, page * pageSize).map(publicOrder);
+            sendJSON(res, { code: 0, data, page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) });
+            return;
+        }
+        sendJSON(res, { code: 1, message: '订单接口方法不支持' }, 405);
         return;
     }
 
@@ -659,7 +933,7 @@ const server = http.createServer(async (req, res) => {
             const products = readProducts();
             const index = products.findIndex((item) => String(item.id) === updateMatch[1]);
             if (index < 0) { sendJSON(res, { code: 1, message: '商品不存在' }, 404); return; }
-            const allowed = ['name','spec','packaging','category','manufacturer','photo_front','photo_back','location','chassis_marker','shelf_x','shelf_y','shelf_z','emoji','price','stock','status'];
+            const allowed = ['name','spec','packaging','category','manufacturer','photo_front','photo_back','location','chassis_marker','payment_menu_item_id','shelf_x','shelf_y','shelf_z','emoji','price','stock','status'];
             const patch = {};
             for (const key of allowed) {
                 if (body[key] !== undefined) {
@@ -1030,6 +1304,7 @@ server.listen(PORT, HOST, () => {
     log(`HTTP 服务已启动: http://${HOST}:${PORT}`);
     log(`商品管理页面: http://localhost:${PORT}/admin.html`);
     log(`抓取模式: ${ROBOT_GRASP_REAL ? '真实机械臂' : '模拟'} (${ROBOT_GRASP_MODE})`);
+    log(`支付模式: ${PAYMENT_MODE}${PAYMENT_MODE === 'lyorder' ? `，支付 API: ${PAYMENT_API_BASE_URL || '未配置'}` : '（免费/测试）'}`);
     const chassisSettings = readChassisSettings();
     log(`底盘接口: ${CHASSIS_HOST}:${CHASSIS_PORT}，栅格地图: ${CHASSIS_MAP_HTTP_PROTOCOL}://${CHASSIS_MAP_HTTP_HOST}:${CHASSIS_MAP_HTTP_PORT}`);
     log(`底盘导航: ${chassisSettings.navigation_enabled ? '已开启' : '已关闭'}，自动回充: ${chassisSettings.auto_return_charge ? '已开启' : '已关闭'}，放置点: ${chassisSettings.place_marker}`);
@@ -1900,6 +2175,12 @@ async function handleGrabCommand(ws, msg) {
         return;
     }
 
+    const savedOrder = orderById(orderId);
+    if (savedOrder && savedOrder.paymentStatus !== 'PAID') {
+        sendMessage(ws, { type: 'error', message: '订单尚未支付，不能开始抓取' });
+        return;
+    }
+
     let items;
     let totalUnits;
     try {
@@ -1911,6 +2192,7 @@ async function handleGrabCommand(ws, msg) {
     if (rejectIfRobotBusy(ws, '提交新订单')) return;
 
     log(`🤖 开始处理订单 ${orderId}，共 ${totalUnits} 件商品`);
+    if (savedOrder) setOrderStatus(savedOrder, 'PROCESSING', 'PAID');
     activeOrderId = orderId;
     broadcastRobotStatus('busy', `正在处理订单 ${orderId}`);
 
@@ -1924,6 +2206,8 @@ async function handleGrabCommand(ws, msg) {
         await completeOrder(ws, orderId);
     } catch (e) {
         log(`❌ 订单 ${orderId} 失败: ${e.message}`);
+        const failedOrder = orderById(orderId);
+        if (failedOrder) setOrderStatus(failedOrder, 'FAILED', failedOrder.paymentStatus);
         sendStatus(ws, 'error', { orderId, message: e.message });
     } finally {
         activeOrderId = null;

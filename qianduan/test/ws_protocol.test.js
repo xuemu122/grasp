@@ -215,7 +215,9 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
             CHASSIS_NAVIGATION_TIMEOUT_MS: '2000',
             ADMIN_USERNAME: 'test-admin',
             ADMIN_PASSWORD: 'test-password',
-            ADMIN_SESSION_SECRET: 'test-admin-session-secret-32-bytes'
+            ADMIN_SESSION_SECRET: 'test-admin-session-secret-32-bytes',
+            PAYMENT_MODE: 'free',
+            ALLOW_FREE_ORDERS: '1'
         },
         stdio: ['ignore', 'pipe', 'pipe']
     });

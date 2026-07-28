@@ -1,3 +1,7 @@
+window.GRASP_TEST_MODE = Boolean(window.GRASP_TEST_MODE)
+    || window.location.pathname.endsWith('/test.html')
+    || new URLSearchParams(window.location.search).get('mode') === 'free';
+
 // ========== 全局状态 ==========
 let products = [];           // 所有商品
 let categories = [];         // 所有分类
@@ -482,11 +486,6 @@ async function submitOrder() {
         return;
     }
 
-    if (!wsConnected) {
-        alert('⚠️ 后端服务未连接，请先启动后端！\n\n在终端执行: node server.js');
-        return;
-    }
-
     const btnSubmit = document.getElementById('btnSubmit');
     btnSubmit.disabled = true;
     btnSubmit.textContent = '⏳ 提交中...';
@@ -496,7 +495,11 @@ async function submitOrder() {
         const res = await fetch('/api/orders/prepare', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items: items.map(item => ({ id: item.id, name: item.name, qty: item.qty })) })
+            body: JSON.stringify({
+                items: items.map(item => ({ id: item.id, name: item.name, qty: item.qty })),
+                source: window.GRASP_TEST_MODE ? 'test' : 'web',
+                payment_mode: window.GRASP_TEST_MODE ? 'free' : undefined
+            })
         });
         prepared = await res.json();
         if (!res.ok || prepared.code !== 0) throw new Error(prepared.message || '订单校验失败');
@@ -511,6 +514,26 @@ async function submitOrder() {
     currentOrderToken = prepared.completionToken;
     currentOrderItems = items.map(item => ({ ...item }));
     syncOrderButton();
+
+    if (prepared.paymentRequired) {
+        const paid = await waitForPayment(orderId, prepared.completionToken, prepared.payment, prepared.totalAmount);
+        if (!paid) {
+            currentOrderId = null;
+            currentOrderToken = null;
+            currentOrderItems = [];
+            syncOrderButton();
+            return;
+        }
+    }
+
+    if (!wsConnected) {
+        alert('⚠️ 后端服务未连接，请先启动后端！\n\n在终端执行: node server.js');
+        currentOrderId = null;
+        currentOrderToken = null;
+        currentOrderItems = [];
+        syncOrderButton();
+        return;
+    }
 
     showModal(orderId, items);
 
@@ -540,6 +563,65 @@ async function submitOrder() {
 
     logWS('📤 发送抓取命令: ' + JSON.stringify(payload));
     ws.send(JSON.stringify(payload));
+}
+
+let paymentCancelled = false;
+
+function showPaymentModal(orderId, payment, totalAmount) {
+    const overlay = document.getElementById('modalOverlay');
+    const content = document.getElementById('modalContent');
+    const codeUrl = payment && payment.codeUrl ? String(payment.codeUrl) : '';
+    const qrCodeBase64 = payment && payment.qrCodeBase64 ? String(payment.qrCodeBase64) : '';
+    paymentCancelled = false;
+    content.innerHTML = `
+        <div class="modal-title">请完成支付</div>
+        <div class="modal-text"><span class="order-id-display">订单号：${orderId}</span><br>应付 ¥${Number(totalAmount || 0).toFixed(2)}</div>
+        ${qrCodeBase64 ? `<img class="payment-qr-code" src="${escapeHtml(qrCodeBase64)}" alt="微信支付二维码">` : ''}
+        <div class="payment-code-box"><code>${escapeHtml(codeUrl || '支付链接生成中...')}</code></div>
+        <div class="modal-text" id="paymentStatusText">请使用微信打开上面的支付链接，页面会自动查询支付状态。</div>
+        <div class="payment-actions">
+            <button class="btn-primary" type="button" id="copyPaymentCode">复制支付链接</button>
+            <button class="btn-secondary" type="button" id="cancelPayment">取消订单</button>
+        </div>
+    `;
+    overlay.style.display = 'flex';
+    document.getElementById('copyPaymentCode').onclick = async () => {
+        try { await navigator.clipboard.writeText(codeUrl); showPaymentStatus('支付链接已复制'); }
+        catch { showPaymentStatus('复制失败，请手动长按/复制支付链接'); }
+    };
+    document.getElementById('cancelPayment').onclick = () => { paymentCancelled = true; overlay.style.display = 'none'; };
+}
+
+function showPaymentStatus(message) {
+    const node = document.getElementById('paymentStatusText');
+    if (node) node.textContent = message;
+}
+
+function escapeHtml(value) {
+    const div = document.createElement('div');
+    div.textContent = String(value || '');
+    return div.innerHTML;
+}
+
+async function waitForPayment(orderId, completionToken, payment, totalAmount) {
+    showPaymentModal(orderId, payment, totalAmount);
+    const deadline = Date.now() + 10 * 60 * 1000;
+    while (!paymentCancelled && Date.now() < deadline) {
+        try {
+            const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/payment?token=${encodeURIComponent(completionToken)}`, { cache: 'no-store' });
+            const data = await res.json();
+            if (data.code === 0 && data.paid) {
+                document.getElementById('modalOverlay').style.display = 'none';
+                return true;
+            }
+            if (data.message) showPaymentStatus(data.message);
+        } catch (error) {
+            showPaymentStatus(`支付状态查询失败：${error.message}`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 2500));
+    }
+    if (!paymentCancelled) showPaymentStatus('支付等待超时，请重新下单');
+    return false;
 }
 
 // ========== 货架层缓存加载 ==========

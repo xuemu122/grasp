@@ -62,6 +62,8 @@ test('completed orders decrement inventory once', async (t) => {
             SHELF_LAYERS_FILE: shelfLayersFile,
             CHASSIS_SETTINGS_FILE: chassisSettingsFile,
             ORDER_TOKEN_SECRET: 'inventory-test-secret',
+            PAYMENT_MODE: 'free',
+            ALLOW_FREE_ORDERS: '1',
             ADMIN_USERNAME: 'inventory-admin',
             ADMIN_PASSWORD: 'inventory-password',
             ADMIN_SESSION_SECRET: 'inventory-admin-session-secret-32-bytes'
