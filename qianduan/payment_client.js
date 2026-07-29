@@ -2,10 +2,11 @@ const http = require('node:http');
 const https = require('node:https');
 
 class PaymentClient {
-    constructor({ baseUrl, token = '', timeoutMs = 15000 } = {}) {
+    constructor({ baseUrl, token = '', timeoutMs = 15000, rejectUnauthorized = true } = {}) {
         this.baseUrl = String(baseUrl || '').replace(/\/$/, '');
         this.token = String(token || '');
         this.timeoutMs = Number(timeoutMs) || 15000;
+        this.rejectUnauthorized = rejectUnauthorized !== false;
     }
 
     enabled() {
@@ -33,7 +34,7 @@ class PaymentClient {
                 method,
                 headers,
                 timeout: this.timeoutMs,
-                rejectUnauthorized: false
+                rejectUnauthorized: this.rejectUnauthorized
             }, (res) => {
                 const chunks = [];
                 res.on('data', (chunk) => chunks.push(chunk));

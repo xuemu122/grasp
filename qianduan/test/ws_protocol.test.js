@@ -523,6 +523,8 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
             PORT: String(restartPort),
             WS_PORT: String(restartWsPort),
             ROBOT_GRASP_MODE: 'sim',
+            PAYMENT_MODE: 'free',
+            ALLOW_FREE_ORDERS: '1',
             PRODUCTS_DB_FILE: dataFile,
             CHASSIS_HOST: '127.0.0.1',
             CHASSIS_PORT: String(chassisPort),

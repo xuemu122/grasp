@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
@@ -18,16 +19,17 @@ function getFreePort() {
     });
 }
 
-async function postJson(url, body) {
+async function postJson(url, body, headers = {}) {
     const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify(body)
     });
     return { response, json: await response.json() };
 }
 
 test('completed orders decrement inventory once', async (t) => {
+    const callbackSecret = 'inventory-callback-secret-at-least-32-bytes';
     const port = await getFreePort();
     const wsPort = await getFreePort();
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grasp-inventory-'));
@@ -62,6 +64,7 @@ test('completed orders decrement inventory once', async (t) => {
             SHELF_LAYERS_FILE: shelfLayersFile,
             CHASSIS_SETTINGS_FILE: chassisSettingsFile,
             ORDER_TOKEN_SECRET: 'inventory-test-secret',
+            ORDER_STATUS_CALLBACK_SECRET: callbackSecret,
             PAYMENT_MODE: 'free',
             ALLOW_FREE_ORDERS: '1',
             ADMIN_USERNAME: 'inventory-admin',
@@ -136,12 +139,33 @@ test('completed orders decrement inventory once', async (t) => {
     assert.equal(prepared.json.items[0].chassis_marker, 'shelf-a');
 
     const completionUrl = `${baseUrl}/api/orders/${encodeURIComponent(prepared.json.orderId)}/complete`;
-    const completed = await postJson(completionUrl, { completionToken: prepared.json.completionToken });
+    const unsigned = await postJson(completionUrl, {
+        orderId: prepared.json.orderId,
+        completionToken: prepared.json.completionToken
+    });
+    assert.equal(unsigned.response.status, 401);
+    const completionTimestamp = String(Date.now());
+    const completionSignature = crypto.createHmac('sha256', callbackSecret)
+        .update(`${completionTimestamp}:${prepared.json.orderId}:${prepared.json.completionToken}:completed`)
+        .digest('base64url');
+    const completionHeaders = {
+        'X-Grasp-Timestamp': completionTimestamp,
+        'X-Grasp-Signature': completionSignature
+    };
+    const completionBody = { orderId: prepared.json.orderId, completionToken: prepared.json.completionToken };
+    const completed = await postJson(completionUrl, completionBody, completionHeaders);
     assert.equal(completed.response.status, 200);
     assert.equal(completed.json.alreadyCompleted, false);
     assert.equal(completed.json.updated[0].stock, 3);
 
-    const duplicate = await postJson(completionUrl, { completionToken: prepared.json.completionToken });
+    const duplicateTimestamp = String(Date.now());
+    const duplicateHeaders = {
+        'X-Grasp-Timestamp': duplicateTimestamp,
+        'X-Grasp-Signature': crypto.createHmac('sha256', callbackSecret)
+            .update(`${duplicateTimestamp}:${prepared.json.orderId}:${prepared.json.completionToken}:completed`)
+            .digest('base64url')
+    };
+    const duplicate = await postJson(completionUrl, completionBody, duplicateHeaders);
     assert.equal(duplicate.response.status, 200);
     assert.equal(duplicate.json.alreadyCompleted, true);
 

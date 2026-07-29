@@ -36,6 +36,8 @@ test('admin can upload validated product images', async (t) => {
             PRODUCTS_DB_FILE: dataFile,
             PRODUCT_UPLOAD_DIR: uploadDir,
             PRODUCT_UPLOAD_MAX_BYTES: '128',
+            PAYMENT_MODE: 'free',
+            ALLOW_FREE_ORDERS: '1',
             ADMIN_USERNAME: 'admin',
             ADMIN_PASSWORD: 'test-password',
             ADMIN_SESSION_SECRET: 'upload-test-session-secret-32-bytes'

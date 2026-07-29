@@ -43,7 +43,7 @@ ORDER_STATUS_CALLBACK_URL=https://rzza.dxtxl.com:8083
 ORDER_STATUS_CALLBACK_SECRET=<与云端相同>
 ```
 
-订单执行顺序是“盒子签名锁单为 PROCESSING → 开始运动 → 成功放置后回调 complete”。失败回调和退款均是幂等的，重复上报不会重复退款；未完成扣库存的失败订单不会错误增加库存。自动退款失败时订单保留为 `FAILED/PAID`，管理页仍显示退款按钮供管理员重试。
+订单执行顺序是“盒子签名锁单为 PROCESSING → 开始运动 → 成功放置后落盘完成回调 → 云端确认并扣减库存”。完成回调使用和失败回调相同的 HMAC 密钥，盒子会把未确认事件保存到 `ORDER_CALLBACK_OUTBOX_FILE`，断网或重启后继续重试；浏览器不再负责扣库存。云端收到完成回调后先持久化 `PLACED`，再扣库存，避免成功放置订单被超时退款。失败回调和退款均是幂等的，重复上报不会重复退款；未完成扣库存的失败订单不会错误增加库存。自动退款失败时订单保留为 `FAILED/PAID`，退款平台返回处理中时服务会周期性恢复巡检。
 
 ## 架构
 
@@ -55,7 +55,7 @@ ORDER_STATUS_CALLBACK_SECRET=<与云端相同>
          -> shelf_grasp.py -> DOBOT / Aero Hand
 ```
 
-订单提交前，云端商品 API 会校验商品与库存并签发订单凭证。盒子返回同一 `orderId` 的抓取完成状态后，前端携带凭证调用云端完成接口扣减库存。完成记录持久化在商品 JSON 中，同一订单重复回传不会重复扣减；抓取失败不会扣库存。
+订单提交前，云端商品 API 会校验商品与库存并签发订单凭证。盒子成功放置后通过 HMAC 完成回调通知云端，完成事件先落盘再重试，浏览器不参与库存扣减。云端先持久化 `PLACED` 再扣库存；完成记录持久化在商品 JSON 中，同一订单重复回传不会重复扣减，抓取失败不会扣库存。
 
 云端商品服务和盒子订单服务都运行 `server.js`，但职责和环境变量不同：
 
@@ -407,6 +407,10 @@ __filter_preview__\n
 | `CHASSIS_NAVIGATION_ENABLE` | 空/关闭 | 设为 `1` 时在抓取前导航到商品绑定的 marker |
 | `CHASSIS_PLACE_MARKER` | `fangzhi` | 首次没有设置文件时使用的默认放置 marker |
 | `CHASSIS_CHARGE_MARKER` | `charge_point_1F_35744` | 订单结束后自动回充的充电桩 marker |
+| `ORDER_CALLBACK_OUTBOX_FILE` | 订单 JSON 同目录下的 `order_callback_outbox.json` | 盒子完成回调持久化队列 |
+| `ORDER_CALLBACK_RETRY_INTERVAL_MS` | `15000` | 完成回调重试基础间隔 |
+| `ORDER_CALLBACK_TLS_INSECURE` | `0` | 仅现场自签名证书临时设为 `1`，生产保持 `0` |
+| `PAYMENT_TLS_INSECURE` | `0` | 仅现场自签名支付 API 临时设为 `1`，生产保持 `0` |
 | `ROBOT_AUTO_RETURN_CHARGE` | `1` | 管理页没有保存设置时的自动回充默认值，设为 `0` 可默认关闭 |
 | `CHASSIS_SETTINGS_FILE` | 商品 JSON 同目录下的 `chassis_settings.json` | 管理页底盘导航、自动回充开关和放置点持久化文件 |
 | `CHASSIS_REQUEST_TIMEOUT_MS` | `10000` | 单次底盘 TCP 请求超时 |

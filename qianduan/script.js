@@ -861,26 +861,6 @@ function onStowCompleted(msg) {
     logWS(`✅ ${msg.message || '机械臂已收起'}`);
 }
 
-async function completeInventoryOrder(orderId, completionToken) {
-    let lastError;
-    for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-            const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/complete`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ completionToken })
-            });
-            const json = await res.json();
-            if (!res.ok || json.code !== 0) throw new Error(json.message || '库存更新失败');
-            return json;
-        } catch (error) {
-            lastError = error;
-            if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 800 * (attempt + 1)));
-        }
-    }
-    throw lastError;
-}
-
 // ========== 更新抓取进度 ==========
 function updateGrabProgress(msg) {
     const progressBar = document.getElementById('progressBar');
@@ -906,12 +886,10 @@ async function onGrabCompleted(msg) {
     }
     updateRobotStatus('busy', '商品已放置，机器人正在回充...');
 
-    const items = currentOrderItems.map(item => ({ ...item }));
     try {
-        await completeInventoryOrder(msg.orderId, currentOrderToken);
         await loadProducts();
     } catch (error) {
-        alert(`抓取已完成，但库存更新失败: ${error.message}`);
+        console.error('订单已完成，但商品列表刷新失败:', error);
     }
 
 }

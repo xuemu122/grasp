@@ -21,6 +21,7 @@ dataset_captures/
 
 # Runtime chassis map snapshots
 qianduan/data/chassis_map_cache/
+qianduan/data/order_callback_outbox.json*
 
 # Local deployment configuration and runtime logs
 qianduan/.env

@@ -28,6 +28,7 @@ async function postJson(url, body, headers = {}) {
 }
 
 test('free payment order is persisted, completed and refundable', async (t) => {
+    const callbackSecret = 'payment-callback-secret-at-least-32-bytes';
     const port = await getFreePort();
     const wsPort = await getFreePort();
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grasp-orders-'));
@@ -47,7 +48,7 @@ test('free payment order is persisted, completed and refundable', async (t) => {
             PAYMENT_MODE: 'free', ALLOW_FREE_ORDERS: '1',
             ADMIN_USERNAME: 'test-admin', ADMIN_PASSWORD: 'test-password',
             ADMIN_SESSION_SECRET: 'test-admin-session-secret-32-bytes', ORDER_TOKEN_SECRET: 'test-order-secret',
-            ORDER_STATUS_CALLBACK_SECRET: 'test-callback-secret'
+            ORDER_STATUS_CALLBACK_SECRET: callbackSecret
         },
         stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -86,11 +87,19 @@ test('free payment order is persisted, completed and refundable', async (t) => {
     assert.equal(listJson.total, 1);
     assert.equal(listJson.data[0].status, 'PAID');
 
-    const completed = await postJson(`${base}/api/orders/${prepared.json.orderId}/complete`, { completionToken: prepared.json.completionToken });
+    const completedTimestamp = String(Date.now());
+    const completedSignature = crypto.createHmac('sha256', callbackSecret)
+        .update(`${completedTimestamp}:${prepared.json.orderId}:${prepared.json.completionToken}:completed`)
+        .digest('base64url');
+    const completed = await postJson(
+        `${base}/api/orders/${prepared.json.orderId}/complete`,
+        { orderId: prepared.json.orderId, completionToken: prepared.json.completionToken },
+        { 'X-Grasp-Timestamp': completedTimestamp, 'X-Grasp-Signature': completedSignature }
+    );
     assert.equal(completed.response.status, 200);
     const postDeliveryReason = '回充失败';
     const postDeliveryTimestamp = String(Date.now());
-    const postDeliverySignature = crypto.createHmac('sha256', 'test-callback-secret')
+    const postDeliverySignature = crypto.createHmac('sha256', callbackSecret)
         .update(`${postDeliveryTimestamp}:${prepared.json.orderId}:${prepared.json.completionToken}:${postDeliveryReason}`)
         .digest('base64url');
     const postDeliveryFailure = await postJson(
@@ -110,7 +119,7 @@ test('free payment order is persisted, completed and refundable', async (t) => {
 
     const failedPrepared = await postJson(`${base}/api/orders/prepare`, { items: [{ id: 1, qty: 1 }] });
     const startedTimestamp = String(Date.now());
-    const startedSignature = crypto.createHmac('sha256', 'test-callback-secret')
+    const startedSignature = crypto.createHmac('sha256', callbackSecret)
         .update(`${startedTimestamp}:${failedPrepared.json.orderId}:${failedPrepared.json.completionToken}:started`)
         .digest('base64url');
     const started = await postJson(
@@ -128,7 +137,7 @@ test('free payment order is persisted, completed and refundable', async (t) => {
 
     const reason = '识别失败：未找到可抓取目标';
     const timestamp = String(Date.now());
-    const signature = crypto.createHmac('sha256', 'test-callback-secret')
+    const signature = crypto.createHmac('sha256', callbackSecret)
         .update(`${timestamp}:${failedPrepared.json.orderId}:${failedPrepared.json.completionToken}:${reason}`)
         .digest('base64url');
     const failure = await postJson(

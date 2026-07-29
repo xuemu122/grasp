@@ -53,11 +53,23 @@ const ORDER_STATUS_CALLBACK_URL = String(process.env.ORDER_STATUS_CALLBACK_URL |
 const ORDER_STATUS_CALLBACK_SECRET = process.env.ORDER_STATUS_CALLBACK_SECRET || '';
 const ORDER_EXECUTION_REFUND_TIMEOUT_MS = Number(process.env.ORDER_EXECUTION_REFUND_TIMEOUT_MS || 30 * 60 * 1000);
 const ORDER_REFUND_SWEEP_INTERVAL_MS = Number(process.env.ORDER_REFUND_SWEEP_INTERVAL_MS || 60 * 1000);
+const ORDER_CALLBACK_RETRY_INTERVAL_MS = Number(process.env.ORDER_CALLBACK_RETRY_INTERVAL_MS || 15 * 1000);
+const ORDER_CALLBACK_TLS_INSECURE = /^(1|true|yes|on)$/i.test(process.env.ORDER_CALLBACK_TLS_INSECURE || '');
+const PAYMENT_TLS_INSECURE = /^(1|true|yes|on)$/i.test(process.env.PAYMENT_TLS_INSECURE || '');
+if (ORDER_STATUS_CALLBACK_SECRET && Buffer.byteLength(ORDER_STATUS_CALLBACK_SECRET, 'utf8') < 32) {
+    throw new Error('ORDER_STATUS_CALLBACK_SECRET 必须至少 32 字节');
+}
+if ((ORDER_STATUS_CALLBACK_URL || PAYMENT_MODE === 'lyorder') && !ORDER_STATUS_CALLBACK_SECRET) {
+    throw new Error('支付订单服务必须配置 ORDER_STATUS_CALLBACK_SECRET');
+}
 const paymentClient = new PaymentClient({
     baseUrl: PAYMENT_API_BASE_URL,
     token: PAYMENT_API_TOKEN,
-    timeoutMs: PAYMENT_REQUEST_TIMEOUT_MS
+    timeoutMs: PAYMENT_REQUEST_TIMEOUT_MS,
+    rejectUnauthorized: !PAYMENT_TLS_INSECURE
 });
+const ORDER_CALLBACK_OUTBOX_FILE = process.env.ORDER_CALLBACK_OUTBOX_FILE
+    || path.join(path.dirname(ORDERS_DB_FILE), 'order_callback_outbox.json');
 const CHASSIS_SETTINGS_FILE = process.env.CHASSIS_SETTINGS_FILE || path.join(path.dirname(PRODUCTS_DB_FILE), 'chassis_settings.json');
 const CHASSIS_MAP_CACHE_DIR = process.env.CHASSIS_MAP_CACHE_DIR || path.join(path.dirname(PRODUCTS_DB_FILE), 'chassis_map_cache');
 const CHASSIS_MAP_SNAPSHOT_FILE = path.join(CHASSIS_MAP_CACHE_DIR, 'current.json');
@@ -409,11 +421,56 @@ function saveOrder(order) {
     return order;
 }
 
+function readOrderCallbackOutbox() {
+    if (!fs.existsSync(ORDER_CALLBACK_OUTBOX_FILE)) return { events: [] };
+    try {
+        const data = JSON.parse(fs.readFileSync(ORDER_CALLBACK_OUTBOX_FILE, 'utf8'));
+        return { events: Array.isArray(data.events) ? data.events : [] };
+    } catch (error) {
+        log(`⚠️ 订单完成回调队列读取失败: ${error.message}`);
+        return { events: [] };
+    }
+}
+
+function writeOrderCallbackOutbox(store) {
+    fs.mkdirSync(path.dirname(ORDER_CALLBACK_OUTBOX_FILE), { recursive: true });
+    const temporary = `${ORDER_CALLBACK_OUTBOX_FILE}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify({ events: store.events || [] }, null, 2), { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(temporary, ORDER_CALLBACK_OUTBOX_FILE);
+}
+
+function queueOrderCompletedCallback(orderId, completionToken) {
+    if (!ORDER_STATUS_CALLBACK_URL || !completionToken) return false;
+    const store = readOrderCallbackOutbox();
+    if (store.events.some((event) => event.type === 'completed' && event.orderId === orderId)) return false;
+    store.events.push({
+        type: 'completed',
+        orderId,
+        completionToken,
+        placedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        attempts: 0,
+        nextAttemptAt: 0
+    });
+    writeOrderCallbackOutbox(store);
+    return true;
+}
+
+function updateQueuedCallback(orderId, update) {
+    const store = readOrderCallbackOutbox();
+    const index = store.events.findIndex((event) => event.type === 'completed' && event.orderId === orderId);
+    if (index < 0) return;
+    if (update === null) store.events.splice(index, 1);
+    else store.events[index] = { ...store.events[index], ...update };
+    writeOrderCallbackOutbox(store);
+}
+
 function orderStatusLabel(status) {
     return ({
         PENDING_PAYMENT: '待支付',
         PAID: '已支付',
         PROCESSING: '抓取中',
+        PLACED: '已放置待确认',
         COMPLETED: '已完成',
         FAILED: '失败',
         REFUNDING: '退款中',
@@ -475,27 +532,91 @@ function verifyOrderCallback(req, orderId, completionToken, reason) {
     return safeEqual(signature, orderCallbackSignature(timestamp, orderId, completionToken, reason));
 }
 
-function restoreCompletedOrderInventory(order) {
-    if (order.stockRestoredAt || !order.completedAt) return false;
+function completePaidOrder(orderId, completionToken) {
+    const tokenOrder = readOrderToken(completionToken, { allowExpired: true });
+    if (!tokenOrder || tokenOrder.orderId !== orderId) {
+        const error = new Error('订单凭证无效');
+        error.statusCode = 401;
+        throw error;
+    }
+    const order = orderById(orderId);
+    if (!order) {
+        const error = new Error('订单不存在');
+        error.statusCode = 404;
+        throw error;
+    }
+    if (order.paymentStatus !== 'PAID') {
+        const error = new Error(`订单支付状态不允许完成: ${order.paymentStatus}`);
+        error.statusCode = 409;
+        throw error;
+    }
+
+    if (!order.placedAt) order.placedAt = new Date().toISOString();
+    order.completionReportedAt = order.completionReportedAt || new Date().toISOString();
+    if (order.status !== 'COMPLETED') setOrderStatus(order, 'PLACED', 'PAID');
+
     const store = readProductStore();
-    if (!store.completedOrders[order.orderId]) return false;
+    const existingCompletion = store.completedOrders[orderId];
+    if (existingCompletion) {
+        if (existingCompletion.inventoryRestoredAt) {
+            const error = new Error('该订单库存已经随退款恢复，不能重新完成');
+            error.statusCode = 409;
+            throw error;
+        }
+        order.completedAt = order.completedAt
+            || new Date(Number(existingCompletion.completedAt) || Date.now()).toISOString();
+        setOrderStatus(order, 'COMPLETED', 'PAID');
+        return { alreadyCompleted: true, updated: existingCompletion.updated || [] };
+    }
+
+    const updated = [];
+    for (const item of normalizeInventoryItems(tokenOrder.items)) {
+        const product = store.products.find((candidate) => Number(candidate.id) === item.id);
+        if (!product) throw new Error(`商品不存在: ${item.name || item.id}`);
+        if (Number(product.stock) < item.qty) throw new Error(`${product.name} 库存不足，当前库存 ${product.stock}`);
+        product.stock = Number(product.stock) - item.qty;
+        updated.push({ id: product.id, name: product.name, qty: item.qty, stock: product.stock });
+    }
+    store.completedOrders[orderId] = { completedAt: Date.now(), updated, inventoryRestoredAt: null };
+    const orderIds = Object.keys(store.completedOrders);
+    for (const oldOrderId of orderIds.slice(0, Math.max(0, orderIds.length - 1000))) delete store.completedOrders[oldOrderId];
+    writeProductStore(store);
+    order.completedAt = new Date().toISOString();
+    setOrderStatus(order, 'COMPLETED', 'PAID');
+    log(`📉 订单 ${orderId} 已扣减库存: ${updated.map((item) => `${item.name} x${item.qty}`).join(', ')}`);
+    return { alreadyCompleted: false, updated };
+}
+
+function restoreCompletedOrderInventory(order) {
+    if (order.stockRestoredAt) return false;
+    const store = readProductStore();
+    const completion = store.completedOrders[order.orderId];
+    if (!completion) return false;
+    if (completion.inventoryRestoredAt) {
+        order.stockRestoredAt = completion.inventoryRestoredAt;
+        return false;
+    }
     for (const item of normalizeInventoryItems(order.items || [])) {
         const product = store.products.find((candidate) => Number(candidate.id) === item.id);
         if (product) product.stock = Number(product.stock) + item.qty;
     }
+    completion.inventoryRestoredAt = new Date().toISOString();
     writeProductStore(store);
-    order.stockRestoredAt = new Date().toISOString();
+    order.stockRestoredAt = completion.inventoryRestoredAt;
     return true;
 }
 
-async function refundOrder(order, reason, trigger = 'admin') {
+async function refundOrder(order, reason, trigger = 'admin', { resume = false } = {}) {
     if (order.status === 'REFUNDED' || order.paymentStatus === 'REFUNDED') return order;
-    if (order.status === 'REFUNDING' || order.paymentStatus === 'REFUNDING') return order;
-    if (order.paymentStatus !== 'PAID') throw new Error('订单尚未支付，不能退款');
+    const refunding = order.status === 'REFUNDING' || order.paymentStatus === 'REFUNDING';
+    if (refunding && !resume) return order;
+    if (!['PAID', 'REFUNDING'].includes(order.paymentStatus)) throw new Error('订单尚未支付，不能退款');
 
     order.refundReason = reason;
     order.refundTrigger = trigger;
     order.refundRequestedAt = order.refundRequestedAt || new Date().toISOString();
+    order.refundAttemptCount = Number(order.refundAttemptCount || 0) + 1;
+    order.refundLastAttemptAt = new Date().toISOString();
     setOrderStatus(order, 'REFUNDING', 'REFUNDING');
 
     let refund;
@@ -537,7 +658,7 @@ function postOrderStatusCallback(pathname, body, headers = {}) {
             path: `${target.pathname}${target.search}`,
             method: 'POST',
             timeout: PAYMENT_REQUEST_TIMEOUT_MS,
-            rejectUnauthorized: false,
+            rejectUnauthorized: !ORDER_CALLBACK_TLS_INSECURE,
             headers: { 'Content-Type': 'application/json', 'Content-Length': payload.length, ...headers }
         }, (response) => {
             const chunks = [];
@@ -582,20 +703,46 @@ async function refundFailedExecution(orderId, completionToken, reason) {
 }
 
 async function notifyRemoteOrderCompleted(orderId, completionToken) {
-    if (!ORDER_STATUS_CALLBACK_URL || !completionToken) return null;
-    let lastError;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-        try {
-            return await postOrderStatusCallback(
-                `/api/orders/${encodeURIComponent(orderId)}/complete`,
-                { completionToken }
-            );
-        } catch (error) {
-            lastError = error;
-            if (attempt < 4) await sleep(1000 * (attempt + 1));
+    if (!ORDER_STATUS_CALLBACK_URL || !ORDER_STATUS_CALLBACK_SECRET || !completionToken) return null;
+    const timestamp = String(Date.now());
+    const reason = 'completed';
+    const signature = orderCallbackSignature(timestamp, orderId, completionToken, reason);
+    return postOrderStatusCallback(
+        `/api/orders/${encodeURIComponent(orderId)}/complete`,
+        { orderId, completionToken },
+        { 'X-Grasp-Timestamp': timestamp, 'X-Grasp-Signature': signature }
+    );
+}
+
+let callbackOutboxRunning = false;
+async function flushOrderCallbackOutbox({ force = false } = {}) {
+    if (callbackOutboxRunning || !ORDER_STATUS_CALLBACK_URL || !ORDER_STATUS_CALLBACK_SECRET) return;
+    callbackOutboxRunning = true;
+    try {
+        const now = Date.now();
+        const events = readOrderCallbackOutbox().events.filter((event) => (
+            event.type === 'completed' && (force || Number(event.nextAttemptAt || 0) <= now)
+        ));
+        for (const event of events) {
+            try {
+                await notifyRemoteOrderCompleted(event.orderId, event.completionToken);
+                updateQueuedCallback(event.orderId, null);
+                log(`✅ 订单 ${event.orderId} 完成回调已获云端确认`);
+            } catch (error) {
+                const attempts = Number(event.attempts || 0) + 1;
+                const retryDelay = Math.min(5 * 60 * 1000, ORDER_CALLBACK_RETRY_INTERVAL_MS * (2 ** Math.min(attempts - 1, 5)));
+                updateQueuedCallback(event.orderId, {
+                    attempts,
+                    lastAttemptAt: new Date().toISOString(),
+                    lastError: String(error.message || error).slice(0, 500),
+                    nextAttemptAt: Date.now() + retryDelay
+                });
+                log(`⚠️ 订单 ${event.orderId} 完成回调失败，已落盘并将在 ${Math.round(retryDelay / 1000)} 秒后重试: ${error.message}`);
+            }
         }
+    } finally {
+        callbackOutboxRunning = false;
     }
-    throw lastError;
 }
 
 let refundSweepRunning = false;
@@ -621,6 +768,23 @@ async function refundTimedOutOrders() {
                 log(`💸 订单 ${order.orderId} 执行超时，已触发自动退款`);
             } catch (error) {
                 log(`❌ 订单 ${order.orderId} 超时自动退款失败: ${error.message}`);
+            }
+        }
+        const pendingRefunds = readOrderStore().orders.filter((order) => (
+            order.status === 'REFUNDING'
+            && order.paymentStatus === 'REFUNDING'
+            && (!Number.isFinite(Date.parse(order.refundLastAttemptAt))
+                || now - Date.parse(order.refundLastAttemptAt) >= ORDER_REFUND_SWEEP_INTERVAL_MS)
+        ));
+        for (const order of pendingRefunds) {
+            try {
+                const reason = order.refundReason || '继续处理未完成退款';
+                const updated = await refundOrder(order, reason, order.refundTrigger || 'refund-recovery', { resume: true });
+                log(updated.status === 'REFUNDED'
+                    ? `💸 订单 ${order.orderId} 退款状态已恢复为成功`
+                    : `⏳ 订单 ${order.orderId} 退款仍在处理中`);
+            } catch (error) {
+                log(`❌ 订单 ${order.orderId} 退款恢复失败: ${error.message}`);
             }
         }
     } finally {
@@ -726,7 +890,7 @@ function createOrderToken(orderId, items) {
     return `${payload}.${signOrderPayload(payload)}`;
 }
 
-function readOrderToken(token) {
+function readOrderToken(token, { allowExpired = false } = {}) {
     const value = String(token || '');
     const separator = value.lastIndexOf('.');
     if (separator < 1) return null;
@@ -734,7 +898,7 @@ function readOrderToken(token) {
     if (!safeEqual(value.slice(separator + 1), signOrderPayload(payload))) return null;
     try {
         const order = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-        return Number(order.exp) > Date.now() ? order : null;
+        return allowExpired || Number(order.exp) > Date.now() ? order : null;
     } catch (error) {
         return null;
     }
@@ -992,7 +1156,7 @@ const server = http.createServer(async (req, res) => {
         }
         const order = orderById(orderId);
         if (!order) { sendJSON(res, { code: 1, message: '订单不存在' }, 404); return; }
-        if (order.completedAt || order.status === 'COMPLETED') {
+        if (order.placedAt || order.completedAt || ['PLACED', 'COMPLETED'].includes(order.status)) {
             sendJSON(res, { code: 0, skipped: true, message: '订单已成功放置，不执行自动退款', data: publicOrder(order) });
             return;
         }
@@ -1051,44 +1215,22 @@ const server = http.createServer(async (req, res) => {
     if (completeOrderMatch && req.method === 'POST') {
         const body = await parseBody(req);
         const orderId = decodeURIComponent(completeOrderMatch[1]);
-        const tokenOrder = readOrderToken(body && body.completionToken);
-        if (!tokenOrder || tokenOrder.orderId !== orderId) {
-            sendJSON(res, { code: 1, message: '订单凭证无效或已过期' }, 401);
-            return;
-        }
-        const savedOrder = orderById(orderId);
-        if (!savedOrder || savedOrder.paymentStatus !== 'PAID') {
-            sendJSON(res, { code: 1, message: '订单尚未支付，不能完成抓取' }, 402);
+        const completionToken = String(body && body.completionToken || '');
+        if (String(body && body.orderId || '') !== orderId
+            || !verifyOrderCallback(req, orderId, completionToken, 'completed')) {
+            sendJSON(res, { code: 1, message: '订单完成回调签名无效' }, 401);
             return;
         }
         try {
-            const store = readProductStore();
-            if (store.completedOrders[orderId]) {
-                const existing = savedOrder || orderById(orderId);
-                if (existing && existing.status !== 'COMPLETED') setOrderStatus(existing, 'COMPLETED', 'PAID');
-                sendJSON(res, { code: 0, alreadyCompleted: true, updated: store.completedOrders[orderId].updated });
-                return;
-            }
-            const updated = [];
-            for (const item of normalizeInventoryItems(tokenOrder.items)) {
-                const product = store.products.find((candidate) => Number(candidate.id) === item.id);
-                if (!product) throw new Error(`商品不存在: ${item.name || item.id}`);
-                if (Number(product.stock) < item.qty) throw new Error(`${product.name} 库存不足，当前库存 ${product.stock}`);
-                product.stock = Number(product.stock) - item.qty;
-                updated.push({ id: product.id, name: product.name, qty: item.qty, stock: product.stock });
-            }
-            store.completedOrders[orderId] = { completedAt: Date.now(), updated };
-            const orderIds = Object.keys(store.completedOrders);
-            for (const oldOrderId of orderIds.slice(0, Math.max(0, orderIds.length - 1000))) delete store.completedOrders[oldOrderId];
-            writeProductStore(store);
-            savedOrder.completedAt = new Date().toISOString();
-            setOrderStatus(savedOrder, 'COMPLETED', 'PAID');
-            log(`📉 订单 ${orderId} 已扣减库存: ${updated.map((item) => `${item.name} x${item.qty}`).join(', ')}`);
-            sendJSON(res, { code: 0, alreadyCompleted: false, updated });
+            const completed = completePaidOrder(orderId, completionToken);
+            sendJSON(res, { code: 0, ...completed });
         } catch (error) {
             const latest = orderById(orderId);
-            if (latest) setOrderStatus(latest, 'FAILED', latest.paymentStatus);
-            sendJSON(res, { code: 1, message: error.message }, 409);
+            if (latest && latest.placedAt && latest.status !== 'COMPLETED') {
+                latest.completionError = String(error.message || error).slice(0, 500);
+                setOrderStatus(latest, 'PLACED', 'PAID');
+            }
+            sendJSON(res, { code: 1, message: error.message }, error.statusCode || 409);
         }
         return;
     }
@@ -1102,7 +1244,7 @@ const server = http.createServer(async (req, res) => {
             const body = await parseBody(req);
             const order = orderById(orderId);
             if (!order) { sendJSON(res, { code: 1, message: '订单不存在' }, 404); return; }
-            if (!['PAID', 'COMPLETED', 'FAILED'].includes(order.status) || order.paymentStatus !== 'PAID') {
+            if (!['PAID', 'PLACED', 'COMPLETED', 'FAILED'].includes(order.status) || order.paymentStatus !== 'PAID') {
                 sendJSON(res, { code: 1, message: '仅已支付或已完成订单可退款' }, 409); return;
             }
             const reason = String(body && body.reason || '管理员退款').slice(0, 200);
@@ -1574,6 +1716,10 @@ server.listen(PORT, HOST, () => {
     if (PAYMENT_MODE === 'lyorder') {
         setInterval(refundTimedOutOrders, Math.max(10000, ORDER_REFUND_SWEEP_INTERVAL_MS)).unref();
         refundTimedOutOrders().catch((error) => log(`⚠️ 超时退款巡检失败: ${error.message}`));
+    }
+    if (ORDER_STATUS_CALLBACK_URL) {
+        setInterval(flushOrderCallbackOutbox, Math.max(5000, ORDER_CALLBACK_RETRY_INTERVAL_MS)).unref();
+        flushOrderCallbackOutbox({ force: true }).catch((error) => log(`⚠️ 完成回调队列启动重试失败: ${error.message}`));
     }
     const chassisSettings = readChassisSettings();
     log(`底盘接口: ${CHASSIS_HOST}:${CHASSIS_PORT}，栅格地图: ${CHASSIS_MAP_HTTP_PROTOCOL}://${CHASSIS_MAP_HTTP_HOST}:${CHASSIS_MAP_HTTP_PORT}`);
@@ -2512,15 +2658,14 @@ async function handleGrabCommand(ws, msg) {
         fulfilled = true;
         const placedOrder = orderById(orderId);
         if (placedOrder) {
-            placedOrder.placedAt = new Date().toISOString();
-            saveOrder(placedOrder);
-        } else if (ORDER_STATUS_CALLBACK_URL) {
             try {
-                await notifyRemoteOrderCompleted(orderId, msg.completionToken);
-                log(`✅ 订单 ${orderId} 已通知云端完成并扣减库存`);
-            } catch (callbackError) {
-                log(`⚠️ 订单 ${orderId} 已成功放置，但云端完成回调失败: ${callbackError.message}`);
+                completePaidOrder(orderId, msg.completionToken);
+            } catch (completionError) {
+                log(`⚠️ 订单 ${orderId} 已成功放置，但本地完成入账失败，将保留 PLACED 状态: ${completionError.message}`);
             }
+        } else if (ORDER_STATUS_CALLBACK_URL) {
+            queueOrderCompletedCallback(orderId, msg.completionToken);
+            await flushOrderCallbackOutbox({ force: true });
         }
         await completeOrder(ws, orderId);
     } catch (e) {
