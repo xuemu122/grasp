@@ -180,8 +180,19 @@ test('paid stock is reserved once and abandoned paid orders are refunded server-
     assert.equal(first.response.status, 200);
     assert.equal(second.response.status, 200);
     assert.equal(refundFailure.response.status, 200);
-    assert.ok(first.json.payment.qrCodeBase64.startsWith('data:image/png;base64,'));
+    assert.match(first.json.payment.qrImageUrl, /^\/api\/orders\/.+\/payment-qr\/[A-Za-z0-9_-]{32}$/);
+    assert.equal(Object.prototype.hasOwnProperty.call(first.json.payment, 'qrCodeBase64'), false);
     assert.equal(Object.prototype.hasOwnProperty.call(first.json.payment, 'codeUrl'), false);
+    const qrImageResponse = await fetch(`${base}${first.json.payment.qrImageUrl}`);
+    assert.equal(qrImageResponse.status, 200);
+    assert.equal(qrImageResponse.headers.get('content-type'), 'image/png');
+    assert.deepEqual(
+        [...new Uint8Array(await qrImageResponse.arrayBuffer()).slice(0, 8)],
+        [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+    );
+    const invalidQrUrl = first.json.payment.qrImageUrl.slice(0, -1)
+        + (first.json.payment.qrImageUrl.endsWith('A') ? 'B' : 'A');
+    assert.equal((await fetch(`${base}${invalidQrUrl}`)).status, 404);
     tradeStates.set('PAY-1', 'SUCCESS');
     tradeStates.set('PAY-2', 'SUCCESS');
     tradeStates.set('PAY-3', 'SUCCESS');

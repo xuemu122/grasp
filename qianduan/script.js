@@ -20,17 +20,17 @@ let shelfLayers = {};        // 货架层位姿缓存 { "1": {pose:[...], name:"
 // ========== WebSocket 连接 ==========
 let ws = null;
 let wsConnected = false;
-let robotAcceptingOrders = true;
+let robotAcceptingOrders = false;
 let catalogRefreshPromise = null;
 
 function syncOrderButton() {
     const btnSubmit = document.getElementById('btnSubmit');
     if (!btnSubmit) return;
-    const locked = !robotAcceptingOrders || Boolean(currentOrderId);
+    const locked = !wsConnected || !robotAcceptingOrders || Boolean(currentOrderId);
     btnSubmit.disabled = locked;
     btnSubmit.textContent = currentOrderId
         ? '机器人运动中...'
-        : (robotAcceptingOrders ? '开始拣选' : '机器人移动中...');
+        : (!wsConnected ? '后端未连接' : (robotAcceptingOrders ? '开始拣选' : '机器人移动中...'));
 }
 
 function connectWebSocket() {
@@ -56,6 +56,8 @@ function connectWebSocket() {
     };
 
     ws.onerror = () => {
+        wsConnected = false;
+        updateConnectionStatus('disconnected');
         logWS('⚠️ WebSocket 连接错误');
     };
 }
@@ -177,6 +179,14 @@ function handleWSMessage(msg) {
 
 // ========== 初始化 ==========
 async function init() {
+    syncModalViewport();
+    window.addEventListener('resize', syncModalViewport);
+    window.addEventListener('orientationchange', () => setTimeout(syncModalViewport, 100));
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', syncModalViewport);
+        window.visualViewport.addEventListener('scroll', syncModalViewport);
+    }
+    syncOrderButton();
     connectWebSocket();
     await refreshCatalog();
     bindSearch();
@@ -520,6 +530,12 @@ async function submitOrder() {
     const items = getCartItems();
     if (items.length === 0) return;
 
+    if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN) {
+        alert('后端未连接，暂时无法下单');
+        syncOrderButton();
+        return;
+    }
+
     if (!robotAcceptingOrders) {
         alert('机器人正在移动或回充，请稍后再下单');
         return;
@@ -544,6 +560,29 @@ async function submitOrder() {
         if (!res.ok || prepared.code !== 0) throw new Error(prepared.message || '订单校验失败');
     } catch (error) {
         alert(`订单提交失败: ${error.message}`);
+        syncOrderButton();
+        return;
+    }
+
+    if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN) {
+        if (prepared.paymentRequired) {
+            try {
+                await fetch(graspApi(`/orders/${encodeURIComponent(prepared.orderId)}/cancel-payment`), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ completionToken: prepared.completionToken })
+                });
+            } catch (error) {
+                console.error('后端断线后的支付关单失败:', error);
+            }
+        } else {
+            await requestAutomaticRefund(
+                prepared.orderId,
+                prepared.completionToken,
+                '订单创建期间后端断开，机器人未开始执行'
+            );
+        }
+        alert('后端连接已断开，订单未开始执行');
         syncOrderButton();
         return;
     }
@@ -630,24 +669,60 @@ async function requestAutomaticRefund(orderId, completionToken, reason) {
 
 let paymentCancelled = false;
 
+function syncModalViewport() {
+    const overlay = document.getElementById('modalOverlay');
+    if (!overlay) return;
+    const viewport = window.visualViewport;
+    if (!viewport) {
+        overlay.style.inset = '0';
+        overlay.style.width = 'auto';
+        overlay.style.height = 'auto';
+        return;
+    }
+    overlay.style.inset = 'auto';
+    overlay.style.left = `${viewport.offsetLeft}px`;
+    overlay.style.top = `${viewport.offsetTop}px`;
+    overlay.style.width = `${viewport.width}px`;
+    overlay.style.height = `${viewport.height}px`;
+}
+
+function openModalOverlay() {
+    const overlay = document.getElementById('modalOverlay');
+    syncModalViewport();
+    overlay.style.display = 'flex';
+}
+
 function showPaymentModal(orderId, payment, totalAmount) {
     const overlay = document.getElementById('modalOverlay');
     const content = document.getElementById('modalContent');
-    const qrCodeBase64 = payment && payment.qrCodeBase64 ? String(payment.qrCodeBase64) : '';
+    const qrImageUrl = payment && (payment.qrImageUrl || payment.qrCodeBase64)
+        ? String(payment.qrImageUrl || payment.qrCodeBase64)
+        : '';
     paymentCancelled = false;
     content.innerHTML = `
         <div class="modal-title">请使用微信扫码支付</div>
         <div class="modal-text"><span class="order-id-display">订单号：${orderId}</span></div>
         <div class="payment-amount">¥${Number(totalAmount || 0).toFixed(2)}</div>
         <div class="payment-qr-frame">
-            <img class="payment-qr-code" src="${escapeHtml(qrCodeBase64)}" alt="微信支付二维码">
+            <img class="payment-qr-code" id="paymentQrImage" src="${escapeHtml(qrImageUrl)}" alt="微信支付二维码">
         </div>
         <div class="modal-text" id="paymentStatusText">打开微信“扫一扫”完成付款，支付结果会自动确认。</div>
         <div class="payment-actions">
             <button class="btn-secondary" type="button" id="cancelPayment">取消订单</button>
         </div>
     `;
-    overlay.style.display = 'flex';
+    openModalOverlay();
+    const qrImage = document.getElementById('paymentQrImage');
+    let qrLoadRetries = 0;
+    qrImage.onerror = () => {
+        if (qrLoadRetries < 2 && qrImageUrl) {
+            qrLoadRetries += 1;
+            const separator = qrImageUrl.includes('?') ? '&' : '?';
+            setTimeout(() => { qrImage.src = `${qrImageUrl}${separator}retry=${Date.now()}`; }, 800);
+            return;
+        }
+        showPaymentStatus('二维码加载失败，请检查大屏网络后重新下单');
+    };
     document.getElementById('cancelPayment').onclick = () => { paymentCancelled = true; overlay.style.display = 'none'; };
 }
 
@@ -980,7 +1055,7 @@ function showModal(orderId, items) {
         </div>
     `;
 
-    overlay.style.display = 'flex';
+    openModalOverlay();
     updateRobotStatus('busy', '机器人抓取中...');
 }
 

@@ -584,7 +584,7 @@ function paymentStatusMessage(order) {
 
 async function createPaymentQrCode(codeUrl) {
     const QRCode = require('qrcode');
-    return QRCode.toDataURL(codeUrl, {
+    return QRCode.toBuffer(codeUrl, {
         type: 'image/png',
         errorCorrectionLevel: 'M',
         margin: 2,
@@ -1329,8 +1329,9 @@ const server = http.createServer(async (req, res) => {
             saveOrder(order);
             createdOrder = order;
             const native = await paymentClient.createNativePayment(business.orderId, `机器人商品订单-${orderId}`);
-            const paymentQrCodeBase64 = native.qrCodeBase64 || await createPaymentQrCode(native.codeUrl);
-            order.paymentQrCodeBase64 = paymentQrCodeBase64;
+            const paymentQrPng = await createPaymentQrCode(native.codeUrl);
+            order.paymentQrPngBase64 = paymentQrPng.toString('base64');
+            order.paymentQrAccessToken = crypto.randomBytes(24).toString('base64url');
             saveOrder(order);
             createdOrder = order;
             sendJSON(res, {
@@ -1340,7 +1341,9 @@ const server = http.createServer(async (req, res) => {
                 totalAmount,
                 paymentRequired: true,
                 paymentStatus: order.paymentStatus,
-                payment: { qrCodeBase64: paymentQrCodeBase64 },
+                payment: {
+                    qrImageUrl: `/api/orders/${encodeURIComponent(orderId)}/payment-qr/${order.paymentQrAccessToken}`
+                },
                 completionToken: createOrderToken(orderId, pricedItems)
             });
         } catch (error) {
@@ -1353,6 +1356,34 @@ const server = http.createServer(async (req, res) => {
             }
             sendJSON(res, { code: 1, message: error.message }, paymentStarted ? 502 : 400);
         }
+        return;
+    }
+
+    const paymentQrMatch = pathname.match(/^\/api\/orders\/([^/]+)\/payment-qr\/([A-Za-z0-9_-]{32})$/);
+    if (paymentQrMatch && req.method === 'GET') {
+        const orderId = decodeURIComponent(paymentQrMatch[1]);
+        const accessToken = paymentQrMatch[2];
+        const order = orderById(orderId);
+        if (!order || !order.paymentQrAccessToken || !safeEqual(accessToken, order.paymentQrAccessToken)
+            || !order.paymentQrPngBase64) {
+            res.writeHead(404, { 'Cache-Control': 'no-store' });
+            res.end();
+            return;
+        }
+        const image = Buffer.from(order.paymentQrPngBase64, 'base64');
+        const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        if (image.length < pngSignature.length || !image.subarray(0, pngSignature.length).equals(pngSignature)) {
+            res.writeHead(500, { 'Cache-Control': 'no-store' });
+            res.end();
+            return;
+        }
+        res.writeHead(200, {
+            'Content-Type': 'image/png',
+            'Content-Length': image.length,
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'X-Content-Type-Options': 'nosniff'
+        });
+        res.end(image);
         return;
     }
 

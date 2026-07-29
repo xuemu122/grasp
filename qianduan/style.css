@@ -942,12 +942,18 @@ body {
 .modal-overlay {
     position: fixed;
     inset: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    padding: clamp(16px, 3vh, 40px);
     background: rgba(0, 0, 0, 0.45);
     backdrop-filter: blur(4px);
     z-index: 1000;
     display: flex;
     align-items: center;
     justify-content: center;
+    overflow: auto;
+    overscroll-behavior: contain;
     animation: fadeIn 0.3s ease;
 }
 
@@ -963,6 +969,10 @@ body {
     text-align: center;
     max-width: 420px;
     width: 90%;
+    max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 32px);
+    margin: auto;
+    overflow-y: auto;
     box-shadow: var(--shadow-lg);
     animation: scaleIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
@@ -977,6 +987,7 @@ body {
 
 .payment-qr-frame {
     width: min(304px, 76vw);
+    width: min(304px, 76vw, 42dvh);
     aspect-ratio: 1;
     display: grid;
     place-items: center;
@@ -984,6 +995,19 @@ body {
     padding: 8px;
     border: 1px solid var(--gray-200);
     background: #fff;
+}
+
+@media (orientation: portrait) {
+    .modal-content {
+        width: min(560px, calc(100vw - 32px));
+        max-width: 560px;
+        padding: clamp(28px, 5vw, 48px);
+    }
+
+    .payment-qr-frame {
+        width: min(380px, 72vw);
+        width: min(380px, 72vw, 42dvh);
+    }
 }
 
 .payment-qr-code {
