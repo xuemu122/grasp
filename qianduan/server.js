@@ -44,6 +44,7 @@ const CHASSIS_NAVIGATION_POLL_MS = Number(process.env.CHASSIS_NAVIGATION_POLL_MS
 const PRODUCTS_DB_FILE = process.env.PRODUCTS_DB_FILE || path.join(__dirname, 'data', 'products.json');
 const ORDERS_DB_FILE = process.env.ORDERS_DB_FILE || path.join(path.dirname(PRODUCTS_DB_FILE), 'orders.json');
 const PAYMENT_MODE = String(process.env.PAYMENT_MODE || 'lyorder').trim().toLowerCase();
+const REQUIRE_SIGNED_ORDERS = PAYMENT_MODE === 'lyorder';
 const PAYMENT_API_BASE_URL = process.env.PAYMENT_API_BASE_URL || '';
 const PAYMENT_API_TOKEN = process.env.PAYMENT_API_TOKEN || '';
 const PAYMENT_DEVICE_SN = process.env.PAYMENT_DEVICE_SN || 'GRASP-ROBOT-01';
@@ -537,6 +538,20 @@ function publicOrder(order) {
     };
 }
 
+function paymentStatusMessage(order) {
+    if (order.paymentStatus === 'REFUNDED') {
+        return order.refundReason ? `订单已退款：${order.refundReason}` : '订单已退款';
+    }
+    if (order.paymentStatus === 'REFUNDING') return '订单正在退款，请勿重复支付';
+    if (order.paymentStatus === 'CLOSED') return '支付订单已关闭，请重新下单';
+    if (order.status === 'FAILED') {
+        return order.refundStatus === 'FAIL'
+            ? '订单处理失败，自动退款暂未成功，请联系管理员处理'
+            : (order.failureReason || '订单处理失败，请重新下单');
+    }
+    return null;
+}
+
 function setOrderStatus(order, status, paymentStatus = order.paymentStatus) {
     order.status = status;
     order.paymentStatus = paymentStatus;
@@ -976,7 +991,10 @@ async function notifyOrderExecutionStarted(orderId, completionToken) {
         setOrderStatus(localOrder, 'PROCESSING', 'PAID');
         return publicOrder(localOrder);
     }
-    if (!completionToken) return null;
+    if (!completionToken) {
+        if (REQUIRE_SIGNED_ORDERS) throw new Error('支付订单缺少签名凭证，拒绝开始抓取');
+        return null;
+    }
     if (!ORDER_STATUS_CALLBACK_URL || !ORDER_STATUS_CALLBACK_SECRET) {
         throw new Error('未配置 ORDER_STATUS_CALLBACK_URL/SECRET，不能安全开始支付订单');
     }
@@ -1303,7 +1321,16 @@ const server = http.createServer(async (req, res) => {
             const latest = order.paymentMode === 'lyorder'
                 ? await reconcileOrderPayment(order, 'client-query')
                 : order;
-            sendJSON(res, { code: 0, orderId, paid: latest.paymentStatus === 'PAID', paymentStatus: latest.paymentStatus, status: latest.status, tradeState: latest.paymentTradeState || null });
+            const paid = latest.paymentStatus === 'PAID' && latest.status === 'PAID';
+            sendJSON(res, {
+                code: 0,
+                orderId,
+                paid,
+                paymentStatus: latest.paymentStatus,
+                status: latest.status,
+                tradeState: latest.paymentTradeState || null,
+                message: paymentStatusMessage(latest)
+            });
         } catch (error) {
             sendJSON(res, { code: 1, message: error.message }, 502);
         }
@@ -2755,13 +2782,17 @@ async function returnRobotToCharge(ws, orderId, autoReturnCharge = readChassisSe
 
 function resolveOrderItems(msg, orderId) {
     let orderItems = msg.items;
-    if (!msg.completionToken) return normalizeOrderItems(orderItems);
+    if (!msg.completionToken) {
+        if (REQUIRE_SIGNED_ORDERS) throw new Error('支付订单缺少签名凭证，拒绝执行');
+        return normalizeOrderItems(orderItems);
+    }
 
     const preparedOrder = readOrderToken(msg.completionToken);
     if (preparedOrder && preparedOrder.orderId === orderId && Array.isArray(preparedOrder.items)) {
         orderItems = preparedOrder.items;
         log(`🔐 订单 ${orderId} 已从签名凭证恢复货架层和底盘点位`);
     } else {
+        if (REQUIRE_SIGNED_ORDERS) throw new Error('支付订单签名凭证无效或已过期，拒绝执行');
         log(`⚠️ 订单 ${orderId} 的签名凭证无效，改用 WebSocket items`);
     }
     return normalizeOrderItems(orderItems);

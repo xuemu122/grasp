@@ -36,12 +36,16 @@ POST /api/admin/orders/:orderId/refund   {"reason":"用户取消"}
 
 ```text
 # 云端商品/支付服务
+ORDER_TOKEN_SECRET=<云端与盒子相同的32字节以上随机值>
 ORDER_STATUS_CALLBACK_SECRET=<32字节以上随机值>
 
 # 盒子执行服务
 ORDER_STATUS_CALLBACK_URL=https://rzza.dxtxl.com:8083
+ORDER_TOKEN_SECRET=<与云端相同>
 ORDER_STATUS_CALLBACK_SECRET=<与云端相同>
 ```
+
+`ORDER_TOKEN_SECRET` 用于盒子验证云端签发的订单凭证，两端必须完全一致；它应与管理员会话密钥、回调密钥分别生成，不能复用。
 
 订单执行顺序是“盒子签名锁单为 PROCESSING → 开始运动 → 成功放置后落盘完成回调 → 云端确认并扣减库存”。完成回调使用和失败回调相同的 HMAC 密钥，盒子会把未确认事件保存到 `ORDER_CALLBACK_OUTBOX_FILE`，断网或重启后继续重试；浏览器不再负责扣库存。云端收到完成回调后先持久化 `PLACED`，再扣库存，避免成功放置订单被超时退款。失败回调和退款均是幂等的，重复上报不会重复退款；未完成扣库存的失败订单不会错误增加库存。自动退款失败时订单保留为 `FAILED/PAID`，退款平台返回处理中时服务会周期性恢复巡检。
 
@@ -56,6 +60,8 @@ ORDER_STATUS_CALLBACK_SECRET=<与云端相同>
 ```
 
 订单提交前，云端商品 API 会校验商品与库存并签发订单凭证。盒子成功放置后通过 HMAC 完成回调通知云端，完成事件先落盘再重试，浏览器不参与库存扣减。云端先持久化 `PLACED` 再扣库存；完成记录持久化在商品 JSON 中，同一订单重复回传不会重复扣减，抓取失败不会扣库存。
+
+正式 `lyorder` 模式下，盒子只接受带有效 `completionToken` 的抓取命令；缺失、过期或签名不正确的订单会在任何机械臂动作前被拒绝。免费测试模式保留无凭证的调试指令兼容性，不能暴露为正式点单服务。
 
 云端商品服务和盒子订单服务都运行 `server.js`，但职责和环境变量不同：
 

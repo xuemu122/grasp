@@ -700,6 +700,16 @@ async function waitForPayment(orderId, completionToken, payment, totalAmount) {
                 document.getElementById('modalOverlay').style.display = 'none';
                 return true;
             }
+            const terminalStatus = ['REFUNDED', 'REFUNDING', 'CLOSED', 'FAILED'].includes(data.paymentStatus)
+                || ['REFUNDED', 'REFUNDING', 'CLOSED', 'FAILED'].includes(data.status);
+            if (data.code === 0 && terminalStatus) {
+                const message = data.message || '订单未能进入执行状态，请重新下单';
+                showPaymentStatus(message);
+                await new Promise(resolve => setTimeout(resolve, 1200));
+                document.getElementById('modalOverlay').style.display = 'none';
+                alert(message);
+                return false;
+            }
             if (data.message) showPaymentStatus(data.message);
         } catch (error) {
             showPaymentStatus(`支付状态查询失败：${error.message}`);
