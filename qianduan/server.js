@@ -550,7 +550,6 @@ function publicOrder(order) {
         paymentStatus: order.paymentStatus || 'PENDING_PAYMENT',
         status: order.status || 'PENDING_PAYMENT',
         statusLabel: orderStatusLabel(order.status),
-        paymentCodeUrl: order.paymentCodeUrl || null,
         refundId: order.refundId || null,
         refundStatus: order.refundStatus || null,
         refundReason: order.refundReason || null,
@@ -581,6 +580,17 @@ function paymentStatusMessage(order) {
             : (order.failureReason || '订单处理失败，请重新下单');
     }
     return null;
+}
+
+async function createPaymentQrCode(codeUrl) {
+    const QRCode = require('qrcode');
+    return QRCode.toDataURL(codeUrl, {
+        type: 'image/png',
+        errorCorrectionLevel: 'M',
+        margin: 2,
+        width: 320,
+        color: { dark: '#000000', light: '#FFFFFF' }
+    });
 }
 
 function setOrderStatus(order, status, paymentStatus = order.paymentStatus) {
@@ -1319,8 +1329,8 @@ const server = http.createServer(async (req, res) => {
             saveOrder(order);
             createdOrder = order;
             const native = await paymentClient.createNativePayment(business.orderId, `机器人商品订单-${orderId}`);
-            order.paymentCodeUrl = native.codeUrl;
-            order.paymentQrCodeBase64 = native.qrCodeBase64 || null;
+            const paymentQrCodeBase64 = native.qrCodeBase64 || await createPaymentQrCode(native.codeUrl);
+            order.paymentQrCodeBase64 = paymentQrCodeBase64;
             saveOrder(order);
             createdOrder = order;
             sendJSON(res, {
@@ -1330,7 +1340,7 @@ const server = http.createServer(async (req, res) => {
                 totalAmount,
                 paymentRequired: true,
                 paymentStatus: order.paymentStatus,
-                payment: { codeUrl: native.codeUrl, qrCodeBase64: native.qrCodeBase64 || null },
+                payment: { qrCodeBase64: paymentQrCodeBase64 },
                 completionToken: createOrderToken(orderId, pricedItems)
             });
         } catch (error) {
@@ -1405,9 +1415,11 @@ const server = http.createServer(async (req, res) => {
         order.cancelRequestedAt = order.cancelRequestedAt || new Date().toISOString();
         saveOrder(order);
         try {
-            const latest = order.paymentMode === 'lyorder'
-                ? await reconcileOrderPayment(order, 'cancel-query')
-                : order;
+            let latest = order;
+            if (order.paymentMode === 'lyorder') {
+                if (order.externalOrderId) await paymentClient.close(order.externalOrderId);
+                latest = await reconcileOrderPayment(order, 'cancel-query');
+            }
             sendJSON(res, { code: 0, data: publicOrder(latest) });
         } catch (error) {
             sendJSON(res, { code: 1, message: error.message }, 502);

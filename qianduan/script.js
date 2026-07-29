@@ -633,25 +633,21 @@ let paymentCancelled = false;
 function showPaymentModal(orderId, payment, totalAmount) {
     const overlay = document.getElementById('modalOverlay');
     const content = document.getElementById('modalContent');
-    const codeUrl = payment && payment.codeUrl ? String(payment.codeUrl) : '';
     const qrCodeBase64 = payment && payment.qrCodeBase64 ? String(payment.qrCodeBase64) : '';
     paymentCancelled = false;
     content.innerHTML = `
-        <div class="modal-title">请完成支付</div>
-        <div class="modal-text"><span class="order-id-display">订单号：${orderId}</span><br>应付 ¥${Number(totalAmount || 0).toFixed(2)}</div>
-        ${qrCodeBase64 ? `<img class="payment-qr-code" src="${escapeHtml(qrCodeBase64)}" alt="微信支付二维码">` : ''}
-        <div class="payment-code-box"><code>${escapeHtml(codeUrl || '支付链接生成中...')}</code></div>
-        <div class="modal-text" id="paymentStatusText">请使用微信打开上面的支付链接，页面会自动查询支付状态。</div>
+        <div class="modal-title">请使用微信扫码支付</div>
+        <div class="modal-text"><span class="order-id-display">订单号：${orderId}</span></div>
+        <div class="payment-amount">¥${Number(totalAmount || 0).toFixed(2)}</div>
+        <div class="payment-qr-frame">
+            <img class="payment-qr-code" src="${escapeHtml(qrCodeBase64)}" alt="微信支付二维码">
+        </div>
+        <div class="modal-text" id="paymentStatusText">打开微信“扫一扫”完成付款，支付结果会自动确认。</div>
         <div class="payment-actions">
-            <button class="btn-primary" type="button" id="copyPaymentCode">复制支付链接</button>
             <button class="btn-secondary" type="button" id="cancelPayment">取消订单</button>
         </div>
     `;
     overlay.style.display = 'flex';
-    document.getElementById('copyPaymentCode').onclick = async () => {
-        try { await navigator.clipboard.writeText(codeUrl); showPaymentStatus('支付链接已复制'); }
-        catch { showPaymentStatus('复制失败，请手动长按/复制支付链接'); }
-    };
     document.getElementById('cancelPayment').onclick = () => { paymentCancelled = true; overlay.style.display = 'none'; };
 }
 
@@ -702,8 +698,8 @@ async function waitForPayment(orderId, completionToken, payment, totalAmount) {
                 document.getElementById('modalOverlay').style.display = 'none';
                 return true;
             }
-            const terminalStatus = ['REFUNDED', 'REFUNDING', 'CLOSED', 'FAILED'].includes(data.paymentStatus)
-                || ['REFUNDED', 'REFUNDING', 'CLOSED', 'FAILED'].includes(data.status);
+            const terminalStatus = ['REFUNDED', 'REFUNDING', 'CLOSED', 'FAILED', 'PAYMENT_FAILED'].includes(data.paymentStatus)
+                || ['REFUNDED', 'REFUNDING', 'CLOSED', 'FAILED', 'PAYMENT_FAILED'].includes(data.status);
             if (data.code === 0 && terminalStatus) {
                 const message = data.message || '订单未能进入执行状态，请重新下单';
                 showPaymentStatus(message);

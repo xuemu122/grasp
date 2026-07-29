@@ -101,6 +101,15 @@ test('paid stock is reserved once and abandoned paid orders are refunded server-
                 } }));
                 return;
             }
+            if (req.method === 'POST' && req.url.startsWith('/api/WeChatPay/close/')) {
+                const externalOrderId = decodeURIComponent(req.url.split('/').pop());
+                if (!['SUCCESS', 'USERPAYING'].includes(tradeStates.get(externalOrderId))) {
+                    tradeStates.set(externalOrderId, 'CLOSED');
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ code: 0, data: {} }));
+                return;
+            }
             if (req.method === 'POST' && req.url === '/api/WeChatPay/refund') {
                 if (failedRefunds.has(body.orderId)) {
                     res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -171,6 +180,8 @@ test('paid stock is reserved once and abandoned paid orders are refunded server-
     assert.equal(first.response.status, 200);
     assert.equal(second.response.status, 200);
     assert.equal(refundFailure.response.status, 200);
+    assert.ok(first.json.payment.qrCodeBase64.startsWith('data:image/png;base64,'));
+    assert.equal(Object.prototype.hasOwnProperty.call(first.json.payment, 'codeUrl'), false);
     tradeStates.set('PAY-1', 'SUCCESS');
     tradeStates.set('PAY-2', 'SUCCESS');
     tradeStates.set('PAY-3', 'SUCCESS');

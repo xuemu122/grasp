@@ -158,6 +158,15 @@ class PaymentClient {
         };
     }
 
+    async close(orderId) {
+        const response = await this.request(
+            'POST',
+            `/api/WeChatPay/close/${encodeURIComponent(orderId)}`,
+            {}
+        );
+        return response.data || response.result || response;
+    }
+
     async refund(orderId, reason, refundRequestId) {
         const response = await this.request(
             'POST',
