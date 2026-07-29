@@ -600,7 +600,7 @@ async function submitOrder() {
     };
     currentOrderPayload = payload;
 
-    logWS('📤 发送抓取命令: ' + JSON.stringify(payload));
+    logWS(`📤 发送抓取命令: orderId=${orderId}, items=${payload.items.length}`);
     try {
         ws.send(JSON.stringify(payload));
     } catch (error) {
@@ -689,7 +689,12 @@ async function waitForPayment(orderId, completionToken, payment, totalAmount) {
     const deadline = Date.now() + 10 * 60 * 1000;
     while (!paymentCancelled && Date.now() < deadline) {
         try {
-            const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/payment?token=${encodeURIComponent(completionToken)}`, { cache: 'no-store' });
+            const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/payment`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                cache: 'no-store',
+                body: JSON.stringify({ completionToken })
+            });
             const data = await res.json();
             if (data.code === 0 && data.paid) {
                 document.getElementById('modalOverlay').style.display = 'none';
@@ -701,7 +706,20 @@ async function waitForPayment(orderId, completionToken, payment, totalAmount) {
         }
         await new Promise(resolve => setTimeout(resolve, 2500));
     }
-    if (!paymentCancelled) showPaymentStatus('支付等待超时，请重新下单');
+    if (paymentCancelled) {
+        try {
+            await fetch(`/api/orders/${encodeURIComponent(orderId)}/cancel-payment`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                keepalive: true,
+                body: JSON.stringify({ completionToken })
+            });
+        } catch (error) {
+            console.error('取消支付状态同步失败:', error);
+        }
+    } else {
+        showPaymentStatus('支付等待超时，系统会继续确认支付状态');
+    }
     return false;
 }
 

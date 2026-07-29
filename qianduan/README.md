@@ -4,7 +4,7 @@
 
 ## 支付、测试页与订单管理
 
-订单记录保存在 `ORDERS_DB_FILE`（默认 `data/orders.json`），商品库存仍保存在 `PRODUCTS_DB_FILE`。订单准备接口会先校验库存并落库；`PAYMENT_MODE=free` 时直接标记为测试支付成功，`PAYMENT_MODE=lyorder` 时调用 LyOrder 的 `/api/Order/create` 和 `/api/WeChatPay/native`，支付状态通过 `/api/orders/:orderId/payment` 查单确认后才允许抓取。
+订单记录保存在 `ORDERS_DB_FILE`（默认 `data/orders.json`），商品库存仍保存在 `PRODUCTS_DB_FILE`。订单准备接口会先校验库存并落库；`PAYMENT_MODE=free` 时直接标记为测试支付成功，`PAYMENT_MODE=lyorder` 时调用 LyOrder 的 `/api/Order/create` 和 `/api/WeChatPay/native`。云端主动查询未支付订单，不依赖浏览器在线；确认付款成功时立即预占库存，完成时消费预占，退款时幂等释放。
 
 正式服务不要把支付密钥写进仓库，使用环境文件配置：
 
@@ -26,9 +26,9 @@ GET  /api/admin/orders/:orderId
 POST /api/admin/orders/:orderId/refund   {"reason":"用户取消"}
 ```
 
-免费订单退款只恢复本地库存；真实订单退款会转发到 LyOrder `/api/WeChatPay/refund`。只有已支付或已完成订单可以退款，库存恢复具有幂等标记。
+免费订单退款只恢复本地库存；真实订单退款会转发到 LyOrder `/api/WeChatPay/refund`。每笔退款持久化唯一 `refundRequestId`，并通过请求体与 `Idempotency-Key` 重复使用；LyOrder 应按该键幂等处理。只有已支付或已完成订单可以退款，库存预占和恢复都具有持久化幂等标记。
 
-支付订单以“所有商品均成功抓取并放置”为履约边界。识别失败、无目标、碰撞/安全检查失败、导航失败、机械臂动作失败或放置失败，都会由盒子签名回调云端并自动退款；商品已经成功放置后，收起或回充失败只记录异常，不退款。云端还会巡检长时间停留在 `PROCESSING` 且没有 `placedAt` 的订单，默认 30 分钟后自动退款，用于覆盖盒子断电或进程崩溃。
+支付订单以“所有商品均成功抓取并放置”为履约边界。识别失败、无目标、碰撞/安全检查失败、导航失败、机械臂动作失败或放置失败，都会由盒子签名回调云端并自动退款；商品已经成功放置后，收起或回充失败只记录异常，不退款。云端还会巡检付款后长期未开始执行、以及长时间停留在 `PROCESSING` 且没有 `placedAt` 的订单，默认均为 30 分钟后自动退款，用于覆盖页面关闭、盒子断电或进程崩溃。
 
 机器人繁忙不属于履约失败：繁忙时不锁单、不执行、不退款，页面保留当前订单并在机器人恢复空闲后自动重试。正常情况下页面会在准备支付前根据 WebSocket 机器人状态直接禁止下单。
 
@@ -117,7 +117,7 @@ WS_PORT=3101 \
 ROBOT_GRASP_MODE=sim \
 PRODUCTS_DB_FILE=/var/lib/grasp-qianduan/products.json \
 ADMIN_USERNAME=admin \
-ADMIN_PASSWORD=admin123 \
+ADMIN_PASSWORD='<至少16位随机密码>' \
 ADMIN_SESSION_SECRET='<云端与盒子共用的至少32字节随机密钥>' \
 node server.js
 ```
@@ -141,12 +141,12 @@ PRODUCT_UPLOAD_MAX_BYTES=5242880
 
 ```text
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=admin123
+ADMIN_PASSWORD=<至少16位随机密码>
 ADMIN_SESSION_SECRET=<云端与盒子共用的至少32字节随机密钥>
 ADMIN_SESSION_TTL_MS=28800000
 ```
 
-`admin123` 会以明文出现在启动环境和本 README 中，仅适用于当前受控内网。对公网开放前必须更换密码。`ADMIN_SESSION_SECRET` 不要提交到仓库，云端和盒子必须配置完全相同的值。
+程序不提供管理员默认密码；正式支付实例检测到常见默认密码会拒绝启动。`ADMIN_SESSION_SECRET` 不要提交到仓库，云端和盒子必须配置完全相同的值。
 
 Cookie 使用 `HttpOnly`、`Secure` 和 `SameSite=Strict`，默认有效期为 8 小时。同一来源 15 分钟内连续登录失败 5 次后会被临时限制。修改账号、密码或密钥后需要重启云端商品服务；修改密钥会使现有会话立即失效。
 
@@ -219,7 +219,7 @@ curl http://192.168.10.10:9001/maps/ceshichangjing/1/map.yaml
 
 第一条无需登录也会返回会话状态 JSON，用于确认盒子 HTTP 服务可达。第二条应返回 `origin` 和 `resolution` 等 YAML 字段，用于确认桥接网络下的底盘地图服务可达。启动时盒子会把该地图写入 `data/chassis_map_cache/`；之后即使底盘地图 HTTP 暂时断开，管理页仍可显示上一次快照。
 
-本机管理页地址为 `http://localhost:3000/admin.html`，内网管理员账号为 `admin`、密码为 `admin123`。云端页面出现“盒子端管理员会话配置不一致”时，需要确认云端和盒子使用完全相同的 `ADMIN_USERNAME` 与 `ADMIN_SESSION_SECRET`，重启两端服务后退出管理页并重新登录。
+本机管理页地址为 `http://localhost:3000/admin.html`。管理员密码仅从部署环境读取。云端页面出现“盒子端管理员会话配置不一致”时，需要确认云端和盒子使用完全相同的 `ADMIN_USERNAME` 与 `ADMIN_SESSION_SECRET`，重启两端服务后退出管理页并重新登录。
 
 “抓取/放置前导航”默认关闭，默认放置 marker 为 `fangzhi`；“订单结束自动回充”默认开启。管理页修改任一开关或点位后，配置写入 `data/chassis_settings.json`，订单结束时实时读取，无需重启 Node 或 worker。
 
@@ -411,6 +411,9 @@ __filter_preview__\n
 | `ORDER_CALLBACK_RETRY_INTERVAL_MS` | `15000` | 完成回调重试基础间隔 |
 | `ORDER_CALLBACK_TLS_INSECURE` | `0` | 仅现场自签名证书临时设为 `1`，生产保持 `0` |
 | `PAYMENT_TLS_INSECURE` | `0` | 仅现场自签名支付 API 临时设为 `1`，生产保持 `0` |
+| `PAYMENT_STATUS_SWEEP_INTERVAL_MS` | `10000` | 云端支付状态巡检间隔 |
+| `PAYMENT_STATUS_QUERY_INTERVAL_MS` | `5000` | 同一订单主动查单最短间隔 |
+| `ORDER_PAID_START_TIMEOUT_MS` | `1800000` | 已付款但未开始执行的自动退款等待时间 |
 | `ROBOT_AUTO_RETURN_CHARGE` | `1` | 管理页没有保存设置时的自动回充默认值，设为 `0` 可默认关闭 |
 | `CHASSIS_SETTINGS_FILE` | 商品 JSON 同目录下的 `chassis_settings.json` | 管理页底盘导航、自动回充开关和放置点持久化文件 |
 | `CHASSIS_REQUEST_TIMEOUT_MS` | `10000` | 单次底盘 TCP 请求超时 |

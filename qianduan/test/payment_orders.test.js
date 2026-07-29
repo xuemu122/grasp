@@ -47,7 +47,7 @@ test('free payment order is persisted, completed and refundable', async (t) => {
             ROBOT_GRASP_MODE: 'sim', PRODUCTS_DB_FILE: productsFile, ORDERS_DB_FILE: ordersFile,
             PAYMENT_MODE: 'free', ALLOW_FREE_ORDERS: '1',
             ADMIN_USERNAME: 'test-admin', ADMIN_PASSWORD: 'test-password',
-            ADMIN_SESSION_SECRET: 'test-admin-session-secret-32-bytes', ORDER_TOKEN_SECRET: 'test-order-secret',
+            ADMIN_SESSION_SECRET: 'test-admin-session-secret-32-bytes', ORDER_TOKEN_SECRET: 'test-order-token-secret-at-least-32-bytes',
             ORDER_STATUS_CALLBACK_SECRET: callbackSecret
         },
         stdio: ['ignore', 'pipe', 'pipe']
@@ -74,7 +74,10 @@ test('free payment order is persisted, completed and refundable', async (t) => {
     assert.equal(prepared.json.paymentRequired, false);
     assert.equal(prepared.json.totalAmount, 16);
 
-    const payment = await fetch(`${base}/api/orders/${prepared.json.orderId}/payment?token=${encodeURIComponent(prepared.json.completionToken)}`);
+    const payment = await fetch(`${base}/api/orders/${prepared.json.orderId}/payment`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completionToken: prepared.json.completionToken })
+    });
     assert.equal((await payment.json()).paid, true);
 
     const login = await fetch(`${base}/api/admin/login`, {

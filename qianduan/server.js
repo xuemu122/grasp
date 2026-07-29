@@ -48,6 +48,9 @@ const PAYMENT_API_BASE_URL = process.env.PAYMENT_API_BASE_URL || '';
 const PAYMENT_API_TOKEN = process.env.PAYMENT_API_TOKEN || '';
 const PAYMENT_DEVICE_SN = process.env.PAYMENT_DEVICE_SN || 'GRASP-ROBOT-01';
 const PAYMENT_REQUEST_TIMEOUT_MS = Number(process.env.PAYMENT_REQUEST_TIMEOUT_MS || 15000);
+const PAYMENT_STATUS_SWEEP_INTERVAL_MS = Number(process.env.PAYMENT_STATUS_SWEEP_INTERVAL_MS || 10 * 1000);
+const PAYMENT_STATUS_QUERY_INTERVAL_MS = Number(process.env.PAYMENT_STATUS_QUERY_INTERVAL_MS || 5 * 1000);
+const ORDER_PAID_START_TIMEOUT_MS = Number(process.env.ORDER_PAID_START_TIMEOUT_MS || 30 * 60 * 1000);
 const ALLOW_FREE_ORDERS = /^(1|true|yes|on)$/i.test(process.env.ALLOW_FREE_ORDERS || '') || PAYMENT_MODE === 'free';
 const ORDER_STATUS_CALLBACK_URL = String(process.env.ORDER_STATUS_CALLBACK_URL || '').replace(/\/$/, '');
 const ORDER_STATUS_CALLBACK_SECRET = process.env.ORDER_STATUS_CALLBACK_SECRET || '';
@@ -85,13 +88,26 @@ const ROBOT_MAX_ORDER_UNITS = Number(process.env.ROBOT_MAX_ORDER_UNITS || 50);
 const ROBOT_SIM_DELAY_SCALE = Math.max(0, Number(process.env.ROBOT_SIM_DELAY_SCALE || 1));
 const ROBOT_BROADCAST_LOGS = /^(1|true|yes|on)$/i.test(process.env.ROBOT_BROADCAST_LOGS || '');
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '123456';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const ADMIN_SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const ADMIN_SESSION_TTL_MS = Number(process.env.ADMIN_SESSION_TTL_MS || 8 * 60 * 60 * 1000);
 const ADMIN_COOKIE_NAME = 'grasp_admin_session';
 const ORDER_TOKEN_SECRET = process.env.ORDER_TOKEN_SECRET || ADMIN_SESSION_SECRET;
 const ORDER_TOKEN_TTL_MS = Number(process.env.ORDER_TOKEN_TTL_MS || 24 * 60 * 60 * 1000);
+if (process.env.ORDER_TOKEN_SECRET && Buffer.byteLength(ORDER_TOKEN_SECRET, 'utf8') < 32) {
+    throw new Error('ORDER_TOKEN_SECRET 必须至少 32 字节');
+}
+if (PAYMENT_MODE === 'lyorder' && !ROBOT_GRASP_REAL) {
+    if (!PAYMENT_API_BASE_URL) throw new Error('云端支付服务必须配置 PAYMENT_API_BASE_URL');
+    if (!process.env.ORDER_TOKEN_SECRET) throw new Error('云端支付服务必须单独配置 ORDER_TOKEN_SECRET');
+    if (!ADMIN_PASSWORD || ['123456', 'admin123', 'change-me'].includes(ADMIN_PASSWORD)) {
+        throw new Error('云端支付服务禁止使用默认管理员密码');
+    }
+    if (ALLOW_FREE_ORDERS) throw new Error('正式支付服务禁止启用 ALLOW_FREE_ORDERS');
+}
 const loginAttempts = new Map();
+const requestRateLimits = new Map();
+const paymentReconcilePromises = new Map();
 let activeOrderId = null;
 let robotWorker = null;
 let robotWorkerReady = false;
@@ -314,7 +330,22 @@ function requireAdmin(req, res) {
 }
 
 function clientIp(req) {
-    return String(req.headers['x-real-ip'] || req.socket.remoteAddress || '').trim();
+    const direct = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '').trim();
+    const trustedProxy = direct === '127.0.0.1' || direct === '::1';
+    return String(trustedProxy && req.headers['x-real-ip'] ? req.headers['x-real-ip'] : direct).trim();
+}
+
+function enforceRateLimit(req, res, bucket, limit, windowMs) {
+    const now = Date.now();
+    const key = `${bucket}:${clientIp(req)}`;
+    let state = requestRateLimits.get(key);
+    if (!state || now >= state.resetAt) state = { count: 0, resetAt: now + windowMs };
+    state.count += 1;
+    requestRateLimits.set(key, state);
+    if (state.count <= limit) return true;
+    const retryAfter = Math.max(1, Math.ceil((state.resetAt - now) / 1000));
+    sendJSON(res, { code: 1, message: '请求过于频繁，请稍后重试' }, 429, { 'Retry-After': String(retryAfter) });
+    return false;
 }
 
 function loginBlocked(ip) {
@@ -358,16 +389,17 @@ function normalizeProduct(raw, fallbackId = 1) {
 }
 
 function readProductStore() {
-    if (!fs.existsSync(PRODUCTS_DB_FILE)) return { products: [], completedOrders: {} };
+    if (!fs.existsSync(PRODUCTS_DB_FILE)) return { products: [], completedOrders: {}, reservedOrders: {} };
     try {
         const data = JSON.parse(fs.readFileSync(PRODUCTS_DB_FILE, 'utf8'));
         return {
             products: Array.isArray(data.products) ? data.products.map((p, idx) => normalizeProduct(p, idx + 1)) : [],
-            completedOrders: data.completedOrders && typeof data.completedOrders === 'object' ? data.completedOrders : {}
+            completedOrders: data.completedOrders && typeof data.completedOrders === 'object' ? data.completedOrders : {},
+            reservedOrders: data.reservedOrders && typeof data.reservedOrders === 'object' ? data.reservedOrders : {}
         };
     } catch (e) {
         log(`⚠️ 商品数据读取失败: ${e.message}`);
-        return { products: [], completedOrders: {} };
+        return { products: [], completedOrders: {}, reservedOrders: {} };
     }
 }
 
@@ -512,9 +544,46 @@ function setOrderStatus(order, status, paymentStatus = order.paymentStatus) {
     return saveOrder(order);
 }
 
+function reserveOrderInventory(order) {
+    const store = readProductStore();
+    const existing = store.reservedOrders[order.orderId];
+    if (existing) {
+        if (existing.releasedAt) throw new Error('订单库存预占已经释放');
+        order.inventoryReservedAt = order.inventoryReservedAt || existing.reservedAt;
+        return existing;
+    }
+    const items = normalizeInventoryItems(order.items || []);
+    const changes = [];
+    for (const item of items) {
+        const product = store.products.find((candidate) => Number(candidate.id) === item.id);
+        if (!product || Number(product.status) !== 1) throw new Error(`商品不可用: ${item.name || item.id}`);
+        if (Number(product.stock) < item.qty) throw new Error(`${product.name} 库存不足，当前库存 ${product.stock}`);
+        changes.push({ product, item });
+    }
+    const reservedAt = new Date().toISOString();
+    const updated = [];
+    for (const { product, item } of changes) {
+        product.stock = Number(product.stock) - item.qty;
+        updated.push({ id: product.id, name: product.name, qty: item.qty, stock: product.stock });
+    }
+    const reservation = { reservedAt, items, updated, completedAt: null, releasedAt: null };
+    store.reservedOrders[order.orderId] = reservation;
+    writeProductStore(store);
+    order.inventoryReservedAt = reservedAt;
+    return reservation;
+}
+
 function markOrderPaid(order, source = 'payment') {
     if (!order.paidAt) order.paidAt = new Date().toISOString();
     order.paidSource = source;
+    try {
+        reserveOrderInventory(order);
+        order.inventoryReservationError = null;
+    } catch (error) {
+        order.inventoryReservationError = error.message;
+        setOrderStatus(order, 'PAID', 'PAID');
+        throw error;
+    }
     return setOrderStatus(order, 'PAID', 'PAID');
 }
 
@@ -569,13 +638,21 @@ function completePaidOrder(orderId, completionToken) {
         return { alreadyCompleted: true, updated: existingCompletion.updated || [] };
     }
 
-    const updated = [];
-    for (const item of normalizeInventoryItems(tokenOrder.items)) {
-        const product = store.products.find((candidate) => Number(candidate.id) === item.id);
-        if (!product) throw new Error(`商品不存在: ${item.name || item.id}`);
-        if (Number(product.stock) < item.qty) throw new Error(`${product.name} 库存不足，当前库存 ${product.stock}`);
-        product.stock = Number(product.stock) - item.qty;
-        updated.push({ id: product.id, name: product.name, qty: item.qty, stock: product.stock });
+    const reservation = store.reservedOrders[orderId];
+    let updated;
+    if (reservation) {
+        if (reservation.releasedAt) throw new Error('订单库存预占已释放，不能完成订单');
+        updated = Array.isArray(reservation.updated) ? reservation.updated : [];
+        reservation.completedAt = reservation.completedAt || new Date().toISOString();
+    } else {
+        updated = [];
+        for (const item of normalizeInventoryItems(order.items || [])) {
+            const product = store.products.find((candidate) => Number(candidate.id) === item.id);
+            if (!product) throw new Error(`商品不存在: ${item.name || item.id}`);
+            if (Number(product.stock) < item.qty) throw new Error(`${product.name} 库存不足，当前库存 ${product.stock}`);
+            product.stock = Number(product.stock) - item.qty;
+            updated.push({ id: product.id, name: product.name, qty: item.qty, stock: product.stock });
+        }
     }
     store.completedOrders[orderId] = { completedAt: Date.now(), updated, inventoryRestoredAt: null };
     const orderIds = Object.keys(store.completedOrders);
@@ -590,7 +667,24 @@ function completePaidOrder(orderId, completionToken) {
 function restoreCompletedOrderInventory(order) {
     if (order.stockRestoredAt) return false;
     const store = readProductStore();
+    const reservation = store.reservedOrders[order.orderId];
     const completion = store.completedOrders[order.orderId];
+    if (reservation) {
+        if (reservation.releasedAt) {
+            order.stockRestoredAt = reservation.releasedAt;
+            return false;
+        }
+        const releasedAt = new Date().toISOString();
+        for (const item of normalizeInventoryItems(reservation.items || order.items || [])) {
+            const product = store.products.find((candidate) => Number(candidate.id) === item.id);
+            if (product) product.stock = Number(product.stock) + item.qty;
+        }
+        reservation.releasedAt = releasedAt;
+        if (completion) completion.inventoryRestoredAt = releasedAt;
+        writeProductStore(store);
+        order.stockRestoredAt = releasedAt;
+        return true;
+    }
     if (!completion) return false;
     if (completion.inventoryRestoredAt) {
         order.stockRestoredAt = completion.inventoryRestoredAt;
@@ -615,6 +709,7 @@ async function refundOrder(order, reason, trigger = 'admin', { resume = false } 
     order.refundReason = reason;
     order.refundTrigger = trigger;
     order.refundRequestedAt = order.refundRequestedAt || new Date().toISOString();
+    order.refundRequestId = order.refundRequestId || `GRASP-REFUND-${crypto.createHash('sha256').update(order.orderId).digest('hex').slice(0, 24)}`;
     order.refundAttemptCount = Number(order.refundAttemptCount || 0) + 1;
     order.refundLastAttemptAt = new Date().toISOString();
     setOrderStatus(order, 'REFUNDING', 'REFUNDING');
@@ -625,7 +720,7 @@ async function refundOrder(order, reason, trigger = 'admin', { resume = false } 
             refund = { refundId: `FREE-${Date.now().toString(36).toUpperCase()}`, refundStatus: 'SUCCESS' };
         } else {
             if (!order.externalOrderId) throw new Error('订单没有外部支付订单号');
-            refund = await paymentClient.refund(order.externalOrderId, reason);
+            refund = await paymentClient.refund(order.externalOrderId, reason, order.refundRequestId);
         }
     } catch (error) {
         order.refundStatus = 'FAIL';
@@ -644,6 +739,50 @@ async function refundOrder(order, reason, trigger = 'admin', { resume = false } 
         setOrderStatus(order, 'REFUNDING', 'REFUNDING');
     }
     return order;
+}
+
+function validatePaymentResult(order, payment) {
+    if (payment.tradeState !== 'SUCCESS') return;
+    if (payment.totalAmount !== null && Math.abs(payment.totalAmount - Number(order.totalAmount)) > 0.001) {
+        throw new Error(`支付金额不一致: 支付系统 ¥${payment.totalAmount.toFixed(2)}，本地 ¥${Number(order.totalAmount).toFixed(2)}`);
+    }
+    if (payment.currency && payment.currency !== 'CNY') throw new Error(`支付币种不支持: ${payment.currency}`);
+}
+
+async function reconcileOrderPayment(order, source = 'server-query') {
+    const existing = paymentReconcilePromises.get(order.orderId);
+    if (existing) return existing;
+    const operation = (async () => {
+        const latest = orderById(order.orderId) || order;
+        if (latest.paymentMode !== 'lyorder' || ['REFUNDED', 'REFUNDING'].includes(latest.paymentStatus)) return latest;
+        if (!latest.externalOrderId) throw new Error('支付业务订单尚未创建');
+        const payment = await paymentClient.query(latest.externalOrderId);
+        latest.paymentTradeState = payment.tradeState;
+        latest.paymentTradeStateDesc = payment.tradeStateDesc;
+        latest.paymentLastCheckedAt = new Date().toISOString();
+        validatePaymentResult(latest, payment);
+        if (payment.tradeState === 'SUCCESS' && latest.paymentStatus !== 'PAID') {
+            try {
+                markOrderPaid(latest, source);
+            } catch (error) {
+                latest.failureReason = `付款成功但库存预占失败: ${error.message}`;
+                latest.failedAt = new Date().toISOString();
+                saveOrder(latest);
+                await refundOrder(latest, latest.failureReason, 'inventory-reservation');
+            }
+        } else if (payment.tradeState === 'CLOSED' && latest.paymentStatus === 'PENDING_PAYMENT') {
+            setOrderStatus(latest, 'CLOSED', 'CLOSED');
+        } else {
+            saveOrder(latest);
+        }
+        if (latest.cancelRequestedAt && latest.paymentStatus === 'PAID' && !latest.executionStartedAt) {
+            await refundOrder(latest, '用户取消支付页面，订单尚未开始执行', 'payment-cancel');
+        }
+        return orderById(latest.orderId) || latest;
+    })();
+    paymentReconcilePromises.set(order.orderId, operation);
+    try { return await operation; }
+    finally { paymentReconcilePromises.delete(order.orderId); }
 }
 
 function postOrderStatusCallback(pathname, body, headers = {}) {
@@ -751,6 +890,41 @@ async function refundTimedOutOrders() {
     refundSweepRunning = true;
     try {
         const now = Date.now();
+        const pendingPayments = readOrderStore().orders.filter((order) => (
+            order.paymentMode === 'lyorder'
+            && order.paymentStatus === 'PENDING_PAYMENT'
+            && order.externalOrderId
+            && (!Number.isFinite(Date.parse(order.paymentLastCheckedAt))
+                || now - Date.parse(order.paymentLastCheckedAt) >= PAYMENT_STATUS_QUERY_INTERVAL_MS)
+        )).slice(0, 50);
+        for (const order of pendingPayments) {
+            try {
+                await reconcileOrderPayment(order, 'payment-sweep');
+            } catch (error) {
+                const failed = orderById(order.orderId) || order;
+                failed.paymentLastCheckedAt = new Date().toISOString();
+                failed.paymentCheckError = String(error.message || error).slice(0, 500);
+                saveOrder(failed);
+                log(`⚠️ 订单 ${order.orderId} 服务端查单失败: ${error.message}`);
+            }
+        }
+        const paidNotStarted = readOrderStore().orders.filter((order) => (
+            order.status === 'PAID'
+            && order.paymentStatus === 'PAID'
+            && !order.executionStartedAt
+            && !order.placedAt
+            && Number.isFinite(Date.parse(order.paidAt))
+            && now - Date.parse(order.paidAt) >= ORDER_PAID_START_TIMEOUT_MS
+        ));
+        for (const order of paidNotStarted) {
+            try {
+                const reason = `付款后超过 ${Math.round(ORDER_PAID_START_TIMEOUT_MS / 60000)} 分钟仍未开始执行`;
+                await refundOrder(order, reason, 'paid-not-started-timeout');
+                log(`💸 订单 ${order.orderId} 付款后未执行，已触发自动退款`);
+            } catch (error) {
+                log(`❌ 订单 ${order.orderId} 未执行自动退款失败: ${error.message}`);
+            }
+        }
         const timedOut = readOrderStore().orders.filter((order) => (
             order.status === 'PROCESSING'
             && order.paymentStatus === 'PAID'
@@ -870,15 +1044,24 @@ function normalizeOrderItems(items) {
 
 function normalizeInventoryItems(items) {
     if (!Array.isArray(items) || items.length === 0) throw new Error('订单商品不能为空');
-    return items.map((item, index) => {
+    const combined = new Map();
+    items.forEach((item, index) => {
         const id = Number(item && item.id);
         const qty = Number(item && item.qty);
         if (!Number.isInteger(id) || id < 1) throw new Error(`第 ${index + 1} 个商品 id 无效`);
         if (!Number.isInteger(qty) || qty < 1 || qty > ROBOT_MAX_ITEM_QTY) {
             throw new Error(`第 ${index + 1} 个商品数量必须是 1..${ROBOT_MAX_ITEM_QTY} 的整数`);
         }
-        return { id, qty, name: String(item.name || '').trim() };
+        const existing = combined.get(id) || { id, qty: 0, name: String(item.name || '').trim() };
+        existing.qty += qty;
+        if (existing.qty > ROBOT_MAX_ITEM_QTY) throw new Error(`商品 ${id} 合计数量不能超过 ${ROBOT_MAX_ITEM_QTY}`);
+        combined.set(id, existing);
     });
+    const normalized = [...combined.values()];
+    if (normalized.reduce((sum, item) => sum + item.qty, 0) > ROBOT_MAX_ORDER_UNITS) {
+        throw new Error(`订单商品总数不能超过 ${ROBOT_MAX_ORDER_UNITS}`);
+    }
+    return normalized;
 }
 
 function signOrderPayload(payload) {
@@ -924,6 +1107,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/admin/login' && req.method === 'POST') {
+        if (!enforceRateLimit(req, res, 'admin-login', 10, 15 * 60 * 1000)) return;
         if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
             sendJSON(res, { code: 1, message: '管理员登录尚未配置' }, 503);
             return;
@@ -1003,6 +1187,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/orders/prepare' && req.method === 'POST') {
+        if (!enforceRateLimit(req, res, 'order-prepare', 12, 60 * 1000)) return;
         const body = await parseBody(req);
         let paymentStarted = false;
         try {
@@ -1013,6 +1198,9 @@ const server = http.createServer(async (req, res) => {
                 if (!product || Number(product.status) !== 1) throw new Error(`商品不可用: ${item.name || item.id}`);
                 if (Number(product.stock) < item.qty) throw new Error(`${product.name} 库存不足，当前库存 ${product.stock}`);
                 const unitPrice = Number(product.price || 0);
+                if (!Number.isFinite(unitPrice) || unitPrice <= 0 || unitPrice > 100000) {
+                    throw new Error(`商品 ${product.name} 价格无效`);
+                }
                 return {
                     ...item,
                     name: product.name,
@@ -1066,11 +1254,13 @@ const server = http.createServer(async (req, res) => {
 
             paymentStarted = true;
             const business = await paymentClient.createBusinessOrder({ deviceSn: PAYMENT_DEVICE_SN, items: pricedItems });
-            if (business.totalAmount !== null && Math.abs(business.totalAmount - totalAmount) > 0.001) {
+            if (business.totalAmount === null) throw new Error('支付业务订单接口未返回可核验金额');
+            if (Math.abs(business.totalAmount - totalAmount) > 0.001) {
                 throw new Error(`支付系统金额 ¥${business.totalAmount.toFixed(2)} 与本地金额 ¥${totalAmount.toFixed(2)} 不一致`);
             }
-            const native = await paymentClient.createNativePayment(business.orderId, `机器人商品订单-${orderId}`);
             order.externalOrderId = business.orderId;
+            saveOrder(order);
+            const native = await paymentClient.createNativePayment(business.orderId, `机器人商品订单-${orderId}`);
             order.paymentCodeUrl = native.codeUrl;
             order.paymentQrCodeBase64 = native.qrCodeBase64 || null;
             saveOrder(order);
@@ -1092,8 +1282,14 @@ const server = http.createServer(async (req, res) => {
 
     const paymentStatusMatch = pathname.match(/^\/api\/orders\/([^/]+)\/payment$/);
     if (paymentStatusMatch && req.method === 'GET') {
+        sendJSON(res, { code: 1, message: '支付查询凭证禁止放在 URL，请使用 POST' }, 405, { Allow: 'POST' });
+        return;
+    }
+    if (paymentStatusMatch && req.method === 'POST') {
+        if (!enforceRateLimit(req, res, 'payment-query', 120, 60 * 1000)) return;
         const orderId = decodeURIComponent(paymentStatusMatch[1]);
-        const orderToken = readOrderToken(url.searchParams.get('token'));
+        const body = await parseBody(req);
+        const orderToken = readOrderToken(body && body.completionToken);
         if (!orderToken || orderToken.orderId !== orderId) {
             sendJSON(res, { code: 1, message: '订单凭证无效或已过期' }, 401);
             return;
@@ -1104,17 +1300,40 @@ const server = http.createServer(async (req, res) => {
             return;
         }
         try {
-            if (order.paymentStatus !== 'PAID' && order.paymentMode === 'lyorder') {
-                if (!order.externalOrderId) throw new Error('支付业务订单尚未创建');
-                const payment = await paymentClient.query(order.externalOrderId);
-                if (payment.tradeState === 'SUCCESS') markOrderPaid(order, 'query');
-                else if (payment.tradeState === 'CLOSED') setOrderStatus(order, 'CLOSED', 'CLOSED');
-                order.paymentTradeState = payment.tradeState;
-                order.paymentTradeStateDesc = payment.tradeStateDesc;
-                saveOrder(order);
-            }
-            const latest = orderById(orderId) || order;
+            const latest = order.paymentMode === 'lyorder'
+                ? await reconcileOrderPayment(order, 'client-query')
+                : order;
             sendJSON(res, { code: 0, orderId, paid: latest.paymentStatus === 'PAID', paymentStatus: latest.paymentStatus, status: latest.status, tradeState: latest.paymentTradeState || null });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 502);
+        }
+        return;
+    }
+
+    const cancelPaymentMatch = pathname.match(/^\/api\/orders\/([^/]+)\/cancel-payment$/);
+    if (cancelPaymentMatch && req.method === 'POST') {
+        if (!enforceRateLimit(req, res, 'payment-cancel', 20, 60 * 1000)) return;
+        const body = await parseBody(req);
+        const orderId = decodeURIComponent(cancelPaymentMatch[1]);
+        const completionToken = String(body && body.completionToken || '');
+        const tokenOrder = readOrderToken(completionToken);
+        if (!tokenOrder || tokenOrder.orderId !== orderId) {
+            sendJSON(res, { code: 1, message: '订单凭证无效或已过期' }, 401);
+            return;
+        }
+        const order = orderById(orderId);
+        if (!order) { sendJSON(res, { code: 1, message: '订单不存在' }, 404); return; }
+        if (order.executionStartedAt || ['PROCESSING', 'PLACED', 'COMPLETED'].includes(order.status)) {
+            sendJSON(res, { code: 1, message: '订单已经开始执行，不能取消支付' }, 409);
+            return;
+        }
+        order.cancelRequestedAt = order.cancelRequestedAt || new Date().toISOString();
+        saveOrder(order);
+        try {
+            const latest = order.paymentMode === 'lyorder'
+                ? await reconcileOrderPayment(order, 'cancel-query')
+                : order;
+            sendJSON(res, { code: 0, data: publicOrder(latest) });
         } catch (error) {
             sendJSON(res, { code: 1, message: error.message }, 502);
         }
@@ -1177,6 +1396,7 @@ const server = http.createServer(async (req, res) => {
 
     const customerRefundMatch = pathname.match(/^\/api\/orders\/([^/]+)\/refund$/);
     if (customerRefundMatch && req.method === 'POST') {
+        if (!enforceRateLimit(req, res, 'customer-refund', 20, 60 * 1000)) return;
         const body = await parseBody(req);
         const orderId = decodeURIComponent(customerRefundMatch[1]);
         const completionToken = String(body && body.completionToken || '');
@@ -1714,7 +1934,7 @@ server.listen(PORT, HOST, () => {
     log(`抓取模式: ${ROBOT_GRASP_REAL ? '真实机械臂' : '模拟'} (${ROBOT_GRASP_MODE})`);
     log(`支付模式: ${PAYMENT_MODE}${PAYMENT_MODE === 'lyorder' ? `，支付 API: ${PAYMENT_API_BASE_URL || '未配置'}` : '（免费/测试）'}`);
     if (PAYMENT_MODE === 'lyorder') {
-        setInterval(refundTimedOutOrders, Math.max(10000, ORDER_REFUND_SWEEP_INTERVAL_MS)).unref();
+        setInterval(refundTimedOutOrders, Math.max(1000, PAYMENT_STATUS_SWEEP_INTERVAL_MS)).unref();
         refundTimedOutOrders().catch((error) => log(`⚠️ 超时退款巡检失败: ${error.message}`));
     }
     if (ORDER_STATUS_CALLBACK_URL) {
@@ -1833,7 +2053,8 @@ wss.on('connection', (ws) => {
             return;
         }
 
-        log(`📩 收到命令: ${JSON.stringify(msg)}`);
+        const logMessage = msg.completionToken ? { ...msg, completionToken: '[REDACTED]' } : msg;
+        log(`📩 收到命令: ${JSON.stringify(logMessage)}`);
 
         if (msg.type === 'grab') {
             handleGrabCommand(ws, msg);

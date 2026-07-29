@@ -178,6 +178,7 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
         products: [{
             id: 1,
             name: '云端咖啡',
+            price: 8,
             stock: 10,
             status: 1,
             location: '测试区A货架第2层',

@@ -83,6 +83,9 @@ test('REFUNDING order is reconciled and inventory is restored once', async (t) =
             HOST: '127.0.0.1', PORT: String(port), WS_HOST: '127.0.0.1', WS_PORT: String(wsPort),
             ROBOT_GRASP_MODE: 'sim', PAYMENT_MODE: 'lyorder', PAYMENT_API_BASE_URL: `http://127.0.0.1:${paymentPort}`,
             PRODUCTS_DB_FILE: productsFile, ORDERS_DB_FILE: ordersFile,
+            ADMIN_USERNAME: 'refund-admin', ADMIN_PASSWORD: 'refund-admin-random-password',
+            ADMIN_SESSION_SECRET: 'refund-admin-session-secret-at-least-32-bytes',
+            ORDER_TOKEN_SECRET: 'refund-order-token-secret-at-least-32-bytes',
             ORDER_STATUS_CALLBACK_SECRET: 'refund-recovery-callback-secret-32-bytes',
             CHASSIS_HOST: '127.0.0.1', CHASSIS_PORT: '1', CHASSIS_MAP_HTTP_HOST: '127.0.0.1', CHASSIS_MAP_HTTP_PORT: '1',
             CHASSIS_REQUEST_TIMEOUT_MS: '50'

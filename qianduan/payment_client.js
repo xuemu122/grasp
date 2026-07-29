@@ -13,12 +13,12 @@ class PaymentClient {
         return Boolean(this.baseUrl);
     }
 
-    request(method, pathname, body) {
+    request(method, pathname, body, extraHeaders = {}) {
         if (!this.enabled()) throw new Error('未配置 PAYMENT_API_BASE_URL');
         const target = new URL(pathname, `${this.baseUrl}/`);
         const transport = target.protocol === 'https:' ? https : http;
         const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
-        const headers = { Accept: 'application/json' };
+        const headers = { Accept: 'application/json', ...extraHeaders };
         if (payload) {
             headers['Content-Type'] = 'application/json';
             headers['Content-Length'] = payload.length;
@@ -89,15 +89,23 @@ class PaymentClient {
     async query(orderId) {
         const response = await this.request('GET', `/api/WeChatPay/query/${encodeURIComponent(orderId)}`);
         const data = response.data || response.result || response;
+        const amount = data.totalAmount ?? data.total_amount ?? data.totalPrice ?? data.total_price;
         return {
             tradeState: String(data.tradeState || data.trade_state || '').toUpperCase(),
             tradeStateDesc: data.tradeStateDesc || data.trade_state_desc || '',
+            totalAmount: amount === undefined || amount === null || !Number.isFinite(Number(amount)) ? null : Number(amount),
+            currency: String(data.currency || data.feeType || data.fee_type || '').toUpperCase() || null,
             raw: response
         };
     }
 
-    async refund(orderId, reason) {
-        const response = await this.request('POST', '/api/WeChatPay/refund', { orderId, reason });
+    async refund(orderId, reason, refundRequestId) {
+        const response = await this.request(
+            'POST',
+            '/api/WeChatPay/refund',
+            { orderId, reason, refundRequestId },
+            refundRequestId ? { 'Idempotency-Key': refundRequestId } : {}
+        );
         const data = response.data || response.result || response;
         return {
             refundId: data.refundId || data.refund_id || null,

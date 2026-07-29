@@ -63,7 +63,7 @@ test('completed orders decrement inventory once', async (t) => {
             PRODUCTS_DB_FILE: dataFile,
             SHELF_LAYERS_FILE: shelfLayersFile,
             CHASSIS_SETTINGS_FILE: chassisSettingsFile,
-            ORDER_TOKEN_SECRET: 'inventory-test-secret',
+            ORDER_TOKEN_SECRET: 'inventory-test-order-token-secret-32-bytes',
             ORDER_STATUS_CALLBACK_SECRET: callbackSecret,
             PAYMENT_MODE: 'free',
             ALLOW_FREE_ORDERS: '1',
