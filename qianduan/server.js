@@ -445,9 +445,14 @@ function orderById(orderId) {
 function saveOrder(order) {
     const store = readOrderStore();
     const index = store.orders.findIndex((item) => item.orderId === order.orderId);
-    order.updatedAt = new Date().toISOString();
-    if (index >= 0) store.orders[index] = order;
-    else store.orders.push(order);
+    const savedOrder = {
+        ...(index >= 0 ? store.orders[index] : {}),
+        ...order,
+        updatedAt: new Date().toISOString()
+    };
+    Object.assign(order, savedOrder);
+    if (index >= 0) store.orders[index] = savedOrder;
+    else store.orders.push(savedOrder);
     store.orders.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     if (store.orders.length > 10000) store.orders.length = 10000;
     writeOrderStore(store);
@@ -809,10 +814,12 @@ async function reconcileOrderPayment(order, source = 'server-query') {
     const existing = paymentReconcilePromises.get(order.orderId);
     if (existing) return existing;
     const operation = (async () => {
-        const latest = orderById(order.orderId) || order;
+        let latest = orderById(order.orderId) || order;
         if (latest.paymentMode !== 'lyorder' || ['REFUNDED', 'REFUNDING'].includes(latest.paymentStatus)) return latest;
         if (!latest.externalOrderId) throw new Error('支付业务订单尚未创建');
         const payment = await paymentClient.query(latest.externalOrderId);
+        latest = orderById(order.orderId) || latest;
+        if (latest.paymentMode !== 'lyorder' || ['REFUNDED', 'REFUNDING'].includes(latest.paymentStatus)) return latest;
         latest.paymentTradeState = payment.tradeState;
         latest.paymentTradeStateDesc = payment.tradeStateDesc;
         latest.paymentLastCheckedAt = new Date().toISOString();

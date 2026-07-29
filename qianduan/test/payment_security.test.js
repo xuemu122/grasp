@@ -58,6 +58,20 @@ test('paid stock is reserved once and abandoned paid orders are refunded server-
     const refunds = [];
     const failedRefunds = new Set();
     const menuItems = [];
+    let firstPaymentQueryCaptured = false;
+    let releaseFirstPaymentQuery = null;
+    let releaseFirstNativePayment = null;
+    const sendNativePayment = (res, orderId) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ code: 0, data: { codeUrl: `weixin://pay/${orderId}` } }));
+    };
+    const sendPaymentQuery = (res, externalOrderId) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ code: 0, data: {
+            tradeState: tradeStates.get(externalOrderId) || 'NOTPAY',
+            totalAmount: totals.get(externalOrderId), currency: 'CNY'
+        } }));
+    };
     const paymentServer = http.createServer((req, res) => {
         const chunks = [];
         req.on('data', (chunk) => chunks.push(chunk));
@@ -88,17 +102,22 @@ test('paid stock is reserved once and abandoned paid orders are refunded server-
                 return;
             }
             if (req.method === 'POST' && req.url === '/api/WeChatPay/native') {
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ code: 0, data: { codeUrl: `weixin://pay/${body.orderId}` } }));
+                if (body.orderId === 'PAY-1' && !firstPaymentQueryCaptured) {
+                    releaseFirstNativePayment = () => sendNativePayment(res, body.orderId);
+                    return;
+                }
+                sendNativePayment(res, body.orderId);
                 return;
             }
             if (req.method === 'GET' && req.url.startsWith('/api/WeChatPay/query/')) {
                 const externalOrderId = decodeURIComponent(req.url.split('/').pop());
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ code: 0, data: {
-                    tradeState: tradeStates.get(externalOrderId) || 'NOTPAY',
-                    totalAmount: totals.get(externalOrderId), currency: 'CNY'
-                } }));
+                if (externalOrderId === 'PAY-1' && !firstPaymentQueryCaptured) {
+                    firstPaymentQueryCaptured = true;
+                    releaseFirstPaymentQuery = () => sendPaymentQuery(res, externalOrderId);
+                    if (releaseFirstNativePayment) releaseFirstNativePayment();
+                    return;
+                }
+                sendPaymentQuery(res, externalOrderId);
                 return;
             }
             if (req.method === 'POST' && req.url.startsWith('/api/WeChatPay/close/')) {
@@ -175,6 +194,17 @@ test('paid stock is reserved once and abandoned paid orders are refunded server-
     assert.match((await unsignedOrderError).message, /拒绝执行/);
 
     const first = await postJson(`${base}/api/orders/prepare`, { items: [{ id: 1, qty: 1 }] });
+    assert.equal(typeof releaseFirstPaymentQuery, 'function');
+    const qrBeforeStaleQuery = await fetch(`${base}${first.json.payment.qrImageUrl}`);
+    assert.equal(qrBeforeStaleQuery.status, 200);
+    releaseFirstPaymentQuery();
+    await waitFor(() => {
+        const order = JSON.parse(fs.readFileSync(ordersFile, 'utf8')).orders
+            .find((item) => item.orderId === first.json.orderId);
+        return order && order.paymentLastCheckedAt;
+    });
+    const qrAfterStaleQuery = await fetch(`${base}${first.json.payment.qrImageUrl}`);
+    assert.equal(qrAfterStaleQuery.status, 200);
     const second = await postJson(`${base}/api/orders/prepare`, { items: [{ id: 1, qty: 1 }] });
     const refundFailure = await postJson(`${base}/api/orders/prepare`, { items: [{ id: 1, qty: 1 }] });
     assert.equal(first.response.status, 200);
