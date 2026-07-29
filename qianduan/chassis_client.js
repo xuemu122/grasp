@@ -36,7 +36,7 @@ function extractJsonObject(buffer) {
 
 class ChassisClient {
     constructor({ host, port, timeoutMs = 10000 } = {}) {
-        this.host = host || '192.168.124.90';
+        this.host = host || '192.168.10.10';
         this.port = Number(port || 31001);
         this.timeoutMs = Number(timeoutMs);
     }

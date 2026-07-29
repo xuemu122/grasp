@@ -190,7 +190,7 @@ CHASSIS_SETTINGS_FILE = os.getenv(
     "CHASSIS_SETTINGS_FILE",
     os.path.join(os.path.dirname(__file__), "..", "qianduan", "data", "chassis_settings.json"),
 )
-DEFAULT_CHASSIS_PLACE_MARKER = os.getenv("CHASSIS_PLACE_MARKER", os.getenv("MARKER_PLACE", "yaojia1"))
+DEFAULT_CHASSIS_PLACE_MARKER = os.getenv("CHASSIS_PLACE_MARKER", os.getenv("MARKER_PLACE", "fangzhi"))
 
 
 def _layer_allows_low_z(layer_idx: Optional[int]) -> bool:
@@ -1010,7 +1010,7 @@ def load_chassis_place_settings():
             marker = str(settings.get("place_marker") or marker).strip()
     except Exception as exc:
         print(f"  [底盘放置][警告] 配置读取失败，使用默认值: {exc}")
-    return enabled, marker or "yaojia1"
+    return enabled, marker or "fangzhi"
 
 
 def chassis_at_place(marker):

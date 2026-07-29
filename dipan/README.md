@@ -480,7 +480,7 @@ Q     跳过/退出
 默认关闭，方便只调机械臂抓取和放置点。也可以启动前用环境变量默认开启：
 
 ```bash
-USE_CHASSIS_PLACE=1 MARKER_PLACE=place_point DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
+USE_CHASSIS_PLACE=1 MARKER_PLACE=fangzhi DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 ```
 
 开启后抓取完成流程会变为：
@@ -493,7 +493,7 @@ USE_CHASSIS_PLACE=1 MARKER_PLACE=place_point DOBOT_IP=192.168.5.1 python3 shelf_
 → 张手放置并停在放置点
 ```
 
-`MARKER_PLACE` 是底盘地图里的固定点名称，默认值是 `place_point`。
+`MARKER_PLACE` 是底盘地图里的固定点名称，当前默认值是 `fangzhi`。
 
 ## 第 4 层低位设置
 
@@ -547,7 +547,7 @@ DOBOT_IP=192.168.5.1 python3 hand_eye_calib.py
 ```bash
 cd /home/nvidia/grasp/dipan
 python3 move_robot.py           # 交互模式
-python3 move_robot.py yaojia1   # 去药架，默认等待到达
+python3 move_robot.py huojia1   # 去货架 1，默认等待到达
 python3 move_robot.py charge    # 去充电点，默认等待到达
 python3 move_robot.py place     # 去放置固定点，默认等待到达
 python3 move_robot.py place --no-wait
@@ -557,7 +557,7 @@ python3 move_robot.py cancel    # 取消移动
 底盘地址：
 
 ```text
-192.168.124.90:31001
+192.168.10.10:31001
 ```
 
 每次移动/取消后，脚本会额外调用：

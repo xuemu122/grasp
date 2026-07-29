@@ -193,7 +193,7 @@
                 <label class="toggle-control">
                     <span>放置点</span>
                     <select class="select-box" id="chassisPlaceMarker" onchange="updateChassisNavigationConfig()">
-                        <option value="yaojia1">yaojia1</option>
+                        <option value="fangzhi">fangzhi</option>
                     </select>
                 </label>
                 <span class="map-status" id="chassisMapStatus">尚未读取底盘地图</span>
@@ -421,7 +421,7 @@
         };
         let shelfLayers = {};
         let chassisMapData = { map: {}, markers: [] };
-        let chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'yaojia1' };
+        let chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'fangzhi' };
         let adminOrderPage = 1;
         let adminOrderTotalPages = 1;
 
@@ -671,26 +671,26 @@
             select.value = selected;
         }
 
-        function updateChassisPlaceMarkerOptions(selected = chassisNavigationConfig.place_marker || 'yaojia1') {
+        function updateChassisPlaceMarkerOptions(selected = chassisNavigationConfig.place_marker || 'fangzhi') {
             const select = document.getElementById('chassisPlaceMarker');
             if (!select) return;
             const markers = [...(chassisMapData.markers || [])].sort((a, b) =>
                 a.floor - b.floor || a.name.localeCompare(b.name, 'zh-CN'));
-            select.innerHTML = '<option value="yaojia1">yaojia1（默认）</option>';
+            select.innerHTML = '<option value="fangzhi">fangzhi（默认）</option>';
             for (const marker of markers) {
-                if (marker.name === 'yaojia1') continue;
+                if (marker.name === 'fangzhi') continue;
                 const option = document.createElement('option');
                 option.value = marker.name;
                 option.textContent = `${marker.name} (${marker.x.toFixed(2)}, ${marker.y.toFixed(2)})`;
                 select.appendChild(option);
             }
-            if (selected && !markers.some(marker => marker.name === selected) && selected !== 'yaojia1') {
+            if (selected && !markers.some(marker => marker.name === selected) && selected !== 'fangzhi') {
                 const option = document.createElement('option');
                 option.value = selected;
                 option.textContent = `${selected}（底盘当前未返回）`;
                 select.appendChild(option);
             }
-            select.value = selected || 'yaojia1';
+            select.value = selected || 'fangzhi';
         }
 
         async function loadChassisMap(forceRefresh = false) {
@@ -744,7 +744,7 @@
                 chassisNavigationConfig = {
                     navigation_enabled: Boolean(json.data?.navigation_enabled),
                     auto_return_charge: json.data?.auto_return_charge !== false,
-                    place_marker: json.data?.place_marker || 'yaojia1'
+                    place_marker: json.data?.place_marker || 'fangzhi'
                 };
                 toggle.checked = chassisNavigationConfig.navigation_enabled;
                 autoReturnToggle.checked = chassisNavigationConfig.auto_return_charge;
@@ -752,7 +752,7 @@
             } catch (error) {
                 toggle.checked = false;
                 autoReturnToggle.checked = true;
-                chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'yaojia1' };
+                chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'fangzhi' };
                 updateChassisPlaceMarkerOptions();
             } finally {
                 toggle.disabled = false;
@@ -778,7 +778,7 @@
                     body: JSON.stringify({
                         enabled,
                         auto_return_charge: autoReturnCharge,
-                        place_marker: placeMarker.value || 'yaojia1'
+                        place_marker: placeMarker.value || 'fangzhi'
                     })
                 });
                 const json = await readAdminJson(res, '底盘设置保存接口返回了无效数据');

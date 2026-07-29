@@ -11,13 +11,13 @@ import os
 import sys
 import time
 
-HOST = os.getenv("CHASSIS_HOST", os.getenv("MOVE_ROBOT_HOST", "192.168.124.90"))
+HOST = os.getenv("CHASSIS_HOST", os.getenv("MOVE_ROBOT_HOST", "192.168.10.10"))
 PORT = int(os.getenv("CHASSIS_PORT", os.getenv("MOVE_ROBOT_PORT", "31001")))
 
 # 目标点位名称
-MARKER_YAOJIA = "yaojia1"
+MARKER_SHELF = os.getenv("MARKER_SHELF", "huojia1")
 MARKER_CHARGE = "charge_point_1F_35744"
-MARKER_PLACE = os.getenv("MARKER_PLACE", "yaojia1")
+MARKER_PLACE = os.getenv("MARKER_PLACE", "fangzhi")
 DEFAULT_WAIT_TIMEOUT_S = int(os.getenv("MOVE_WAIT_TIMEOUT_S", "180"))
 MARKER_DISTANCE_TOLERANCE_M = float(os.getenv("CHASSIS_NAVIGATION_DISTANCE_TOLERANCE_M", "0.15"))
 MARKER_THETA_TOLERANCE_RAD = float(os.getenv("CHASSIS_NAVIGATION_THETA_TOLERANCE_RAD", "0.25"))
@@ -266,16 +266,6 @@ def main():
     args = [arg for arg in args if arg != "--check-only"]
     target = args[0] if args else None
 
-    if target and target not in ("yaojia1", "charge", "place", "cancel"):
-        print("用法:")
-        print("  python3 move_robot.py yaojia1   # 药架1, 默认等待到达")
-        print("  python3 move_robot.py charge    # 去充电桩, 默认等待到达")
-        print("  python3 move_robot.py place     # 去放置固定点, 默认等待到达")
-        print("  python3 move_robot.py place --no-wait")
-        print("  python3 move_robot.py cancel    # 取消当前任务")
-        print("  python3 move_robot.py           # 交互模式")
-        sys.exit(1)
-
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(10)
 
@@ -285,10 +275,6 @@ def main():
 
         if target == "cancel":
             cancel_move(sock)
-        elif target == "yaojia1":
-            result = move_to(sock, MARKER_YAOJIA, wait=wait)
-            if wait and result.get("move_done") is False:
-                sys.exit(2)
         elif target == "charge":
             if not MARKER_CHARGE:
                 print("错误: 充电桩点位名称未设置，请先编辑脚本填写 MARKER_CHARGE")
@@ -309,10 +295,14 @@ def main():
                 result = move_to(sock, MARKER_PLACE, wait=wait)
                 if wait and result.get("move_done") is False:
                     sys.exit(2)
+        elif target:
+            result = move_to(sock, target, wait=wait)
+            if wait and result.get("move_done") is False:
+                sys.exit(2)
         else:
             # 交互模式
             print("交互模式 (输入 q 退出):")
-            print(f"  1 - 去 {MARKER_YAOJIA}")
+            print(f"  1 - 去 {MARKER_SHELF}")
             print(f"  2 - 去充电桩 ({MARKER_CHARGE or '未设置'})")
             print(f"  3 - 去放置固定点 ({MARKER_PLACE or '未设置'})")
             print(f"  c - 取消任务")
@@ -321,7 +311,7 @@ def main():
                 if choice == "q":
                     break
                 elif choice == "1":
-                    move_to(sock, MARKER_YAOJIA)
+                    move_to(sock, MARKER_SHELF)
                 elif choice == "2":
                     if not MARKER_CHARGE:
                         print("错误: 充电桩点位名称未设置")

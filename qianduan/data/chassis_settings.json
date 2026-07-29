@@ -1,4 +1,5 @@
 {
   "navigation_enabled": true,
-  "place_marker": "yaojia1"
+  "auto_return_charge": true,
+  "place_marker": "fangzhi"
 }
