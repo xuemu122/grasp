@@ -320,6 +320,13 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
         (message) => message.type === 'error' && /shelf_layer/.test(message.message)
     );
     assert.match(layerError.message, /1\.\.10/);
+    assert.deepEqual(
+        collector.messages
+            .filter((message) => message.type === 'status' && message.status === 'returning'
+                && message.orderId === 'ORD-BAD-LAYER')
+            .map((message) => message.phase),
+        ['stowing', 'charging', 'settling']
+    );
 
     ws.send(JSON.stringify({
         type: 'grab',
@@ -331,6 +338,10 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
             && message.orderId === 'ORD-NO-MARKER'
     );
     assert.match(markerError.message, /未配置底盘点位/);
+    assert.ok(collector.messages.some((message) =>
+        message.type === 'status' && message.status === 'order-ready'
+        && message.orderId === 'ORD-NO-MARKER'
+    ));
 
     ws.send(JSON.stringify({
         type: 'grab',
@@ -347,6 +358,11 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
             && message.status === 'completed' && message.orderId === 'ORD-HAND-FAIL'),
         false
     );
+    assert.ok(collector.messages.some((message) =>
+        message.type === 'status' && message.status === 'order-ready'
+        && message.orderId === 'ORD-HAND-FAIL'
+        && /回到充电桩/.test(message.message)
+    ));
 
     ws.send('null');
     const objectError = await collector.waitFor(
@@ -425,16 +441,24 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
     assert.match(serverOutput, /已从签名凭证恢复货架层和底盘点位/);
     assert.deepEqual(commands, [
         '__stow_pose__',
+        '__stow_pose__',
+        '__stow_pose__',
         '__layer_2__',
         '灵巧手失败商品',
+        '__stow_pose__',
+        '__stow_pose__',
         '__layer_2__',
         '云端咖啡',
         '__layer_2__',
         '云端咖啡',
         '__stow_pose__'
     ]);
-    assert.equal(fakeChassis.commands.filter((command) => command.startsWith('/api/move?')).length, 2);
-    assert.ok(fakeChassis.commands.some((command) => command.includes('marker=charge_point_1F_35744')));
+    const chassisMoves = fakeChassis.commands.filter((command) => command.startsWith('/api/move?'));
+    assert.equal(chassisMoves.length, 5);
+    assert.equal(
+        chassisMoves.filter((command) => command.includes('marker=charge_point_1F_35744')).length,
+        3
+    );
     assert.equal(collector.messages.some((message) => message.type === 'robot_log'), false);
 
     const disableReturnResponse = await fetch(`http://127.0.0.1:${port}/api/chassis/navigation-config`, {

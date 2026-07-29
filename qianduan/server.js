@@ -117,6 +117,7 @@ let robotStowPromise = null;
 let robotPoweroffPromise = null;
 let robotShutdownPromise = null;
 let robotEmergencyPromise = null;
+let robotFailureRecoveryPromise = null;
 let robotPoweredOff = false;
 let robotEmergencyStopped = false;
 let robotFilterPreviewPromise = null;
@@ -2075,6 +2076,7 @@ function sendMessage(ws, message) {
 function currentRobotOperation() {
     if (robotEmergencyPromise) return { status: 'emergency-stopping', label: '正在执行急停' };
     if (robotEmergencyStopped) return { status: 'emergency-stopped', label: '急停已触发，请人工检查并重启后端' };
+    if (robotFailureRecoveryPromise) return { status: 'returning', label: '订单失败后正在收起并回充' };
     if (chassisNavigationPromise) return { status: 'chassis-moving', label: '底盘正在运动' };
     if (robotShutdownPromise) return { status: 'shutting-down', label: '机器人正在收起、断电并回充' };
     if (robotPoweroffPromise) return { status: 'powering-off', label: '机器人正在断电关闭' };
@@ -2114,6 +2116,9 @@ async function rejectOrderWithRefund(ws, msg, reason) {
             message = `${reason}；自动退款失败，请联系管理员：${refundError.message}`;
             log(`❌ 订单 ${orderId} 拒绝执行后的自动退款失败: ${refundError.message}`);
         }
+    }
+    if (orderId && !currentRobotOperation()) {
+        await recoverRobotAfterFailedOrder(ws, orderId, reason);
     }
     sendMessage(ws, { type: 'error', orderId: orderId || undefined, message, refundTriggered });
 }
@@ -2789,15 +2794,20 @@ async function handleGotoLayerCommand(ws, msg) {
     }
 }
 
-async function returnRobotToCharge(ws, orderId, autoReturnCharge = readChassisSettings().auto_return_charge) {
+async function returnRobotToCharge(
+    ws,
+    orderId,
+    autoReturnCharge = readChassisSettings().auto_return_charge,
+    { failed = false } = {}
+) {
     if (!ROBOT_GRASP_REAL) return;
     sendStatus(ws, 'returning', {
         orderId,
         progress: 99,
         phase: 'stowing',
-        message: '订单已拣选完成，机械臂正在收起...'
+        message: failed ? '订单未完成，机械臂正在安全收起...' : '订单已拣选完成，机械臂正在收起...'
     });
-    broadcastRobotStatus('stowing', '订单完成，机械臂正在收起');
+    broadcastRobotStatus('stowing', failed ? '订单失败恢复中，机械臂正在安全收起' : '订单完成，机械臂正在收起');
     await moveRobotToStowPose();
 
     if (!autoReturnCharge) {
@@ -2815,7 +2825,7 @@ async function returnRobotToCharge(ws, orderId, autoReturnCharge = readChassisSe
         orderId,
         progress: 99,
         phase: 'charging',
-        message: '机械臂已收起，底盘正在回充电桩...'
+        message: failed ? '失败恢复：机械臂已收起，底盘正在回充电桩...' : '机械臂已收起，底盘正在回充电桩...'
     });
     await navigateChassisToMarker(CHASSIS_CHARGE_MARKER, {
         arriveOnDocking: true,
@@ -2828,6 +2838,42 @@ async function returnRobotToCharge(ws, orderId, autoReturnCharge = readChassisSe
         message: `机器人已到达充电桩，等待 ${Math.round(ORDER_READY_CLOSE_DELAY_MS / 1000)} 秒后恢复点单...`
     });
     broadcastRobotStatus('returning', '机器人已到达充电桩，正在等待系统稳定');
+}
+
+async function recoverRobotAfterFailedOrder(ws, orderId, reason) {
+    if (!ROBOT_GRASP_REAL) return true;
+    if (robotFailureRecoveryPromise) return robotFailureRecoveryPromise;
+    robotFailureRecoveryPromise = (async () => {
+    try {
+        log(`🛟 订单 ${orderId} 未完成放置，开始安全收起并强制回充: ${reason}`);
+        await returnRobotToCharge(ws, orderId, true, { failed: true });
+        await sleep(ORDER_READY_CLOSE_DELAY_MS);
+        sendStatus(ws, 'order-ready', {
+            orderId,
+            message: '失败恢复完成：机械臂已收起并回到充电桩，可以继续点单',
+            progress: 100
+        });
+        log(`✅ 订单 ${orderId} 失败恢复完成，机械臂已收起并回到充电桩`);
+        return true;
+    } catch (error) {
+        const message = `订单失败后安全恢复失败：${error.message}`;
+        log(`❌ 订单 ${orderId} ${message}`);
+        sendStatus(ws, 'error', {
+            orderId,
+            message,
+            recoveryFailed: true,
+            originalFailure: reason
+        });
+        broadcastRobotStatus('standby', message);
+        return false;
+    }
+    })();
+    try {
+        return await robotFailureRecoveryPromise;
+    } finally {
+        robotFailureRecoveryPromise = null;
+        broadcastRobotStatus();
+    }
 }
 
 function resolveOrderItems(msg, orderId) {
@@ -2910,20 +2956,6 @@ async function handleGrabCommand(ws, msg) {
         return;
     }
 
-    const savedOrder = orderById(orderId);
-    if (savedOrder && savedOrder.paymentStatus !== 'PAID') {
-        sendMessage(ws, { type: 'error', message: '订单尚未支付，不能开始抓取' });
-        return;
-    }
-
-    let items;
-    let totalUnits;
-    try {
-        ({ items, totalUnits } = resolveOrderItems(msg, orderId));
-    } catch (error) {
-        await rejectOrderWithRefund(ws, msg, error.message);
-        return;
-    }
     const currentOperation = currentRobotOperation();
     if (currentOperation) {
         const message = activeOrderId === orderId
@@ -2936,6 +2968,21 @@ async function handleGrabCommand(ws, msg) {
             retryable: true,
             refundTriggered: false
         });
+        return;
+    }
+
+    const savedOrder = orderById(orderId);
+    if (savedOrder && savedOrder.paymentStatus !== 'PAID') {
+        sendMessage(ws, { type: 'error', message: '订单尚未支付，不能开始抓取' });
+        return;
+    }
+
+    let items;
+    let totalUnits;
+    try {
+        ({ items, totalUnits } = resolveOrderItems(msg, orderId));
+    } catch (error) {
+        await rejectOrderWithRefund(ws, msg, error.message);
         return;
     }
     try {
@@ -2996,6 +3043,9 @@ async function handleGrabCommand(ws, msg) {
                 failedOrder.postDeliveryError = e.message;
                 saveOrder(failedOrder);
             }
+        }
+        if (!fulfilled) {
+            await recoverRobotAfterFailedOrder(ws, orderId, e.message);
         }
         sendStatus(ws, 'error', { orderId, message: failureMessage, refundTriggered: !fulfilled });
     } finally {
