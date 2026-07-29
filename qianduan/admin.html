@@ -211,6 +211,7 @@
                 <select class="select-box" id="adminOrderStatus" onchange="loadAdminOrders(1)">
                     <option value="">全部状态</option>
                     <option value="PENDING_PAYMENT">待支付</option>
+                    <option value="PAYMENT_FAILED">支付创建失败</option>
                     <option value="PAID">已支付</option>
                     <option value="PROCESSING">抓取中</option>
                     <option value="COMPLETED">已完成</option>
@@ -798,7 +799,7 @@
         const adminOrderStatusLabels = {
             PENDING_PAYMENT: '待支付', PAID: '已支付', PROCESSING: '抓取中',
             COMPLETED: '已完成', REFUNDING: '退款中', REFUNDED: '已退款',
-            FAILED: '失败', CLOSED: '已关闭'
+            FAILED: '失败', PAYMENT_FAILED: '支付创建失败', CLOSED: '已关闭'
         };
 
         function adminOrderTime(value) {

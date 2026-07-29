@@ -46,9 +46,9 @@ test('paid stock is reserved once and abandoned paid orders are refunded server-
     const ordersFile = path.join(tempDir, 'orders.json');
     const callbackSecret = 'security-callback-secret-at-least-32-bytes';
     fs.writeFileSync(productsFile, JSON.stringify({ products: [
-        { id: 1, name: '最后一件', price: 10, stock: 1, status: 1, payment_menu_item_id: 101 },
-        { id: 2, name: '无人页面订单', price: 5, stock: 1, status: 1, payment_menu_item_id: 102 },
-        { id: 3, name: '主动取消订单', price: 6, stock: 1, status: 1, payment_menu_item_id: 103 }
+        { id: 1, name: '最后一件', spec: '测试规格', price: 10, stock: 1, status: 1 },
+        { id: 2, name: '无人页面订单', price: 5, stock: 1, status: 1 },
+        { id: 3, name: '主动取消订单', price: 6, stock: 1, status: 1 }
     ] }));
     t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
@@ -57,11 +57,27 @@ test('paid stock is reserved once and abandoned paid orders are refunded server-
     const totals = new Map();
     const refunds = [];
     const failedRefunds = new Set();
+    const menuItems = [];
     const paymentServer = http.createServer((req, res) => {
         const chunks = [];
         req.on('data', (chunk) => chunks.push(chunk));
         req.on('end', () => {
             const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+            if (req.method === 'GET' && req.url.startsWith('/api/MenuItem/list?')) {
+                const target = new URL(req.url, 'http://127.0.0.1');
+                const name = target.searchParams.get('name');
+                const items = menuItems.filter((item) => !name || item.name.includes(name));
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ code: 0, data: { items } }));
+                return;
+            }
+            if (req.method === 'POST' && req.url === '/api/MenuItem/create') {
+                const item = { ...body, id: 100 + menuItems.length };
+                menuItems.push(item);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ code: 0, data: item }));
+                return;
+            }
             if (req.method === 'POST' && req.url === '/api/Order/create') {
                 const externalOrderId = `PAY-${++sequence}`;
                 const totalPrice = body.items.reduce((sum, item) => sum + Number(item.unitPrice) * Number(item.quantity), 0);

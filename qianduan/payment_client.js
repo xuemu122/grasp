@@ -7,6 +7,7 @@ class PaymentClient {
         this.token = String(token || '');
         this.timeoutMs = Number(timeoutMs) || 15000;
         this.rejectUnauthorized = rejectUnauthorized !== false;
+        this.menuItemSyncs = new Map();
     }
 
     enabled() {
@@ -55,6 +56,64 @@ class PaymentClient {
             if (payload) req.write(payload);
             req.end();
         });
+    }
+
+    async ensureMenuItem({ deviceSn, productId, name, spec, unitPrice, stock }) {
+        const price = Math.round(Number(unitPrice) * 100);
+        if (!Number.isInteger(price) || price < 1) throw new Error(`商品 ${name} 的支付价格无效`);
+        const externalName = `机器人商品-${productId}-${name}${spec ? `（${spec}）` : ''}`;
+        const cacheKey = `${deviceSn}:\0${externalName}:\0${price}`;
+        if (this.menuItemSyncs.has(cacheKey)) return this.menuItemSyncs.get(cacheKey);
+
+        const sync = (async () => {
+            const query = new URLSearchParams({
+                page: '1',
+                size: '200',
+                name: externalName,
+                deviceSn
+            });
+            const listed = await this.request('GET', `/api/MenuItem/list?${query.toString()}`);
+            const listData = listed.data || listed.result || {};
+            const items = Array.isArray(listData) ? listData : (listData.items || []);
+            let menuItem = items.find((item) => String(item.name || '') === externalName);
+
+            if (!menuItem) {
+                const created = await this.request('POST', '/api/MenuItem/create', {
+                    name: externalName,
+                    description: `${name}${spec ? ` ${spec}` : ''}`,
+                    price,
+                    isActive: true,
+                    stock: Math.max(0, Number(stock) || 0),
+                    sortOrder: Number(productId) || 0,
+                    deviceSn,
+                    source: '抓取机器人'
+                });
+                menuItem = created.data || created.result || created;
+            } else if (Number(menuItem.price) !== price || menuItem.isActive === false) {
+                const updated = await this.request('POST', '/api/MenuItem/update', {
+                    id: Number(menuItem.id),
+                    name: externalName,
+                    description: `${name}${spec ? ` ${spec}` : ''}`,
+                    price,
+                    isActive: true,
+                    stock: Math.max(0, Number(stock) || 0),
+                    sortOrder: Number(productId) || 0,
+                    source: '抓取机器人'
+                });
+                menuItem = updated.data || updated.result || updated;
+            }
+
+            const id = Number(menuItem && menuItem.id);
+            if (!Number.isInteger(id) || id < 1) throw new Error(`支付系统未返回商品 ${name} 的有效菜品 ID`);
+            return id;
+        })();
+        this.menuItemSyncs.set(cacheKey, sync);
+        try {
+            return await sync;
+        } catch (error) {
+            this.menuItemSyncs.delete(cacheKey);
+            throw error;
+        }
     }
 
     async createBusinessOrder({ deviceSn, items }) {

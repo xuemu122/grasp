@@ -1,6 +1,8 @@
 window.GRASP_TEST_MODE = Boolean(window.GRASP_TEST_MODE)
     || window.location.pathname.endsWith('/test.html')
     || new URLSearchParams(window.location.search).get('mode') === 'free';
+const GRASP_API_BASE = window.GRASP_TEST_MODE ? '/test-api' : '/api';
+const graspApi = (pathname) => `${GRASP_API_BASE}${pathname}`;
 
 // ========== 全局状态 ==========
 let products = [];           // 所有商品
@@ -209,7 +211,7 @@ async function refreshCatalog() {
 // ========== 加载分类 ==========
 async function loadCategories(render = true) {
     try {
-        const res = await fetch('/api/categories');
+        const res = await fetch(graspApi('/categories'));
         const data = await res.json();
         if (data.code === 0) {
             categories = data.data || [];
@@ -224,7 +226,7 @@ async function loadCategories(render = true) {
 // ========== 加载商品 ==========
 async function loadProducts(render = true) {
     try {
-        const res = await fetch('/api/products');
+        const res = await fetch(graspApi('/products'));
         const data = await res.json();
         if (data.code === 0) {
             products = data.data || [];
@@ -529,7 +531,7 @@ async function submitOrder() {
 
     let prepared;
     try {
-        const res = await fetch('/api/orders/prepare', {
+        const res = await fetch(graspApi('/orders/prepare'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -612,7 +614,7 @@ async function submitOrder() {
 async function requestAutomaticRefund(orderId, completionToken, reason) {
     if (!orderId || !completionToken) return null;
     try {
-        const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/refund`, {
+        const res = await fetch(graspApi(`/orders/${encodeURIComponent(orderId)}/refund`), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ completionToken, reason })
@@ -689,7 +691,7 @@ async function waitForPayment(orderId, completionToken, payment, totalAmount) {
     const deadline = Date.now() + 10 * 60 * 1000;
     while (!paymentCancelled && Date.now() < deadline) {
         try {
-            const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/payment`, {
+            const res = await fetch(graspApi(`/orders/${encodeURIComponent(orderId)}/payment`), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 cache: 'no-store',
@@ -718,7 +720,7 @@ async function waitForPayment(orderId, completionToken, payment, totalAmount) {
     }
     if (paymentCancelled) {
         try {
-            await fetch(`/api/orders/${encodeURIComponent(orderId)}/cancel-payment`, {
+            await fetch(graspApi(`/orders/${encodeURIComponent(orderId)}/cancel-payment`), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 keepalive: true,
@@ -736,7 +738,7 @@ async function waitForPayment(orderId, completionToken, payment, totalAmount) {
 // ========== 货架层缓存加载 ==========
 async function loadShelfLayers() {
     try {
-        const res = await fetch('/api/shelf/layers');
+        const res = await fetch(graspApi('/shelf/layers'));
         const data = await res.json();
         if (data.code === 0) {
             shelfLayers = data.data || {};
@@ -807,7 +809,7 @@ async function onProductClick(productId, event) {
 
 // ========== 直接 HTTP 调用 goto-layer（返回 Promise，失败抛异常）==========
 async function gotoLayerDirect(productId, layerIndex) {
-    const res = await fetch('/api/robot/goto-layer', {
+    const res = await fetch(graspApi('/robot/goto-layer'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ productId })
@@ -834,7 +836,7 @@ async function gotoProductXYZ(product, label) {
 
     logWS(`📍 坐标兜底移动: [${pose.join(', ')}]`);
 
-    const res = await fetch('/api/robot/movel', {
+    const res = await fetch(graspApi('/robot/movel'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -861,7 +863,7 @@ async function gotoLayer(opts) {
 
     // 优先使用 HTTP API（更通用）
     try {
-        const res = await fetch('/api/robot/goto-layer', {
+        const res = await fetch(graspApi('/robot/goto-layer'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(opts)
