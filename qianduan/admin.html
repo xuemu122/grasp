@@ -343,10 +343,6 @@
                         <option value="">未设置</option>
                     </select>
                 </div>
-                <div class="form-group">
-                    <label>LyOrder 菜品 ID（正式支付必填）</label>
-                    <input type="number" min="1" step="1" class="form-input" id="formPaymentMenuItemId" placeholder="与支付系统 MenuItem ID 一致">
-                </div>
                 <div class="form-row-3">
                     <div class="form-group">
                         <label>X坐标</label>
@@ -1145,7 +1141,6 @@
                 document.getElementById('formLocation').value = p.location || '';
                 document.getElementById('formShelfLayer').value = String(parseShelfLayer(p.location) || '');
                 updateChassisMarkerOptions(p.chassis_marker || '');
-                document.getElementById('formPaymentMenuItemId').value = p.payment_menu_item_id || '';
                 document.getElementById('formShelfX').value = p.shelf_x || 0;
                 document.getElementById('formShelfY').value = p.shelf_y || 0;
                 document.getElementById('formShelfZ').value = p.shelf_z || 50;
@@ -1175,7 +1170,6 @@
             document.getElementById('formShelfZ').value = 50;
             document.getElementById('formShelfLayer').value = '';
                 updateChassisMarkerOptions('');
-                document.getElementById('formPaymentMenuItemId').value = '';
             document.getElementById('formStock').value = 100;
             document.getElementById('formStatus').value = 1;
             document.getElementById('formTitle').textContent = '➕ 新增商品';
@@ -1210,7 +1204,6 @@
                     document.getElementById('formShelfLayer').value
                 ),
                 chassis_marker: document.getElementById('formChassisMarker').value,
-                payment_menu_item_id: parseInt(document.getElementById('formPaymentMenuItemId').value) || null,
                 shelf_x: parseInt(document.getElementById('formShelfX').value) || 0,
                 shelf_y: parseInt(document.getElementById('formShelfY').value) || 0,
                 shelf_z: parseInt(document.getElementById('formShelfZ').value) || 50,

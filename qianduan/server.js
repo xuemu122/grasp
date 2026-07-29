@@ -1225,7 +1225,7 @@ const server = http.createServer(async (req, res) => {
                     spec: product.spec || '',
                     unitPrice,
                     lineTotal: Number((unitPrice * item.qty).toFixed(2)),
-                    paymentMenuItemId: Number(product.payment_menu_item_id || 0) || null,
+                    paymentMenuItemId: Number(product.payment_menu_item_id || product.id || 0) || null,
                     shelf_layer: parseLayerFromLocation(product.location),
                     chassis_marker: product.chassis_marker || null
                 };
@@ -1238,7 +1238,7 @@ const server = http.createServer(async (req, res) => {
             if (paymentMode === 'lyorder') {
                 for (const item of pricedItems) {
                     if (!Number.isInteger(item.paymentMenuItemId) || item.paymentMenuItemId < 1) {
-                        throw new Error(`商品 ${item.name} 未配置 LyOrder 菜品 ID`);
+                        throw new Error(`商品 ${item.name} 缺少有效商品 ID，无法创建支付订单`);
                     }
                 }
             }
@@ -1588,7 +1588,7 @@ const server = http.createServer(async (req, res) => {
             const products = readProducts();
             const index = products.findIndex((item) => String(item.id) === updateMatch[1]);
             if (index < 0) { sendJSON(res, { code: 1, message: '商品不存在' }, 404); return; }
-            const allowed = ['name','spec','packaging','category','manufacturer','photo_front','photo_back','location','chassis_marker','payment_menu_item_id','shelf_x','shelf_y','shelf_z','emoji','price','stock','status'];
+            const allowed = ['name','spec','packaging','category','manufacturer','photo_front','photo_back','location','chassis_marker','shelf_x','shelf_y','shelf_z','emoji','price','stock','status'];
             const patch = {};
             for (const key of allowed) {
                 if (body[key] !== undefined) {
