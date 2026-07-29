@@ -986,11 +986,17 @@ body {
 }
 
 .payment-qr-frame {
+    width: 304px;
+    height: 304px;
+    max-width: 76vw;
+    max-height: 76vw;
     width: min(304px, 76vw);
     width: min(304px, 76vw, 42dvh);
-    aspect-ratio: 1;
-    display: grid;
-    place-items: center;
+    height: min(304px, 76vw);
+    height: min(304px, 76vw, 42dvh);
+    display: flex;
+    align-items: center;
+    justify-content: center;
     margin: 18px auto;
     padding: 8px;
     border: 1px solid var(--gray-200);
@@ -1005,8 +1011,14 @@ body {
     }
 
     .payment-qr-frame {
+        width: 380px;
+        height: 380px;
+        max-width: 72vw;
+        max-height: 72vw;
         width: min(380px, 72vw);
         width: min(380px, 72vw, 42dvh);
+        height: min(380px, 72vw);
+        height: min(380px, 72vw, 42dvh);
     }
 }
 
