@@ -30,3 +30,4 @@ qianduan/*.log
 
 # Generated visual/debug artifacts
 dipan/calib_debug_*.png
+*.pt
