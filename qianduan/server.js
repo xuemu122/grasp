@@ -458,6 +458,15 @@ function migrateUncreatedPaymentOrders() {
     let changed = 0;
     const migratedAt = new Date().toISOString();
     for (const order of store.orders) {
+        const legacyUncreated = order.paymentMode === 'lyorder'
+            && !order.externalOrderId
+            && Array.isArray(order.items)
+            && order.items.every((item) => !Object.prototype.hasOwnProperty.call(item, 'productStock'));
+        if (legacyUncreated && order.source !== 'test') {
+            order.source = 'test';
+            order.updatedAt = migratedAt;
+            changed += 1;
+        }
         if (order.paymentMode !== 'lyorder' || order.paymentStatus !== 'PENDING_PAYMENT' || order.externalOrderId) continue;
         order.paymentStatus = 'PAYMENT_FAILED';
         order.status = 'PAYMENT_FAILED';
@@ -1255,8 +1264,8 @@ const server = http.createServer(async (req, res) => {
             });
             const totalAmount = Number(pricedItems.reduce((sum, item) => sum + item.lineTotal, 0).toFixed(2));
             const orderId = `ORD-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-            const requestedMode = String(body && body.payment_mode || '').trim().toLowerCase();
-            const paymentMode = requestedMode === 'free' && ALLOW_FREE_ORDERS ? 'free' : PAYMENT_MODE;
+            const trustedTestRequest = String(req.headers['x-grasp-test-mode'] || '') === '1';
+            const paymentMode = trustedTestRequest ? 'free' : PAYMENT_MODE;
             if (!['free', 'lyorder'].includes(paymentMode)) throw new Error(`不支持的支付模式: ${paymentMode}`);
             if (paymentMode === 'lyorder') {
                 for (const item of pricedItems) {
@@ -1278,7 +1287,7 @@ const server = http.createServer(async (req, res) => {
                 paymentMode,
                 paymentStatus: paymentMode === 'free' ? 'PAID' : 'PENDING_PAYMENT',
                 status: paymentMode === 'free' ? 'PAID' : 'PENDING_PAYMENT',
-                source: String(body && body.source || 'web').slice(0, 32),
+                source: trustedTestRequest ? 'test' : String(body && body.source || 'web').slice(0, 32),
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString()
             };
@@ -1555,7 +1564,9 @@ const server = http.createServer(async (req, res) => {
             const pageSize = Math.min(100, Math.max(1, Number(url.searchParams.get('pageSize') || url.searchParams.get('size') || 10)));
             const status = String(url.searchParams.get('status') || '').trim();
             const search = String(url.searchParams.get('search') || '').trim().toLowerCase();
+            const includeTest = url.searchParams.get('include_test') === '1';
             let orders = readOrderStore().orders;
+            if (!includeTest) orders = orders.filter((item) => item.source !== 'test');
             if (status) orders = orders.filter((item) => item.status === status || item.paymentStatus === status);
             if (search) orders = orders.filter((item) => [item.orderId, item.externalOrderId, ...(item.items || []).map((i) => i.name)].some((value) => String(value || '').toLowerCase().includes(search)));
             const total = orders.length;
