@@ -136,6 +136,22 @@ class PickCycleRoutingTests(unittest.TestCase):
         )
         go_to_layer.assert_not_called()
 
+    def test_stow_from_shelf_skips_place_transition(self):
+        transition = ([1, 2, 3, 4, 5, 6], "place-transition")
+        stow = ([7, 8, 9, 10, 11, 12], "stow")
+        arm = Mock()
+        arm.move_pose_safe.return_value = True
+
+        with (
+            patch.object(shelf_grasp, "MOTION_SETTLE_S", 0.0),
+            patch.object(shelf_grasp, "_stow_pose", stow),
+            patch.object(shelf_grasp, "_place_transition_pose", transition),
+            patch.object(shelf_grasp, "is_at_stow_pose", return_value=False),
+        ):
+            self.assertTrue(shelf_grasp.go_to_stow_pose(arm, from_shelf_pose=True))
+
+        arm.move_pose_safe.assert_called_once_with(stow[0], speed=80)
+
     def test_worker_product_name_passes_through(self):
         action, layer_entry_origin, target = shelf_grasp._handle_worker_command(
             "云端咖啡", Mock(), FakeHand(), None, None, None, shelf_grasp.LAYER_ENTRY_UNKNOWN
@@ -177,7 +193,7 @@ class PickCycleRoutingTests(unittest.TestCase):
                 "__layer_3__", arm, hand, None, None, None, origin
             )
 
-        stow.assert_called_once_with(arm)
+        stow.assert_called_once_with(arm, from_shelf_pose=True)
         stow_move.assert_called_once_with(arm, 3)
         direct_move.assert_not_called()
         unknown_move.assert_not_called()

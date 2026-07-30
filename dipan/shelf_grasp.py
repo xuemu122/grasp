@@ -961,8 +961,8 @@ def is_at_stow_pose(arm: "DobotArm", verbose=True):
     return matched
 
 
-def go_to_stow_pose(arm: "DobotArm"):
-    """从放置区优先经过渡点收起；没有过渡点时才经第2层避碰。"""
+def go_to_stow_pose(arm: "DobotArm", from_shelf_pose: bool = False):
+    """移动到收起姿态；已知在货架层时直接关节收起，避免多余过渡点。"""
     if _stow_pose is None:
         print("  [收起姿态] 未记录, 跳过。可用 u 菜单拖动记录")
         return False
@@ -970,7 +970,9 @@ def go_to_stow_pose(arm: "DobotArm"):
         print("  [收起姿态] 当前已经收起, 跳过机械臂运动")
         return True
 
-    if _place_transition_pose is not None:
+    if from_shelf_pose:
+        print("\n[收起姿态] 当前在货架层，直接关节收起，跳过放置过渡点 ...")
+    elif _place_transition_pose is not None:
         transition_pose, transition_name = _place_transition_pose
         print(f"\n[收起姿态] 经放置过渡点 {transition_name} 安全收起 ...")
         if not arm.move_pose_safe(
@@ -1091,7 +1093,7 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
         if chassis_at_place(place_marker):
             print(f"\n[底盘] 已在放置点 {place_marker}，直接执行机械臂放置")
         else:
-            if not go_to_stow_pose(arm):
+            if not go_to_stow_pose(arm, from_shelf_pose=current_layer_idx is not None):
                 print("  [停止] 底盘移动前未能到达收起姿态, 不调用底盘")
                 return False
             if not move_chassis_to_place(place_marker):
@@ -1298,7 +1300,7 @@ def _place_point_management(arm: "DobotArm"):
         print("  无效输入, 请输入 s / g / d / ts / tg / td / q")
 
 
-def _stow_pose_management(arm: "DobotArm"):
+def _stow_pose_management(arm: "DobotArm", from_shelf_pose: bool = False):
     """收起姿态管理子菜单: 记录、移动到、删除收起姿态"""
     global _stow_pose
 
@@ -1340,7 +1342,7 @@ def _stow_pose_management(arm: "DobotArm"):
             continue
 
         if choice == "g":
-            go_to_stow_pose(arm)
+            go_to_stow_pose(arm, from_shelf_pose=from_shelf_pose)
             return
 
         print("  无效输入, 请输入 s / g / d / q")
@@ -1438,7 +1440,7 @@ def _handle_worker_command(cmd, arm, hand, camera, locator, transformer, layer_e
 
     if cmd in ("__stow_pose__", "__safe_stow__"):
         print("[前端常驻模式] 收到底盘移动前安全收起指令", flush=True)
-        stowed = go_to_stow_pose(arm)
+        stowed = go_to_stow_pose(arm, from_shelf_pose=layer_entry_origin == LAYER_ENTRY_SHELF)
         if stowed:
             print("[前端常驻模式][完成] 已到达收起姿态", flush=True)
         else:
@@ -1447,7 +1449,7 @@ def _handle_worker_command(cmd, arm, hand, camera, locator, transformer, layer_e
 
     if cmd in ("**stow**", "__stow__", "__shutdown__"):
         print("[前端常驻模式] 收到收起指令")
-        go_to_stow_pose(arm)
+        go_to_stow_pose(arm, from_shelf_pose=layer_entry_origin == LAYER_ENTRY_SHELF)
         return "stow", False, None
 
     if cmd in ("__poweroff__", "__shutdown_power__"):
@@ -1810,7 +1812,7 @@ def main():
                 continue
 
             if cmd.lower() == "u":
-                _stow_pose_management(arm)
+                _stow_pose_management(arm, from_shelf_pose=layer_entry_origin == LAYER_ENTRY_SHELF)
                 continue
 
             if cmd.lower() == "b":
@@ -2418,7 +2420,7 @@ def main():
             print("[前端自动模式] 退出时不自动收起, 保持当前安全观察位/当前位置")
         else:
             try:
-                go_to_stow_pose(arm)
+                go_to_stow_pose(arm, from_shelf_pose=layer_entry_origin == LAYER_ENTRY_SHELF)
             except Exception as e:
                 print(f"[收起姿态] 退出前收起失败/跳过: {e}")
         if not SKIP_HAND:
