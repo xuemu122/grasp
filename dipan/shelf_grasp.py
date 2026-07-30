@@ -836,24 +836,21 @@ def go_to_layer_from_non_shelf_pose(arm: "DobotArm", layer_idx: int, visit_place
 
 
 def go_to_layer_from_stow(arm: "DobotArm", layer_idx: int):
-    """严格反向经过收起过渡点后再安全进层，禁止从折叠位直接做笛卡尔运动。"""
+    """从收起位直接关节运动到目标层，避免绕行放置过渡点。"""
     if not is_at_stow_pose(arm):
         print("  [收起位进层][中止] 当前位姿不再匹配收起位, 不发送运动命令")
         return False
-    if _place_transition_pose is None:
-        print("  [收起位进层][中止] 未记录放置过渡点, 不发送运动命令")
+    if layer_idx not in _shelf_layer_poses:
+        print(f"  [收起位进层][中止] 第{layer_idx}层未记录, 不发送运动命令")
         return False
 
-    transition_pose, transition_name = _place_transition_pose
-    print(f"\n[收起位进层] 先反向关节运动到 {transition_name} ...")
-    if not arm.move_pose_safe(
-        transition_pose,
-        joints=_place_transition_joints,
-        speed=80,
-    ):
-        print("  [收起位进层] 前往放置过渡点失败, 不继续进层")
+    pose, name = _shelf_layer_poses[layer_idx]
+    print(f"\n[收起位进层] 直接安全关节运动到第{layer_idx}层 ({name}) ...")
+    if not arm.move_pose_safe(pose, speed=80):
+        print(f"  [收起位进层] 直接前往第{layer_idx}层失败")
         return False
-    return go_to_layer_from_non_shelf_pose(arm, layer_idx, visit_place_transition=False)
+    time.sleep(MOTION_SETTLE_S)
+    return True
 
 
 def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: float = 120.0):

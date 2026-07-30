@@ -184,22 +184,21 @@ class PickCycleRoutingTests(unittest.TestCase):
         self.assertEqual((action, origin, target),
                          ("continue", shelf_grasp.LAYER_ENTRY_SHELF, None))
 
-    def test_stow_entry_reverses_to_transition_before_cartesian_motion(self):
+    def test_stow_entry_moves_directly_to_layer_without_place_transition(self):
         arm = Mock()
         transition = ([118, 535, 572, 109, 85, -167], "place-transition")
+        target = ([-443, 28, 80, 145, 85, -39], "layer-3")
         arm.move_pose_safe.return_value = True
         with (
+            patch.object(shelf_grasp, "MOTION_SETTLE_S", 0.0),
             patch.object(shelf_grasp, "_place_transition_pose", transition),
             patch.object(shelf_grasp, "_place_transition_joints", [1, 2, 3, 4, 5, 6]),
+            patch.object(shelf_grasp, "_shelf_layer_poses", {3: target}),
             patch.object(shelf_grasp, "is_at_stow_pose", return_value=True),
-            patch.object(shelf_grasp, "go_to_layer_from_non_shelf_pose", return_value=True) as enter_layer,
         ):
             self.assertTrue(shelf_grasp.go_to_layer_from_stow(arm, 3))
 
-        arm.move_pose_safe.assert_called_once_with(
-            transition[0], joints=[1, 2, 3, 4, 5, 6], speed=80
-        )
-        enter_layer.assert_called_once_with(arm, 3, visit_place_transition=False)
+        arm.move_pose_safe.assert_called_once_with(target[0], speed=80)
 
     def test_safe_layer_entry_fails_closed_when_pose_is_unreadable(self):
         arm = Mock()
