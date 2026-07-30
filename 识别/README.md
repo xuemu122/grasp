@@ -2,7 +2,7 @@
 
 本模块负责零售货架场景下的商品检测、商品身份解析、OCR 辅助识别、RGB-D 三维定位和货架位置映射。它是后续机械臂抓取流程的视觉入口。
 
-当前算法以 `dataset/yolo_rpc_test` 中的 RPC 200 类商品数据集为主要检测依据：YOLO 类别 ID 表示商品 SKU/商品类别身份，OCR 和商品词典作为辅助信息。
+当前算法以 `dataset/yolo_rpc_test` 中的现场 8 类商品数据集为主要检测依据：YOLO 类别 ID 表示商品身份，OCR 和商品词典作为辅助信息。
 
 ## 目录结构
 
@@ -20,9 +20,8 @@
 └── results/                          # 截图和JSON结果输出目录
 
 dataset/yolo_rpc_test/
-├── dataset.yaml                      # 完整 RPC 200 类 YOLO 数据集配置
-├── images/                           # 约 24000 张图片
-└── labels/                           # 约 24000 个标签文件
+├── images/                           # 580 张现场原图
+└── labels/                           # 580 个 YOLO 标签文件
 ```
 
 ## 算法目标
@@ -31,7 +30,7 @@ dataset/yolo_rpc_test/
 
 - RGB 图像
 - 可选深度图
-- YOLO 200 类商品检测权重
+- YOLO 8 类商品检测权重
 - 商品/货架映射配置
 
 输出：
@@ -49,7 +48,7 @@ dataset/yolo_rpc_test/
 ```text
 RealSense / OpenCV 取图
         ↓
-YOLO 200 类商品检测
+YOLO 8 类商品检测
         ↓
 检测框中心深度估计
         ↓
@@ -58,7 +57,7 @@ YOLO 200 类商品检测
 按间隔帧执行 OCR，并使用跨帧缓存
         ↓
 商品身份融合：
-  1. RPC YOLO class_id 作为主身份
+  1. YOLO class_id 作为主身份
   2. product_catalog 可做已知商品精确覆盖
   3. category_fallback_mapping 提供大类货架兜底
         ↓
@@ -93,7 +92,7 @@ YOLO 200 类商品检测
 优先级：
 
 ```text
-默认：YOLO RPC class_id -> product_id/product_name
+默认：YOLO class_id -> product_id/product_name
 可选：OCR product_catalog 匹配
 兜底：category_fallback_mapping / yolo_fallback_mapping
 ```
@@ -105,7 +104,7 @@ matching:
   prefer_ocr_over_yolo: false
 ```
 
-原因是当前数据集是 200 类 SKU 检测集，YOLO 类别本身已经是主要商品身份。如果将 OCR 放在最高优先级，容易因包装文字、规格数字等误覆盖 YOLO 结果。
+原因是当前数据集的 8 个 YOLO 类别已经对应具体商品。如果将 OCR 放在最高优先级，容易因包装文字、规格数字等误覆盖 YOLO 结果。
 
 ### `RetailProductLocatorSystem`
 
@@ -133,17 +132,17 @@ ShelfMappingManager = ProductMappingManager
 
 | 字段 | 说明 |
 |------|------|
-| `class_id` | YOLO 类别 ID，RPC 数据集范围为 0-199 |
-| `class_name` | YOLO 类别名，例如 `甜点`、`drink` |
+| `class_id` | YOLO 类别 ID，当前范围为 0-7 |
+| `class_name` | YOLO 类别名，例如 `农夫山泉`、`雪碧` |
 | `confidence` | YOLO 置信度 |
 | `bbox` | 检测框 `(x1, y1, x2, y2)` |
 | `center_pixel` | 检测框中心像素 |
 | `depth_m` | 中心区域深度，中位数，单位米 |
 | `camera_xyz` | 相机坐标系三维坐标 |
-| `product_id` | 商品 ID，例如 `rpc_063` |
-| `product_name` | 商品名，例如 `甜点 #64` |
+| `product_id` | 商品 ID，例如 `rpc_000` |
+| `product_name` | 商品名，例如 `农夫山泉 #1` |
 | `category` | 商品大类 |
-| `package_type` | 包装形态，当前 RPC 类别中通常为空 |
+| `package_type` | 包装形态，未配置时为空 |
 | `ocr_text` | OCR 文本 |
 | `mapping_source` | 映射来源，如 `yolo_class`、`ocr`、`yolo_fallback` |
 | `match_confidence` | 商品身份匹配置信度 |
@@ -153,15 +152,15 @@ ShelfMappingManager = ProductMappingManager
 
 ### 1. YOLO 作为主身份
 
-`dataset/yolo_rpc_test` 是 200 类商品数据集，类别 ID 代表 SKU/商品类别编号。
+`dataset/yolo_rpc_test` 是现场采集的 8 类商品数据集，类别 ID 直接代表商品。
 
 示例：
 
 ```text
-class_id = 63
-class_name = 甜点
-product_id = rpc_063
-product_name = 甜点 #64
+class_id = 0
+class_name = 农夫山泉
+product_id = rpc_000
+product_name = 农夫山泉 #1
 mapping_source = yolo_class
 ```
 
@@ -215,17 +214,17 @@ matching:
   prefer_ocr_over_yolo: true
 ```
 
-不建议在 200 类模型稳定时开启该选项，除非 OCR 词典已经足够完整且经过验证。
+不建议在当前 8 类模型稳定时开启该选项，除非 OCR 词典已经足够完整且经过验证。
 
 ### 4. 大类货架兜底
 
-RPC 类别名通常为“大类 + 编号”，例如：
+当前类别名是具体商品，例如：
 
 ```text
-膨化食品 #1
-甜点 #64
-drink #82
-纸巾 #174
+农夫山泉
+冰红茶
+可口可乐
+雪碧
 ```
 
 因此 `category_fallback_mapping` 用大类给默认货架层：
@@ -253,22 +252,22 @@ dataset/yolo_rpc_test
 
 | 项目 | 数量 |
 |------|------|
-| 类别数 | 200 |
-| 图片数 | 约 24000 |
-| 标签文件数 | 约 24000 |
-| 标注框数 | 约 294333 |
-| 有标注类别 | 200 |
+| 类别数 | 8 |
+| 图片数 | 580 |
+| 标签文件数 | 580 |
+| 标注框数 | 2843 |
+| 有标注类别 | 8 |
 
 配置文件：
 
-- [dataset/yolo_rpc_test/dataset.yaml](../dataset/yolo_rpc_test/dataset.yaml)
 - [识别/madata.yaml](./madata.yaml)
+- 增强后：[dataset/yolo_rpc_test_oa_mix/dataset.yaml](../dataset/yolo_rpc_test_oa_mix/dataset.yaml)
 
 注意：
 
-- 当前 `train`、`val`、`test` 都指向同一 `images` 目录。
-- 正式评估前建议拆分训练集、验证集和测试集。
-- 如果直接使用同一目录评估，指标会偏乐观。
+- 原始目录未拆分，仅作为增强脚本的输入池。
+- `oa_mix_augment_yolo.py` 按原图族自动拆分，当前增强结果为 461/60/59 张源图。
+- 训练、验证和测试分别使用增强结果中的 `train/images`、`val/images`、`test/images`。
 
 ## 运行方式
 
@@ -300,7 +299,7 @@ cd /home/nvidia/grasp/识别
 ```text
 识别/best.pt
 识别/shelf_mapping.yaml
-dataset/yolo_rpc_test/dataset.yaml
+识别/madata.yaml
 ```
 
 当前默认显示阈值较低，便于排查新模型召回：
@@ -423,19 +422,19 @@ JSON 示例：
 yolo detect train data=识别/madata.yaml model=yolov8n.pt imgsz=640 epochs=100
 ```
 
-复杂光照/塑料瓶反光场景可以先生成一版 OA-DG 思路的对象感知增强数据集，再训练：
+复杂光照/塑料瓶反光场景可以先生成一版 OA-DG 思路的对象感知增强数据集。脚本会按原图分组自动划分 `train/val/test`，同一原图的增强副本不会跨集合：
 
 ```bash
-python3 识别/oa_mix_augment_yolo.py --data 识别/madata.yaml --classes 70-77,80-86 --copies 3 --include-original
+python3 识别/oa_mix_augment_yolo.py --data 识别/madata.yaml --copies 3 --include-original --overwrite
 yolo detect train data=/home/nvidia/grasp/dataset/yolo_rpc_test_oa_mix/dataset.yaml model=yolov8n.pt imgsz=640 epochs=100
 ```
 
-`--classes` 用来优先增强饮料/塑料瓶类；如果想所有类别都做对象感知增强，可以去掉这个参数。
+`--classes` 可限制需要增强的类别 ID，例如 `--classes 0,1,7`。不传时增强全部类别；若指定类别与标签不相交，脚本会直接报错而不是生成空数据集。默认划分比例为 `0.8,0.1,0.1`，可通过 `--split` 修改。
 
 建议：
 
-- 先拆分 `train/val/test`，不要三个阶段共用同一目录。
-- 200 类商品检测建议优先保证每类样本均衡。
+- 使用生成的 `dataset.yaml`，不要直接用未拆分的原始图片目录训练和评估。
+- 类别 2 和类别 5 样本很少，后续采集应优先补充这两类。
 - 如果部署在 Jetson Orin，可优先尝试 `yolov8n` 或 `yolov8s`。
 - 商品密集货架建议关注小目标召回率。
 
@@ -455,7 +454,7 @@ yolo detect train data=/home/nvidia/grasp/dataset/yolo_rpc_test_oa_mix/dataset.y
 
 4. **OCR 不是主要身份来源**
    
-   在 RPC 200 类检测模型下，OCR 默认不覆盖 YOLO 类别。若需要真实品牌/SKU 文本，需要扩展商品词典或引入视觉检索/条码识别。
+   在当前 8 类检测模型下，OCR 默认不覆盖 YOLO 类别。若需要区分更多规格，需要扩展类别、商品词典或引入条码识别。
 
 5. **货架位置是配置兜底**
    
