@@ -29,7 +29,8 @@ SHELF_BOARD_OBJECT_MARGIN_M = float(os.getenv("SHELF_BOARD_OBJECT_MARGIN_M", "0.
 SHELF_BOARD_ROW_MARGIN_PX = int(os.getenv("SHELF_BOARD_ROW_MARGIN_PX", "8"))
 MAX_GRASP_DEPTH_M = float(os.getenv("MAX_GRASP_DEPTH_M", "0.52"))  # 超过此深度的物品不抓取，避免碰撞
 ALLOW_NO_DEPTH_GRASP = os.getenv("ALLOW_NO_DEPTH_GRASP", "0").lower() in ("1", "true", "yes", "on")
-FORCE_SIDE_GRASP = os.getenv("FORCE_SIDE_GRASP", "0").lower() in ("1", "true", "yes", "on")
+# Temporary field policy: prefer side grasps for every product unless explicitly disabled.
+FORCE_SIDE_GRASP = os.getenv("FORCE_SIDE_GRASP", "1").lower() in ("1", "true", "yes", "on")
 
 
 def axis_aligned_approach_m(current_xyz_m, grasp_xyz_m, forward_dir, min_backoff_m):

@@ -25,6 +25,7 @@ from orbbec_detect import _assess_lighting
 from aero_gripper import AeroGripper
 from dobot_arm import DobotArm, _clamp_cp
 from grasp_planner import (
+    FORCE_SIDE_GRASP,
     TARGET_ROI_Y_MIN,
     TARGET_ROI_Y_MAX,
     axis_aligned_approach_m,
@@ -121,6 +122,7 @@ SHELF_GRASP_AUTO_ONCE = os.getenv("SHELF_GRASP_AUTO_ONCE", "0").lower() in ("1",
 SHELF_GRASP_WORKER = os.getenv("SHELF_GRASP_WORKER", "0").lower() in ("1", "true", "yes", "on")
 SHELF_GRASP_IDLE_STARTUP = os.getenv("SHELF_GRASP_IDLE_STARTUP", "0").lower() in ("1", "true", "yes", "on")
 SAVE_DEBUG_IMAGES = os.getenv("SAVE_DEBUG_IMAGES", "0").lower() in ("1", "true", "yes", "on")
+FAILURE_DIAGNOSTIC_PATH = os.getenv("SHELF_FAILURE_DIAGNOSTIC_PATH", "/tmp/shelf_failure_latest.jpg")
 LAYER_ENTRY_SHELF = "shelf"
 LAYER_ENTRY_STOW = "stow"
 LAYER_ENTRY_UNKNOWN = "unknown"
@@ -1527,6 +1529,55 @@ def _stable_target_seen(frame_detections, target_query):
     return any(len(track["items"]) >= DETECTION_EARLY_STOP_SUPPORT for track in tracks)
 
 
+def _draw_failure_diagnostic(image, detections=(), target=None, grip_pixel=None):
+    """Draw the latest boxes and planned grip point for post-failure inspection."""
+    if image is None:
+        return None
+    viz = image.copy()
+    for detection in detections or ():
+        bbox = tuple(int(round(value)) for value in detection.bbox)
+        is_target = target is not None and detection.class_id == target.class_id \
+            and _bbox_iou(detection.bbox, target.bbox) >= DETECTION_STABILITY_IOU
+        color = (0, 0, 255) if is_target else (0, 255, 0)
+        cv2.rectangle(viz, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color, 2)
+        confidence = float(getattr(detection, "confidence", 0.0) or 0.0)
+        cv2.putText(
+            viz,
+            f"id={detection.class_id} {confidence:.2f}",
+            (bbox[0], max(14, bbox[1] - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            color,
+            1,
+        )
+    if grip_pixel is not None:
+        gx, gy = int(round(grip_pixel[0])), int(round(grip_pixel[1]))
+        cv2.circle(viz, (gx, gy), 6, (0, 255, 255), -1)
+        cv2.putText(viz, "GRIP", (gx + 8, gy - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+    return viz
+
+
+def _save_failure_diagnostic(image):
+    if image is None:
+        return None
+    try:
+        os.makedirs(os.path.dirname(FAILURE_DIAGNOSTIC_PATH) or ".", exist_ok=True)
+        if cv2.imwrite(FAILURE_DIAGNOSTIC_PATH, image):
+            return FAILURE_DIAGNOSTIC_PATH
+    except Exception as exc:
+        print(f"[失败诊断图][警告] 保存失败: {exc}")
+    return None
+
+
+def _clear_failure_diagnostic():
+    try:
+        os.remove(FAILURE_DIAGNOSTIC_PATH)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(f"[失败诊断图][警告] 无法清理旧文件: {exc}")
+
+
 def main():
     global _current_layer_idx
 
@@ -1544,6 +1595,7 @@ def main():
         f"{'启用' if DEPTH_GUARD_CAMERA_ENABLE else '关闭'}"
     )
     print(f"  手势模式: {HAND_GRASP_MODE}")
+    print(f"  抓取策略: {'临时强制全部侧抓' if FORCE_SIDE_GRASP else '按物体尺寸自动选择'}")
     print(f"  目标商品: {TARGET_PRODUCT_QUERY or '未指定'}")
     if SHELF_GRASP_WORKER:
         print("  前端常驻模式: 保持使能, 等待 stdin 商品名; __stow__ 后收起并退出")
@@ -1633,10 +1685,14 @@ def main():
         auto_attempt_succeeded = False
         worker_stow_requested = False
         worker_poweroff_requested = False
+        latest_failure_image = None
         # 待机启动时不知道机械臂当前位于哪条已规划路径上，禁止直接横移进层。
         layer_entry_origin = LAYER_ENTRY_UNKNOWN if SHELF_GRASP_IDLE_STARTUP else LAYER_ENTRY_SHELF
 
         def worker_fail(message: str):
+            diagnostic_path = _save_failure_diagnostic(latest_failure_image)
+            if diagnostic_path:
+                print(f"[失败诊断图] {diagnostic_path}", flush=True)
             if SHELF_GRASP_WORKER:
                 print(f"[前端常驻模式][失败] {message}", flush=True)
 
@@ -1802,6 +1858,10 @@ def main():
                 target_query = cmd
                 print(f"  [目标] 本次/后续按关键词抓取: {target_query}")
 
+            # Never reuse a previous order's image when this attempt has no valid camera frame.
+            latest_failure_image = None
+            _clear_failure_diagnostic()
+
             # ── 获取当前法兰位姿 ──
             flange_pose = arm.get_pose()
             print(f"当前法兰: ({flange_pose[0]:.0f}, {flange_pose[1]:.0f}, {flange_pose[2]:.0f})mm "
@@ -1846,7 +1906,10 @@ def main():
                 worker_fail("相机未就绪")
                 continue
 
+            latest_failure_image = best_img.copy()
+
             detections, tracks = _fuse_detection_tracks(frame_detections, DETECTION_STABILITY_IOU)
+            latest_failure_image = _draw_failure_diagnostic(best_img, detections)
             if tracks:
                 stable = sorted(
                     tracks,
@@ -1903,7 +1966,7 @@ def main():
             _print_target_filter_result(target_query, detections, target_detections)
             if target_query and not target_detections:
                 if SHELF_GRASP_WORKER:
-                    print(f"[前端常驻模式][失败] 未找到目标: {target_query}", flush=True)
+                    worker_fail(f"未找到目标: {target_query}")
                     continue
                 if SHELF_GRASP_AUTO_ONCE:
                     raise RuntimeError(f"前端自动模式未找到目标: {target_query}")
@@ -1918,7 +1981,7 @@ def main():
             if target is None:
                 print("无法确定目标")
                 if SHELF_GRASP_WORKER:
-                    print("[前端常驻模式][失败] 无法确定目标", flush=True)
+                    worker_fail("无法确定目标")
                     continue
                 if SHELF_GRASP_AUTO_ONCE:
                     raise RuntimeError("前端自动模式无法确定目标")
@@ -1952,6 +2015,7 @@ def main():
                 target, edge, transformer, flange_pose, fx=camera.fx, camera=camera, depth_img=best_depth
             )
             print(f"抓取点 ({grip_mode}): ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
+            latest_failure_image = _draw_failure_diagnostic(best_img, detections, target, grip_pixel)
 
             if SAVE_DEBUG_IMAGES:
                 # 重新画正确的抓取点 (覆盖上面简单画的黄点)

@@ -1,6 +1,9 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import ANY, Mock, call, patch
 
+import grasp_planner
 import shelf_grasp
 
 
@@ -17,6 +20,40 @@ class FakeHand:
 
 
 class PickCycleRoutingTests(unittest.TestCase):
+    def test_temporary_policy_forces_wide_products_to_side_grasp(self):
+        detection = Mock(depth_m=0.5, bbox=(10, 20, 130, 180))
+        transformer = Mock(fy=390.4)
+        transformer.pixel_to_camera.side_effect = (
+            lambda u, v, depth: shelf_grasp.np.array([u / 1000.0, v / 1000.0, depth])
+        )
+        transformer.camera_to_robot.side_effect = (
+            lambda point, flange_pose, debug=False: shelf_grasp.np.array([point[0], point[1], -point[1]])
+        )
+        with patch.object(grasp_planner, "FORCE_SIDE_GRASP", True):
+            result = grasp_planner.plan_edge_grasp(
+                detection, "right", transformer, [0, 0, 0, 0, 0, 0]
+            )
+
+        self.assertEqual(result[3], "right_side")
+
+    def test_failure_diagnostic_is_written_to_configured_tmp_path(self):
+        image = shelf_grasp.np.zeros((48, 64, 3), dtype=shelf_grasp.np.uint8)
+        detection = Mock(class_id=3, confidence=0.91, bbox=(8, 9, 40, 42))
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "failure.jpg"
+            with patch.object(shelf_grasp, "FAILURE_DIAGNOSTIC_PATH", str(output)):
+                diagnostic = shelf_grasp._draw_failure_diagnostic(
+                    image, [detection], detection, (24, 26)
+                )
+                result = shelf_grasp._save_failure_diagnostic(diagnostic)
+
+            self.assertEqual(result, str(output))
+            self.assertTrue(output.is_file())
+            self.assertGreater(output.stat().st_size, 0)
+            with patch.object(shelf_grasp, "FAILURE_DIAGNOSTIC_PATH", str(output)):
+                shelf_grasp._clear_failure_diagnostic()
+            self.assertFalse(output.exists())
+
     def run_cycle(self, layer_idx):
         hand = FakeHand()
         transfer_calls = []
