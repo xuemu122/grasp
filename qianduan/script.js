@@ -400,7 +400,8 @@ function addToCart(productId, event) {
 }
 
 // ========== 修改数量 ==========
-function changeQty(productId, delta) {
+function changeQty(productId, delta, event) {
+    if (event) event.stopPropagation();
     if (!cart[productId]) return;
     cart[productId] += delta;
     if (cart[productId] <= 0) delete cart[productId];
@@ -444,7 +445,8 @@ function handleCartKeydown(event) {
 
 document.addEventListener('click', (event) => {
     const sidebar = document.getElementById('cartSidebar');
-    if (!sidebar || sidebar.contains(event.target)) return;
+    const clickPath = typeof event.composedPath === 'function' ? event.composedPath() : [];
+    if (!sidebar || sidebar.contains(event.target) || clickPath.includes(sidebar)) return;
     sidebar.classList.remove('is-open');
     const header = sidebar.querySelector('.cart-header');
     if (header) {
@@ -504,9 +506,9 @@ function updateCartUI() {
                     <div class="cart-item-price">¥${Number(item.price).toFixed(2)}</div>
                 </div>
                 <div class="cart-item-controls">
-                    <button class="btn-qty" onclick="changeQty('${item.id}', -1)">−</button>
+                    <button type="button" class="btn-qty" aria-label="减少商品数量" onclick="changeQty('${item.id}', -1, event)">−</button>
                     <span class="qty-num">${item.qty}</span>
-                    <button class="btn-qty" onclick="changeQty('${item.id}', 1)">+</button>
+                    <button type="button" class="btn-qty" aria-label="增加商品数量" onclick="changeQty('${item.id}', 1, event)">+</button>
                 </div>
             </div>
         `).join('');

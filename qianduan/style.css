@@ -596,8 +596,8 @@ body {
     position: fixed;
     top: 86px;
     right: max(24px, calc((100vw - 1440px) / 2 + 24px));
-    width: 56px;
-    max-height: 56px;
+    width: 64px;
+    max-height: 64px;
     overflow: hidden;
     z-index: 50;
     transition: width 0.25s ease, max-height 0.25s ease, box-shadow 0.3s;
@@ -649,11 +649,18 @@ body {
     justify-content: center;
     padding: 14px 12px;
     border-bottom: 1px solid transparent;
-    cursor: default;
+    cursor: pointer;
+    touch-action: manipulation;
     user-select: none;
     gap: 0;
     flex-shrink: 0;
     transition: padding 0.25s ease, border-color 0.25s ease, justify-content 0.25s ease;
+}
+
+.cart-icon {
+    flex-shrink: 0;
+    font-size: 2rem;
+    line-height: 1;
 }
 
 .cart-header:hover {
@@ -845,12 +852,12 @@ body {
 }
 
 .btn-qty {
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
     border: 1px solid var(--gray-300);
     background: #fff;
-    font-size: 0.9rem;
+    font-size: 1.25rem;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -858,6 +865,7 @@ body {
     transition: all 0.2s;
     color: var(--gray-600);
     font-weight: 600;
+    touch-action: manipulation;
 }
 
 .btn-qty:hover {
@@ -1187,7 +1195,7 @@ body {
 
     .cart-sidebar:hover,
     .cart-sidebar.is-open {
-        width: 280px;
+        width: 320px;
     }
 }
 
@@ -1212,8 +1220,8 @@ body {
         bottom: 16px;
         right: 16px;
         left: auto;
-        width: 56px;
-        max-height: 56px;
+        width: 64px;
+        max-height: 64px;
         border-radius: var(--radius-lg);
         margin-left: auto;
     }
