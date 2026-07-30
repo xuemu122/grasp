@@ -98,6 +98,8 @@ class AeroGripper:
         self._hold_max_errors = max(1, int(os.getenv("AERO_HOLD_MAX_ERRORS", "5")))
         self._hold_log_interval_s = max(0.0, float(os.getenv("AERO_HOLD_LOG_INTERVAL_S", "10")))
         self._hold_pose = None
+        self._hold_monitor = None
+        self._hold_grip_ok = True
         self._hold_lock = threading.Lock()
         self._hold_stop = threading.Event()
         self._hold_thread = None
@@ -123,6 +125,7 @@ class AeroGripper:
         stop_event = stop_event or self._hold_stop
         period = 1.0 / self._hold_hz
         next_tick = time.monotonic() + period
+        next_check = time.monotonic()
         consecutive_errors = 0
         last_log = time.monotonic()
         while True:
@@ -131,6 +134,7 @@ class AeroGripper:
             next_tick += period
             with self._hold_lock:
                 pose = self._hold_pose[:] if self._hold_pose is not None else None
+                monitor = self._hold_monitor
             if pose is None or not self.ok:
                 continue
             try:
@@ -159,17 +163,139 @@ class AeroGripper:
                     stop_event.set()
                     print("[Aero] 抓取姿态保持连续失败, 已禁用灵巧手")
                     return
+
+            now = time.monotonic()
+            if monitor is not None and now >= next_check and not stop_event.is_set():
+                next_check = now + monitor["interval_s"]
+                try:
+                    currents = self._read_currents(
+                        samples=monitor["samples"],
+                        delay_s=monitor["sample_delay_s"],
+                    )
+                    if currents is None:
+                        monitor["read_failures"] += 1
+                        if monitor["read_failures"] == 1 or monitor["read_failures"] % 10 == 0:
+                            print(
+                                f"[Aero][警告] 保持电流读取失败 "
+                                f"({monitor['read_failures']} 次)"
+                            )
+                    else:
+                        monitor["read_failures"] = 0
+                        with self._hold_lock:
+                            if self._hold_monitor is monitor and self._hold_pose is not None:
+                                updated, events, weak_at_max = self._tighten_hold_pose(
+                                    self._hold_pose[:],
+                                    currents,
+                                    monitor,
+                                )
+                                self._hold_pose = updated
+                                self._hold_grip_ok = not weak_at_max
+                            else:
+                                events = []
+                        for event in events:
+                            print(event)
+                except Exception as e:
+                    print(f"[Aero][警告] 保持电流检测失败: {e}")
             if time.monotonic() - next_tick > period * 4:
                 # Do not spin after a long serial/OS stall; resume from now.
                 next_tick = time.monotonic() + period
 
-    def _start_hold(self, pose):
+    @staticmethod
+    def _tighten_hold_pose(pose, currents, monitor):
+        """Return a slightly tighter pose when sustained contact load drops."""
+        abs_curr = [abs(float(value)) for value in currents]
+        baseline_abs = [abs(float(value)) for value in monitor["baseline"]]
+        events = []
+        for idx in monitor["joints"]:
+            command = float(pose[idx])
+            if monitor["profile"]:
+                _, empty_abs = _profile_abs_envelope(
+                    monitor["profile"],
+                    command,
+                    monitor["profile_window_deg"],
+                )
+                load_ma = max(0.0, abs_curr[idx] - float(empty_abs[idx]))
+                firm = load_ma >= monitor["min_extra_ma"]
+                load_label = f"余量={load_ma:.0f}mA"
+            else:
+                delta_ma = max(0.0, abs_curr[idx] - baseline_abs[idx])
+                firm = delta_ma >= monitor["min_extra_ma"] or abs_curr[idx] >= monitor["abs_ma"]
+                load_label = f"增量={delta_ma:.0f}mA abs={abs_curr[idx]:.0f}mA"
+
+            if firm:
+                monitor["low_counts"][idx] = 0
+                monitor["weak_at_max"].discard(idx)
+                monitor["warned_at_max"].discard(idx)
+                continue
+
+            monitor["low_counts"][idx] += 1
+            if monitor["low_counts"][idx] < monitor["consecutive"]:
+                continue
+            monitor["low_counts"][idx] = 0
+
+            if command < monitor["max_cmd"] - 1e-6:
+                tightened = min(monitor["max_cmd"], command + monitor["step"])
+                pose[idx] = tightened
+                events.append(
+                    f"[Aero] 保持补紧: {idx}:{COMPACT_NAMES[idx]} "
+                    f"{command:.0f}°→{tightened:.0f}° ({load_label})"
+                )
+            else:
+                monitor["weak_at_max"].add(idx)
+                if idx not in monitor["warned_at_max"]:
+                    monitor["warned_at_max"].add(idx)
+                    events.append(
+                        f"[Aero][警告] {idx}:{COMPACT_NAMES[idx]} 已到 "
+                        f"{command:.0f}° 上限仍未检测到抓紧 ({load_label})"
+                    )
+        reliable_contacts = len(monitor["joints"]) - len(monitor["weak_at_max"])
+        grip_unsafe = reliable_contacts < monitor["min_contacts"]
+        return pose, events, grip_unsafe
+
+    @staticmethod
+    def _build_hold_monitor(
+        joints,
+        profile,
+        baseline,
+        profile_window_deg,
+        contact_delta_ma,
+        abs_ma,
+        max_cmd,
+        min_contacts,
+    ):
+        joints = tuple(sorted(int(idx) for idx in joints))
+        if not joints or os.getenv("AERO_HOLD_TIGHTEN_ENABLE", "1").lower() not in ("1", "true", "yes", "on"):
+            return None
+        min_extra_ma = float(os.getenv("AERO_HOLD_MIN_EXTRA_MA", str(max(60.0, contact_delta_ma * 0.55))))
+        return {
+            "joints": joints,
+            "profile": profile,
+            "baseline": list(baseline),
+            "profile_window_deg": float(profile_window_deg),
+            "min_extra_ma": min_extra_ma,
+            "abs_ma": float(os.getenv("AERO_HOLD_ABS_MA", str(abs_ma))),
+            "max_cmd": float(os.getenv("AERO_HOLD_TIGHTEN_MAX", str(max_cmd))),
+            "min_contacts": max(1, min(len(joints), int(min_contacts))),
+            "step": max(0.1, float(os.getenv("AERO_HOLD_TIGHTEN_STEP", "1"))),
+            "consecutive": max(1, int(os.getenv("AERO_HOLD_TIGHTEN_CONSECUTIVE", "3"))),
+            "interval_s": max(0.05, float(os.getenv("AERO_HOLD_CHECK_INTERVAL_S", "0.2"))),
+            "samples": max(1, int(os.getenv("AERO_HOLD_CURRENT_SAMPLES", "1"))),
+            "sample_delay_s": max(0.0, float(os.getenv("AERO_HOLD_CURRENT_SAMPLE_DELAY", "0"))),
+            "low_counts": {idx: 0 for idx in joints},
+            "weak_at_max": set(),
+            "warned_at_max": set(),
+            "read_failures": 0,
+        }
+
+    def _start_hold(self, pose, monitor=None):
         target = [float(value) for value in pose]
         result = self.hand.set_joint_positions(target)
         if result is False:
             raise RuntimeError("CTRL_POS 初始发送超时")
         with self._hold_lock:
             self._hold_pose = target
+            self._hold_monitor = monitor
+            self._hold_grip_ok = True
         stop_event = threading.Event()
         self._hold_stop = stop_event
         self._hold_sent = 0
@@ -182,7 +308,8 @@ class AeroGripper:
                 daemon=True,
             )
             self._hold_thread.start()
-        print(f"[Aero] 持续保持抓取姿态 ({self._hold_hz:.0f}Hz)")
+        monitor_label = "，带电流补紧" if monitor is not None else ""
+        print(f"[Aero] 持续保持抓取姿态 ({self._hold_hz:.0f}Hz{monitor_label})")
 
     def _stop_hold(self):
         stop_event = self._hold_stop
@@ -193,6 +320,8 @@ class AeroGripper:
         self._hold_thread = None
         with self._hold_lock:
             self._hold_pose = None
+            self._hold_monitor = None
+            self._hold_grip_ok = True
 
     def is_holding(self):
         """Return whether the active hold loop is still sending CTRL_POS."""
@@ -202,6 +331,7 @@ class AeroGripper:
             and thread is not None
             and thread.is_alive()
             and self._hold_pose is not None
+            and self._hold_grip_ok
             and not self._hold_stop.is_set()
         )
 
@@ -390,7 +520,17 @@ class AeroGripper:
                         )
                         return False
                     final_pose = self._pose_from_values(thumb0, values)
-                    self._start_hold(final_pose)
+                    hold_monitor = self._build_hold_monitor(
+                        contact_locked,
+                        empty_profile,
+                        baseline,
+                        profile_window_deg,
+                        profile_delta_ma,
+                        abs_ma,
+                        max_cmd,
+                        min_contacts,
+                    )
+                    self._start_hold(final_pose, monitor=hold_monitor)
                     print(
                         "[Aero] 柔性抓取完成: "
                         + ", ".join(f"{idx}:{COMPACT_NAMES[idx]}={locked[idx]:.0f}" for idx in sorted(locked))
@@ -400,7 +540,17 @@ class AeroGripper:
             pending = sorted(idx for idx in required_fingers if idx not in locked)
             print(f"[Aero][警告] 柔性抓取达到最大步数, 未完成: {pending}")
             if len(contact_locked) >= min_contacts:
-                self._start_hold(self._pose_from_values(thumb0, values))
+                hold_monitor = self._build_hold_monitor(
+                    contact_locked,
+                    empty_profile,
+                    baseline,
+                    profile_window_deg,
+                    profile_delta_ma,
+                    abs_ma,
+                    max_cmd,
+                    min_contacts,
+                )
+                self._start_hold(self._pose_from_values(thumb0, values), monitor=hold_monitor)
                 return True
             print(
                 "[Aero] 柔性抓取失败: "
