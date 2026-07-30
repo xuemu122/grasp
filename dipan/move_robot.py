@@ -22,6 +22,8 @@ DEFAULT_WAIT_TIMEOUT_S = int(os.getenv("MOVE_WAIT_TIMEOUT_S", "180"))
 MARKER_DISTANCE_TOLERANCE_M = float(os.getenv("CHASSIS_NAVIGATION_DISTANCE_TOLERANCE_M", "0.15"))
 MARKER_THETA_TOLERANCE_RAD = float(os.getenv("CHASSIS_NAVIGATION_THETA_TOLERANCE_RAD", "0.25"))
 CHARGE_RETURN_ON_DOCKING = os.getenv("CHARGE_RETURN_ON_DOCKING", "1").lower() in ("1", "true", "yes", "on")
+MARKER_ARRIVAL_STABLE_POLLS = max(1, int(os.getenv("CHASSIS_MARKER_ARRIVAL_STABLE_POLLS", "2")))
+MOVE_POLL_INTERVAL_S = max(0.1, float(os.getenv("CHASSIS_NAVIGATION_POLL_MS", "1000")) / 1000.0)
 
 
 def response_results(result):
@@ -125,11 +127,10 @@ def marker_theta(orientation):
     return normalize_angle(2.0 * math.atan2(z, w))
 
 
-def marker_info(sock, marker_name):
-    """读取 marker 和当前位姿，用于放置前判断是否已经在目标点。"""
+def marker_target(sock, marker_name):
+    """读取 marker 的目标位姿，供导航前检查和轮询复用。"""
     markers_result = send_command(sock, "/api/markers/query_list")
-    status_result = get_robot_status(sock)
-    if markers_result.get("status") != "OK" or status_result.get("status") != "OK":
+    if markers_result.get("status") != "OK":
         return None
     markers = response_results(markers_result)
     marker = markers.get(marker_name)
@@ -138,29 +139,55 @@ def marker_info(sock, marker_name):
             if isinstance(candidate, dict) and candidate.get("marker_name") == marker_name:
                 marker = candidate
                 break
-    status = response_results(status_result)
-    pose = status.get("current_pose") or {}
     position = (marker or {}).get("pose", {}).get("position", {})
-    if not marker or not all(key in pose for key in ("x", "y")):
+    if not marker or not all(key in position for key in ("x", "y")):
         return None
-    marker_floor = int((marker or {}).get("floor") or 0)
-    current_floor = int(status.get("current_floor") or 0)
+    orientation = (marker or {}).get("pose", {}).get("orientation", {})
+    return {
+        "x": float(position["x"]),
+        "y": float(position["y"]),
+        "theta": marker_theta(orientation),
+        "floor": int((marker or {}).get("floor") or 0),
+    }
+
+
+def status_at_marker(status, target):
+    """按实时位姿判断底盘是否进入 marker 容差范围。"""
+    if not target:
+        return False
+    info = response_results(status) if isinstance(status, dict) and "results" in status else status
+    pose = (info or {}).get("current_pose") or {}
+    if not all(key in pose for key in ("x", "y")):
+        return False
+    marker_floor = int(target.get("floor") or 0)
+    current_floor = int((info or {}).get("current_floor") or 0)
     if marker_floor and current_floor and marker_floor != current_floor:
         return False
-    distance = ((float(pose.get("x")) - float(position.get("x") or 0.0)) ** 2
-                + (float(pose.get("y")) - float(position.get("y") or 0.0)) ** 2) ** 0.5
-    orientation = (marker or {}).get("pose", {}).get("orientation", {})
-    theta_distance = abs(normalize_angle(float(pose.get("theta") or 0.0) - marker_theta(orientation)))
+    distance = math.hypot(float(pose["x"]) - target["x"], float(pose["y"]) - target["y"])
+    theta_distance = abs(normalize_angle(float(pose.get("theta") or 0.0) - target["theta"]))
     return distance <= MARKER_DISTANCE_TOLERANCE_M and theta_distance <= MARKER_THETA_TOLERANCE_RAD
 
 
-def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S, arrive_on_docking=False):
+def marker_info(sock, marker_name):
+    """读取 marker 和当前位姿，用于放置前判断是否已经在目标点。"""
+    target = marker_target(sock, marker_name)
+    if target is None:
+        return None
+    status_result = get_robot_status(sock)
+    if status_result.get("status") != "OK":
+        return None
+    return status_at_marker(status_result, target)
+
+
+def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S, arrive_on_docking=False,
+                   target=None):
     """等待底盘移动任务完成。成功返回 True, 失败/取消/超时返回 False。"""
     deadline = time.time() + timeout_s
     last_status = None
     last_query_error = None
     seen_current_task = False
     seen_stale_status = None
+    stable_pose_polls = 0
     while time.time() < deadline:
         try:
             result = get_robot_status(sock)
@@ -169,7 +196,7 @@ def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S, arrive_o
             if err != last_query_error:
                 print(f"[底盘] robot_status 暂不可用: {err}")
                 last_query_error = err
-            time.sleep(1)
+            time.sleep(MOVE_POLL_INTERVAL_S)
             continue
 
         if result.get("status") != "OK":
@@ -177,7 +204,7 @@ def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S, arrive_o
             if err != last_query_error:
                 print(f"[底盘] robot_status 暂不可用: {err}")
                 last_query_error = err
-            time.sleep(1)
+            time.sleep(MOVE_POLL_INTERVAL_S)
             continue
 
         last_query_error = None
@@ -197,13 +224,21 @@ def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S, arrive_o
             print("[底盘] 已到充电桩附近, 开始自动对接充电桩")
             return True
 
+        if not arrive_on_docking and status_at_marker(info, target):
+            stable_pose_polls += 1
+            if stable_pose_polls >= MARKER_ARRIVAL_STABLE_POLLS:
+                print(f"[底盘] 实时位姿连续 {stable_pose_polls} 次进入目标容差，确认已到达 {marker}")
+                return True
+        else:
+            stable_pose_polls = 0
+
         if move_status == "succeeded":
             if marker and not target_matches and not seen_current_task:
                 stale = (move_status, move_target)
                 if stale != seen_stale_status:
                     print(f"[底盘] 忽略上一轮完成状态: target={move_target}, 当前等待 {marker}")
                     seen_stale_status = stale
-                time.sleep(1)
+                time.sleep(MOVE_POLL_INTERVAL_S)
                 continue
             if marker and not target_matches:
                 print(f"[底盘] 移动完成, 但目标为 {move_target}, 不是期望 {marker}")
@@ -216,11 +251,11 @@ def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S, arrive_o
                 if stale != seen_stale_status:
                     print(f"[底盘] 忽略上一轮结束状态: status={move_status} target={move_target}, 当前等待 {marker}")
                     seen_stale_status = stale
-                time.sleep(1)
+                time.sleep(MOVE_POLL_INTERVAL_S)
                 continue
             print(f"[底盘] 移动任务结束但未成功: {move_status}")
             return False
-        time.sleep(1)
+        time.sleep(MOVE_POLL_INTERVAL_S)
 
     print(f"[底盘] 等待移动完成超时 ({timeout_s}s)")
     return False
@@ -228,10 +263,14 @@ def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S, arrive_o
 
 def move_to(sock, marker, wait=False, arrive_on_docking=False):
     """发送移动到目标点位的指令"""
+    target = None
     try:
-        if wait and marker_info(sock, marker) is True:
-            print(f"[底盘] 已在目标点 {marker}，跳过导航")
-            return {"status": "OK", "move_done": True, "skipped": True, "marker": marker}
+        if wait:
+            target = marker_target(sock, marker)
+            status_result = get_robot_status(sock) if target is not None else None
+            if status_result and status_result.get("status") == "OK" and status_at_marker(status_result, target):
+                print(f"[底盘] 已在目标点 {marker}，跳过导航")
+                return {"status": "OK", "move_done": True, "skipped": True, "marker": marker}
     except Exception as exc:
         print(f"[底盘] 无法判断当前位置，将继续导航: {exc}")
     cmd = f"/api/move?marker={marker}"
@@ -245,7 +284,12 @@ def move_to(sock, marker, wait=False, arrive_on_docking=False):
         print(f"失败: {response_error_message(result)}")
     result = attach_power_status(sock, result)
     if wait and result.get("status") == "OK":
-        result["move_done"] = wait_move_done(sock, marker=marker, arrive_on_docking=arrive_on_docking)
+        result["move_done"] = wait_move_done(
+            sock,
+            marker=marker,
+            arrive_on_docking=arrive_on_docking,
+            target=target,
+        )
     return result
 
 

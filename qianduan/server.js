@@ -2679,6 +2679,7 @@ async function navigateChassisToMarkerUnlocked(markerName, { beforeMove, arriveO
     const deadline = Date.now() + CHASSIS_NAVIGATION_TIMEOUT_MS;
     let seenCurrentTask = false;
     let lastState = '';
+    let stablePosePolls = 0;
     while (Date.now() < deadline) {
         await sleep(CHASSIS_NAVIGATION_POLL_MS);
         let response;
@@ -2703,6 +2704,15 @@ async function navigateChassisToMarkerUnlocked(markerName, { beforeMove, arriveO
         if (targetMatches && arriveOnDocking && runningStatus === 'dock_to_charging_pile') {
             log(`  ✅ 底盘已到达 ${markerName}，正在自动对接充电桩`);
             return { skipped: false, marker, docking: true };
+        }
+        if (!arriveOnDocking && currentPoseAtMarker(info, marker)) {
+            stablePosePolls += 1;
+            if (stablePosePolls >= 2) {
+                log(`  ✅ 底盘实时位姿连续 ${stablePosePolls} 次进入容差，确认已到达 ${markerName}`);
+                return { skipped: false, marker, poseConfirmed: true };
+            }
+        } else {
+            stablePosePolls = 0;
         }
         if (moveStatus === 'succeeded' && (targetMatches || seenCurrentTask)) {
             log(`  ✅ 底盘已到达 ${markerName}`);
