@@ -121,6 +121,23 @@ class ShelfBoardFilterTests(unittest.TestCase):
         self.assertAlmostEqual(bounds["lower"]["z"], 0.3, places=3)
         self.assertAlmostEqual(bounds["upper"]["z"], 0.5, places=3)
 
+    def test_dynamic_z_rejection_falls_back_to_current_shelf_rows(self):
+        bounds = {
+            "row_min": 20,
+            "row_max": 80,
+            "z_min": 0.30,
+            "z_max": 0.40,
+        }
+        target, _ = grasp_planner.pick_target_box(
+            [detection("coke", 50, 0.45)],
+            transformer=FakeTransformer(),
+            flange_pose=(0, 0, 0, 0, 0, 0),
+            layer_z_m=0.35,
+            shelf_board_bounds=bounds,
+        )
+
+        self.assertEqual(target.class_name, "coke")
+
 
 if __name__ == "__main__":
     unittest.main()

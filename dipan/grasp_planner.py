@@ -387,9 +387,13 @@ def pick_target_box(detections, transformer=None, flange_pose=None, layer_z_m=No
         if z_rejected:
             print(f"  层板高度过滤: 跳过非当前层候选 {len(z_rejected)} 个 (Z范围 {z_min*1000:.0f}..{z_max*1000:.0f}mm)")
         if not z_filtered:
-            print("  [停止] 层板边界过滤后没有当前层候选, 本次不抓取")
-            return None, None
-        roi_filtered = z_filtered
+            # The board rows still identify the current shelf reliably here.
+            # A bad depth sample or hand-eye Z drift must not reject every
+            # visible item in that row and turn a recoverable pick into a
+            # cancelled order.
+            print("  [警告] 动态层高过滤拒绝全部行内候选, 回退使用当前层板行范围候选")
+        else:
+            roi_filtered = z_filtered
     elif LAYER_Z_FILTER_ENABLE and transformer is not None and flange_pose is not None and layer_z_m is not None:
         z_filtered = []
         z_rejected = []
