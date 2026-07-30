@@ -19,7 +19,10 @@ CAMERA_BODY_DEPTH_X_M = float(os.getenv(
 CAMERA_HEIGHT_Z_M = float(os.getenv("TOOL_CAMERA_HEIGHT_Z_M", "0.025"))
 CAMERA_CENTER_X_M = float(os.getenv("TOOL_CAMERA_CENTER_X_M", "-0.120"))
 CAMERA_CENTER_Y_M = float(os.getenv("TOOL_CAMERA_CENTER_Y_M", "0.0"))
-CAMERA_Z_MIN_M = float(os.getenv("TOOL_CAMERA_Z_MIN_M", "0.0"))
+# The hand points along flange +Z. The camera lens is at the flange optical
+# plane, so the camera body occupies the space behind it, not in front of the
+# fingertips. Keep this overrideable for a different mount.
+CAMERA_Z_MIN_M = float(os.getenv("TOOL_CAMERA_Z_MIN_M", str(-CAMERA_HEIGHT_Z_M)))
 HAND_LENGTH_Z_M = float(os.getenv("TOOL_HAND_LENGTH_Z_M", "0.250"))
 HAND_PALM_LENGTH_Z_M = float(os.getenv("HAND_PALM_LENGTH_M", "0.157"))
 HAND_BODY_DEPTH_X_M = float(os.getenv("TOOL_HAND_BODY_DEPTH_X_M", "0.080"))

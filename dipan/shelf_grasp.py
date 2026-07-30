@@ -479,31 +479,17 @@ def _save_depth_guard_viz(
             cv2.line(viz, p0, p1, (255, 255, 0), 1)
             cv2.circle(viz, p0, 2, (255, 255, 0), -1)
 
-    if DEPTH_GUARD_CAMERA_ENABLE and flange_rotation_m is not None:
-        box_edges = (
-            (0, 1), (0, 2), (0, 4), (1, 3), (1, 5), (2, 3),
-            (2, 6), (3, 7), (4, 5), (4, 6), (5, 7), (6, 7),
-        )
-        for alpha in np.linspace(0.0, 1.0, max(2, DEPTH_GUARD_PATH_SAMPLES)):
-            root = (1.0 - alpha) * start + alpha * end
-            corners = _camera_box_world_corners(root, flange_rotation_m)
-            corner_pixels, corner_valid = _robot_points_to_pixels(
-                corners,
-                transformer,
-                observation_flange_pose,
-                viz.shape,
-            )
-            for i, j in box_edges:
-                if corner_valid[i] and corner_valid[j]:
-                    p0 = tuple(int(x) for x in corner_pixels[i])
-                    p1 = tuple(int(x) for x in corner_pixels[j])
-                    cv2.line(viz, p0, p1, (255, 255, 0), 1)
+    # The camera body surrounds the observation optical center and is partly
+    # behind the image plane. Projecting that box through the same camera makes
+    # near-zero-depth corners explode into the giant wireframe seen in debug
+    # images. It is still included in the 3-D collision check above; omit only
+    # its self-view wireframe so the path visualization remains meaningful.
 
     finite_min = min_dist[np.isfinite(min_dist)] if len(min_dist) else np.zeros((0,), dtype=np.float32)
     min_mm = float(np.min(finite_min) * 1000.0) if len(finite_min) else float("inf")
     cv2.putText(
         viz,
-        f"{label} hit={int(np.count_nonzero(hit_mask))} min={min_mm:.0f}mm model={_depth_guard_radius_label()} len={hand_length_m*1000:.0f}",
+        f"{label} hit={int(np.count_nonzero(hit_mask))} min={min_mm:.0f}mm model={_depth_guard_radius_label()} len={hand_length_m*1000:.0f} camera=collision-only",
         (12, 24),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.55,
@@ -513,7 +499,7 @@ def _save_depth_guard_viz(
     safe_label = "".join(ch if ch.isalnum() else "_" for ch in str(label))
     path = f"/tmp/depth_guard_{safe_label}.jpg"
     cv2.imwrite(path, viz)
-    print(f"  [深度护栏] 可视化已保存: {path} (灰=障碍点, 红=命中点, 绿=排除框/目标框, 青=手部/相机模型)")
+    print(f"  [深度护栏] 可视化已保存: {path} (灰=障碍点, 红=命中点, 绿=排除框/目标框, 青=手部路径, 相机盒仅参与碰撞)")
     return path
 
 

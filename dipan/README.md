@@ -120,10 +120,10 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `SELF_COLLISION_VERBOSE`：自碰撞护栏通过时是否打印最近余量，默认关闭。
 - `DOBOT_IK_VERBOSE`：是否打印自碰撞检查用的 `InverseKin` 请求/响应，默认关闭；排查 IK 失败时可开启。
 - `DEPTH_GUARD_ENABLE`：深度护栏开关，默认开启；会排除当前画面中所有检测框，把其余深度点当成货架/障碍，检查对齐和探入路径。
-- `DEPTH_GUARD_CAMERA_ENABLE`：相机碰撞盒开关，默认开启；相机默认安装在手掌根部，按法兰系 `X=-150..-90mm`、`Y=-72.5..72.5mm`、`Z=0..25mm` 建模，并与手部一起检查整条路径。
+- `DEPTH_GUARD_CAMERA_ENABLE`：相机碰撞盒开关，默认开启；相机默认安装在手掌根部上方，按法兰系 `X=-150..-90mm`、`Y=-72.5..72.5mm`、`Z=-25..0mm` 建模，并与手部一起检查整条路径。
 - `TOOL_CAMERA_LONG_SIDE_Y_M` / `TOOL_CAMERA_BODY_DEPTH_X_M` / `TOOL_CAMERA_HEIGHT_Z_M`：相机外壳尺寸，默认分别为 `0.145/0.060/0.025` m；旧的 `TOOL_CAMERA_LENGTH_X_M` / `TOOL_CAMERA_WIDTH_Y_M` 仍作为兼容配置读取。
 - `TOOL_CAMERA_CENTER_X_M` / `TOOL_CAMERA_CENTER_Y_M`：相机外壳中心在法兰坐标系的位置，默认 `-0.120/0.0` m。
-- `TOOL_CAMERA_Z_MIN_M`：相机盒在法兰 `Z` 方向的起点，默认 `0` m；实测安装位置有偏移时可调整。
+- `TOOL_CAMERA_Z_MIN_M`：相机盒在法兰 `Z` 方向的起点，默认 `-0.025` m（镜头平面后方）；实测安装位置有偏移时可调整。
 - `DEPTH_GUARD_CAMERA_CLEARANCE_M`：深度护栏对相机盒增加的安全余量，默认等于 `DEPTH_GUARD_CLEARANCE_M`，即 `0.002` m。
 - `DEPTH_GUARD_SELF_MASK_CAMERA_PADDING_M`：从深度点云剔除相机自身时的外扩量，默认 `0.01` m。
 - `HAND_PALM_LENGTH_M`：法兰到掌心前端长度，默认 `0.157` m；之后到指尖的部分按手指建模。

@@ -28,7 +28,7 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         )
 
     def test_camera_point_is_not_covered_by_hand_only(self):
-        point = [[-0.10, 0.0, 0.0125]]
+        point = [[-0.10, 0.0, -0.0125]]
         self.assertTrue(self.check_depth_path(point, include_camera=False).ok)
         self.assertFalse(self.check_depth_path(point, include_camera=True).ok)
 
@@ -51,18 +51,20 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(self.box_max[0], -0.09)
         self.assertAlmostEqual(self.box_min[1], -0.0725)
         self.assertAlmostEqual(self.box_max[1], 0.0725)
-        self.assertFalse(self.check_depth_path([[-0.12, 0.06, 0.0125]]).ok)
-        self.assertTrue(self.check_depth_path([[-0.03, 0.0, 0.0125]]).ok)
+        self.assertAlmostEqual(self.box_min[2], -0.025)
+        self.assertAlmostEqual(self.box_max[2], 0.0)
+        self.assertFalse(self.check_depth_path([[-0.12, 0.06, -0.0125]]).ok)
+        self.assertTrue(self.check_depth_path([[-0.03, 0.0, -0.0125]]).ok)
 
     def test_camera_box_follows_flange_rotation(self):
         rotation = np.array(
             [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
             dtype=np.float32,
         )
-        local_point = np.array([-0.10, 0.0, 0.0125], dtype=np.float32)
+        local_point = np.array([-0.10, 0.0, -0.0125], dtype=np.float32)
         world_point = rotation @ local_point
         self.assertFalse(self.check_depth_path([world_point], rotation=rotation).ok)
-        self.assertTrue(self.check_depth_path([[-0.10, 0.09, 0.0125]]).ok)
+        self.assertTrue(self.check_depth_path([[-0.10, 0.09, -0.0125]]).ok)
 
     def test_self_collision_camera_cover_and_safe_poses(self):
         strips = camera_capsule_strips()
