@@ -24,6 +24,7 @@ MARKER_THETA_TOLERANCE_RAD = float(os.getenv("CHASSIS_NAVIGATION_THETA_TOLERANCE
 CHARGE_RETURN_ON_DOCKING = os.getenv("CHARGE_RETURN_ON_DOCKING", "1").lower() in ("1", "true", "yes", "on")
 MARKER_ARRIVAL_STABLE_POLLS = max(1, int(os.getenv("CHASSIS_MARKER_ARRIVAL_STABLE_POLLS", "2")))
 MOVE_POLL_INTERVAL_S = max(0.1, float(os.getenv("CHASSIS_NAVIGATION_POLL_MS", "1000")) / 1000.0)
+STATUS_POLL_TIMEOUT_S = max(0.2, float(os.getenv("CHASSIS_STATUS_POLL_TIMEOUT_MS", "2000")) / 1000.0)
 
 
 def response_results(result):
@@ -111,6 +112,13 @@ def get_robot_status(sock):
     return result
 
 
+def get_robot_status_fresh():
+    """使用独立短连接查询状态，避免移动期间的长连接阻塞后续轮询。"""
+    with socket.create_connection((HOST, PORT), timeout=STATUS_POLL_TIMEOUT_S) as status_sock:
+        status_sock.settimeout(STATUS_POLL_TIMEOUT_S)
+        return get_robot_status(status_sock)
+
+
 def normalize_angle(angle):
     value = float(angle or 0.0)
     while value > 3.141592653589793:
@@ -173,7 +181,7 @@ def marker_info(sock, marker_name):
     target = marker_target(sock, marker_name)
     if target is None:
         return None
-    status_result = get_robot_status(sock)
+    status_result = get_robot_status_fresh()
     if status_result.get("status") != "OK":
         return None
     return status_at_marker(status_result, target)
@@ -190,7 +198,7 @@ def wait_move_done(sock, marker=None, timeout_s=DEFAULT_WAIT_TIMEOUT_S, arrive_o
     stable_pose_polls = 0
     while time.time() < deadline:
         try:
-            result = get_robot_status(sock)
+            result = get_robot_status_fresh()
         except Exception as e:
             err = str(e)
             if err != last_query_error:
@@ -267,7 +275,7 @@ def move_to(sock, marker, wait=False, arrive_on_docking=False):
     try:
         if wait:
             target = marker_target(sock, marker)
-            status_result = get_robot_status(sock) if target is not None else None
+            status_result = get_robot_status_fresh() if target is not None else None
             if status_result and status_result.get("status") == "OK" and status_at_marker(status_result, target):
                 print(f"[底盘] 已在目标点 {marker}，跳过导航")
                 return {"status": "OK", "move_done": True, "skipped": True, "marker": marker}

@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import move_robot
 
@@ -26,7 +26,7 @@ class MoveRobotPollingTests(unittest.TestCase):
             robot_status(1.01, 2.02, 0.51),
         ]
         with (
-            patch.object(move_robot, "get_robot_status", side_effect=statuses) as get_status,
+            patch.object(move_robot, "get_robot_status_fresh", side_effect=statuses) as get_status,
             patch.object(move_robot.time, "sleep"),
         ):
             result = move_robot.wait_move_done(
@@ -43,7 +43,7 @@ class MoveRobotPollingTests(unittest.TestCase):
             robot_status(1.01, 2.02, 0.51, move_status="succeeded"),
         ]
         with (
-            patch.object(move_robot, "get_robot_status", side_effect=statuses) as get_status,
+            patch.object(move_robot, "get_robot_status_fresh", side_effect=statuses) as get_status,
             patch.object(move_robot.time, "sleep"),
         ):
             result = move_robot.wait_move_done(
@@ -65,7 +65,7 @@ class MoveRobotPollingTests(unittest.TestCase):
             ),
         ]
         with (
-            patch.object(move_robot, "get_robot_status", side_effect=statuses) as get_status,
+            patch.object(move_robot, "get_robot_status_fresh", side_effect=statuses) as get_status,
             patch.object(move_robot.time, "sleep"),
         ):
             result = move_robot.wait_move_done(
@@ -78,6 +78,23 @@ class MoveRobotPollingTests(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(get_status.call_count, 2)
+
+    def test_status_poll_uses_a_fresh_short_connection(self):
+        status_socket = MagicMock()
+        status_socket.__enter__.return_value = status_socket
+        expected = robot_status(1.0, 2.0, 0.5)
+        with (
+            patch.object(move_robot.socket, "create_connection", return_value=status_socket) as connect,
+            patch.object(move_robot, "get_robot_status", return_value=expected) as get_status,
+        ):
+            result = move_robot.get_robot_status_fresh()
+
+        self.assertEqual(result, expected)
+        connect.assert_called_once_with(
+            (move_robot.HOST, move_robot.PORT), timeout=move_robot.STATUS_POLL_TIMEOUT_S
+        )
+        status_socket.settimeout.assert_called_once_with(move_robot.STATUS_POLL_TIMEOUT_S)
+        get_status.assert_called_once_with(status_socket)
 
 
 if __name__ == "__main__":
