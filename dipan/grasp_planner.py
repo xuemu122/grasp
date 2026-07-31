@@ -8,8 +8,9 @@ import numpy as np
 
 TARGET_ROI_Y_MIN = int(os.getenv("TARGET_ROI_Y_MIN", "85"))
 TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "430"))
-SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv("SIDE_GRASP_MIN_HEIGHT_M", "0.052"))
-SIDE_GRASP_MAX_HEIGHT_M = float(os.getenv("SIDE_GRASP_MAX_HEIGHT_M", "0.11"))  # 侧抓点离底部最大高度，防止磕相机
+SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv("SIDE_GRASP_MIN_HEIGHT_M", "0.065"))
+SIDE_GRASP_MAX_HEIGHT_M = float(os.getenv("SIDE_GRASP_MAX_HEIGHT_M", "0.11"))
+SIDE_GRASP_LOWER_SHIFT_M = float(os.getenv("SIDE_GRASP_LOWER_SHIFT_M", "0.01"))
 LAYER_Z_FILTER_ENABLE = os.getenv("LAYER_Z_FILTER_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 LAYER_Z_TOLERANCE_M = float(os.getenv("LAYER_Z_TOLERANCE_M", "0.16"))
 SHELF_BOARD_FILTER_ENABLE = os.getenv("SHELF_BOARD_FILTER_ENABLE", "1").lower() in ("1", "true", "yes", "on")
@@ -23,7 +24,9 @@ SHELF_BOARD_CLUSTER_Z_M = float(os.getenv("SHELF_BOARD_CLUSTER_Z_M", "0.055"))
 SHELF_BOARD_ROW_GAP = int(os.getenv("SHELF_BOARD_ROW_GAP", "40"))
 SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX = int(os.getenv("SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX", "6"))
 SHELF_BOARD_MIN_ROW_SPAN_PX = int(os.getenv("SHELF_BOARD_MIN_ROW_SPAN_PX", "100"))
-SHELF_BOARD_MIN_Z_SPAN_M = float(os.getenv("SHELF_BOARD_MIN_Z_SPAN_M", "0.20"))
+SHELF_BOARD_EXPECTED_Z_SPAN_M = float(os.getenv("SHELF_BOARD_EXPECTED_Z_SPAN_M", "0.38"))
+SHELF_BOARD_MIN_Z_SPAN_M = float(os.getenv("SHELF_BOARD_MIN_Z_SPAN_M", "0.30"))
+SHELF_BOARD_MAX_Z_SPAN_M = float(os.getenv("SHELF_BOARD_MAX_Z_SPAN_M", "0.46"))
 SHELF_BOARD_MAX_REFERENCE_DISTANCE_M = float(os.getenv("SHELF_BOARD_MAX_REFERENCE_DISTANCE_M", "0.75"))
 SHELF_BOARD_OBJECT_MARGIN_M = float(os.getenv("SHELF_BOARD_OBJECT_MARGIN_M", "0.018"))
 SHELF_BOARD_ROW_MARGIN_PX = int(os.getenv("SHELF_BOARD_ROW_MARGIN_PX", "8"))
@@ -39,6 +42,11 @@ def axis_aligned_approach_m(current_xyz_m, grasp_xyz_m, forward_dir, min_backoff
     axis = np.array(forward_dir, dtype=float)
     axis = axis / max(np.linalg.norm(axis), 1e-9)
     return grasp - abs(float(min_backoff_m)) * axis
+
+
+def _shelf_board_span_is_plausible(first, second):
+    span = abs(float(second["z"]) - float(first["z"]))
+    return SHELF_BOARD_MIN_Z_SPAN_M <= span <= SHELF_BOARD_MAX_Z_SPAN_M
 
 
 def _det_center_robot_z(det, transformer, flange_pose):
@@ -207,9 +215,11 @@ def detect_shelf_board_bounds(
                 row_span = second["row"] - first["row"]
                 if row_span < SHELF_BOARD_MIN_ROW_SPAN_PX:
                     continue
-                if abs(second["z"] - first["z"]) < SHELF_BOARD_MIN_Z_SPAN_M:
+                if not _shelf_board_span_is_plausible(first, second):
                     continue
-                score = (reference_row - first["row"]) + (second["row"] - reference_row)
+                z_span = abs(second["z"] - first["z"])
+                row_span_error = abs((second["row"] - first["row"]) - SHELF_BOARD_MIN_ROW_SPAN_PX)
+                score = (abs(z_span - SHELF_BOARD_EXPECTED_Z_SPAN_M), row_span_error)
                 pair_candidates.append((score, first, second))
     else:
         by_row = sorted(boards_near_reference, key=lambda board: board["row"])
@@ -218,10 +228,12 @@ def detect_shelf_board_bounds(
                 row_span = second["row"] - first["row"]
                 if row_span < SHELF_BOARD_MIN_ROW_SPAN_PX:
                     continue
-                if abs(second["z"] - first["z"]) < SHELF_BOARD_MIN_Z_SPAN_M:
+                if not _shelf_board_span_is_plausible(first, second):
                     continue
                 z_mid = (first["z"] + second["z"]) / 2.0
-                pair_candidates.append((abs(z_mid - reference), first, second))
+                z_span = abs(second["z"] - first["z"])
+                score = (abs(z_span - SHELF_BOARD_EXPECTED_Z_SPAN_M), abs(z_mid - reference))
+                pair_candidates.append((score, first, second))
 
     if pair_candidates:
         _, first, second = min(pair_candidates, key=lambda item: item[0])
@@ -231,7 +243,7 @@ def detect_shelf_board_bounds(
             return {"boards": boards}
         lower = max(lower, key=lambda board: board["z"])
         upper = min(upper, key=lambda board: board["z"])
-        if abs(upper["z"] - lower["z"]) < SHELF_BOARD_MIN_Z_SPAN_M:
+        if not _shelf_board_span_is_plausible(lower, upper):
             return {"boards": boards}
     z_min = lower["z"] + SHELF_BOARD_OBJECT_MARGIN_M
     z_max = upper["z"] - SHELF_BOARD_OBJECT_MARGIN_M
@@ -491,24 +503,24 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
         p_top_robot = transformer.camera_to_robot(p_top_cam, flange_pose, debug=False)
         world_h = p_top_robot[2] - p_bottom_robot[2]
 
-        if not FORCE_SIDE_GRASP and (real_h <= SIDE_GRASP_MIN_HEIGHT_M or world_h <= SIDE_GRASP_MIN_HEIGHT_M):
+        if real_h <= SIDE_GRASP_MIN_HEIGHT_M or world_h <= SIDE_GRASP_MIN_HEIGHT_M:
             edge_u = (x1 + x2) / 2
             edge_v = y1
             mode = "top_center"
             print(
-                f"  → 窄盒但高度 {real_h*100:.1f}cm / Z高差 {world_h*100:.1f}cm ≤ 侧抓安全高度 "
+                f"  → 物体高度 {real_h*100:.1f}cm / Z高差 {world_h*100:.1f}cm ≤ 侧抓下限 "
                 f"{SIDE_GRASP_MIN_HEIGHT_M*100:.1f}cm, 改为上面抓取"
             )
         else:
-            if real_h <= SIDE_GRASP_MIN_HEIGHT_M or world_h <= SIDE_GRASP_MIN_HEIGHT_M:
-                pixel_ratio = 0.5
-                print(
-                    f"  → FORCE_SIDE_GRASP=1: 物体高度 {real_h*100:.1f}cm / Z高差 {world_h*100:.1f}cm "
-                    f"不足侧抓安全高度, 仍临时从{edge}侧中部抓取"
-                )
-            else:
-                midpoint_height_m = real_h / 2
-                pixel_ratio = max(midpoint_height_m / real_h, SIDE_GRASP_MIN_HEIGHT_M / world_h)
+            midpoint_height_m = real_h / 2
+            original_ratio = max(midpoint_height_m / real_h, SIDE_GRASP_MIN_HEIGHT_M / world_h)
+            original_height_m = world_h * original_ratio
+            side_height_m = float(np.clip(
+                original_height_m - SIDE_GRASP_LOWER_SHIFT_M,
+                SIDE_GRASP_MIN_HEIGHT_M,
+                SIDE_GRASP_MAX_HEIGHT_M,
+            ))
+            pixel_ratio = side_height_m / world_h
             pixel_ratio = max(0.0, min(1.0, pixel_ratio))
             edge_v = y2 + pixel_ratio * (y1 - y2)
             edge_v = max(y1, min(y2, edge_v))
@@ -522,6 +534,7 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
             width_label = "强制侧抓" if FORCE_SIDE_GRASP and real_w > 0.08 else "窄盒"
             print(
                 f"  → {width_label} ({real_w*100:.1f}cm), 从{edge}侧边缘抓取, "
+                f"原高度 {original_height_m*100:.1f}cm, 下移 {SIDE_GRASP_LOWER_SHIFT_M*100:.1f}cm, "
                 f"抓点离底部 Z高差 {side_height_m*100:.1f}cm, 像素=({edge_u:.0f},{edge_v:.0f})"
             )
     else:

@@ -2,6 +2,7 @@ import os
 import sys
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -32,6 +33,14 @@ class FakeCamera:
     _depth_scale = 0.001
 
 
+class VerticalTransformer(FakeTransformer):
+    def pixel_to_camera(self, u, v, depth_m):
+        return np.array([u, v, depth_m], dtype=float)
+
+    def camera_to_robot(self, point, _flange_pose=None, debug=False):
+        return np.array([point[0], point[1], (100.0 - point[1]) * 0.002], dtype=float)
+
+
 def detection(name, row, depth):
     return SimpleNamespace(
         class_name=name,
@@ -45,12 +54,14 @@ class ShelfBoardFilterTests(unittest.TestCase):
     def test_current_frame_boards_define_vertical_filter(self):
         depth = np.zeros((100, 100), dtype=np.uint16)
         depth[28:36, :] = 300
-        depth[68:76, :] = 500
+        depth[68:76, :] = 680
         transformer = FakeTransformer()
         previous_min_row_span = grasp_planner.SHELF_BOARD_MIN_ROW_SPAN_PX
         previous_min_z_span = grasp_planner.SHELF_BOARD_MIN_Z_SPAN_M
+        previous_max_z_span = grasp_planner.SHELF_BOARD_MAX_Z_SPAN_M
         grasp_planner.SHELF_BOARD_MIN_ROW_SPAN_PX = 30
-        grasp_planner.SHELF_BOARD_MIN_Z_SPAN_M = 0.1
+        grasp_planner.SHELF_BOARD_MIN_Z_SPAN_M = 0.30
+        grasp_planner.SHELF_BOARD_MAX_Z_SPAN_M = 0.46
         try:
             bounds = grasp_planner.detect_shelf_board_bounds(
                 depth,
@@ -63,9 +74,10 @@ class ShelfBoardFilterTests(unittest.TestCase):
         finally:
             grasp_planner.SHELF_BOARD_MIN_ROW_SPAN_PX = previous_min_row_span
             grasp_planner.SHELF_BOARD_MIN_Z_SPAN_M = previous_min_z_span
+            grasp_planner.SHELF_BOARD_MAX_Z_SPAN_M = previous_max_z_span
         self.assertIsNotNone(bounds)
         self.assertAlmostEqual(bounds["lower"]["z"], 0.3, places=3)
-        self.assertAlmostEqual(bounds["upper"]["z"], 0.5, places=3)
+        self.assertAlmostEqual(bounds["upper"]["z"], 0.68, places=3)
 
         previous_max_depth = grasp_planner.MAX_GRASP_DEPTH_M
         grasp_planner.MAX_GRASP_DEPTH_M = 1.0
@@ -94,12 +106,14 @@ class ShelfBoardFilterTests(unittest.TestCase):
     def test_detection_box_does_not_exclude_visible_board_pixels_on_same_row(self):
         depth = np.zeros((100, 200), dtype=np.uint16)
         depth[20:28, :] = 300
-        depth[68:76, :] = 500
+        depth[68:76, :] = 680
         transformer = FakeTransformer()
         previous_min_row_span = grasp_planner.SHELF_BOARD_MIN_ROW_SPAN_PX
         previous_min_z_span = grasp_planner.SHELF_BOARD_MIN_Z_SPAN_M
+        previous_max_z_span = grasp_planner.SHELF_BOARD_MAX_Z_SPAN_M
         grasp_planner.SHELF_BOARD_MIN_ROW_SPAN_PX = 30
-        grasp_planner.SHELF_BOARD_MIN_Z_SPAN_M = 0.1
+        grasp_planner.SHELF_BOARD_MIN_Z_SPAN_M = 0.30
+        grasp_planner.SHELF_BOARD_MAX_Z_SPAN_M = 0.46
         try:
             bounds = grasp_planner.detect_shelf_board_bounds(
                 depth,
@@ -114,12 +128,35 @@ class ShelfBoardFilterTests(unittest.TestCase):
         finally:
             grasp_planner.SHELF_BOARD_MIN_ROW_SPAN_PX = previous_min_row_span
             grasp_planner.SHELF_BOARD_MIN_Z_SPAN_M = previous_min_z_span
+            grasp_planner.SHELF_BOARD_MAX_Z_SPAN_M = previous_max_z_span
 
         self.assertIsNotNone(bounds)
         self.assertIn("lower", bounds)
         self.assertIn("upper", bounds)
         self.assertAlmostEqual(bounds["lower"]["z"], 0.3, places=3)
-        self.assertAlmostEqual(bounds["upper"]["z"], 0.5, places=3)
+        self.assertAlmostEqual(bounds["upper"]["z"], 0.68, places=3)
+
+    def test_implausibly_small_board_spacing_is_not_used(self):
+        depth = np.zeros((100, 100), dtype=np.uint16)
+        depth[28:36, :] = 300
+        depth[68:76, :] = 500
+        with (
+            patch.object(grasp_planner, "SHELF_BOARD_MIN_ROW_SPAN_PX", 30),
+            patch.object(grasp_planner, "SHELF_BOARD_MIN_Z_SPAN_M", 0.30),
+            patch.object(grasp_planner, "SHELF_BOARD_MAX_Z_SPAN_M", 0.46),
+        ):
+            bounds = grasp_planner.detect_shelf_board_bounds(
+                depth,
+                FakeCamera(),
+                FakeTransformer(),
+                (0, 0, 0, 0, 0, 0),
+                reference_z_m=0.3,
+                exclude_bboxes=[(35, 45, 65, 55)],
+            )
+
+        self.assertIsNotNone(bounds)
+        self.assertNotIn("lower", bounds)
+        self.assertNotIn("upper", bounds)
 
     def test_dynamic_z_rejection_falls_back_to_current_shelf_rows(self):
         bounds = {
@@ -137,6 +174,28 @@ class ShelfBoardFilterTests(unittest.TestCase):
         )
 
         self.assertEqual(target.class_name, "coke")
+
+    def test_side_grasp_moves_original_selection_down_one_centimeter(self):
+        det = SimpleNamespace(bbox=(10, 0, 30, 100), depth_m=0.2)
+        with (
+            patch.object(grasp_planner, "FORCE_SIDE_GRASP", True),
+            patch.object(grasp_planner, "SIDE_GRASP_MIN_HEIGHT_M", 0.065),
+            patch.object(grasp_planner, "SIDE_GRASP_MAX_HEIGHT_M", 0.11),
+            patch.object(grasp_planner, "SIDE_GRASP_LOWER_SHIFT_M", 0.01),
+        ):
+            _, _, world_z, mode, _, grip_pixel = grasp_planner.plan_edge_grasp(
+                det,
+                "right",
+                VerticalTransformer(),
+                (0, 0, 0, 0, 0, 0),
+                fx=100.0,
+            )
+
+        self.assertEqual(mode, "right_side")
+        self.assertAlmostEqual(world_z, 0.09, places=5)
+        self.assertAlmostEqual(grip_pixel[1], 55.0, places=5)
+        self.assertGreaterEqual(world_z, 0.065)
+        self.assertLessEqual(world_z, 0.11)
 
 
 if __name__ == "__main__":

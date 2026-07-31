@@ -92,8 +92,8 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `PERSPECTIVE_COMP_GAIN`：透视补偿强度，默认 `2.0`。
 - `PERSPECTIVE_COMP_MIN_SCALE`：透视补偿最小缩放，默认 `0.65`。
 - `GRASP_APPROACH_BACKOFF_M`：抓取前固定退距，默认 `0.15` m；对齐位会放在抓取位后方这个距离，避免从观察位保留过长探入路径。
-- `SIDE_GRASP_MIN_HEIGHT_M`：侧面抓取点离物体底部的最小高度，默认 `0.06` m；物体高度不够时自动改为上面抓。
-- `SIDE_GRASP_MAX_HEIGHT_M`：侧面抓取点离物体底部的最大高度，默认 `0.11` m；防止抓手位置过高导致相机与前一层层板碰撞。
+- `SIDE_GRASP_MIN_HEIGHT_M` / `SIDE_GRASP_MAX_HEIGHT_M`：侧面抓取点离物体底部的允许区间，默认 `0.065..0.11` m。
+- `SIDE_GRASP_LOWER_SHIFT_M`：在原侧抓选点基础上向瓶底方向下移的距离，默认 `0.01` m；下移后仍夹紧在上述区间内。
 - `LAYER_Z_TOLERANCE_M`：当前层世界 Z 过滤容差，默认 `0.16` m；如果误识别上一层会被剔除，现场层高/标定偏差大时可调大。
 - `SHELF_BOARD_FILTER_ENABLE`：是否启用基于当前深度帧的层板识别过滤，默认开启。识别不到可靠上下层板时自动回退旧的 ROI/Z 过滤。
 - `SHELF_BOARD_SAMPLE_STRIDE`：层板识别的深度采样步长，默认 `4` px；调小可提高稀疏/断裂层板的识别率，但会增加计算量。
@@ -106,7 +106,8 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `SHELF_BOARD_ROW_GAP`：相邻采样行合并为同一层板的最大行间距，默认 `40` px；用于把同一块层板的上沿、前沿等多条边缘合并起来。
 - `SHELF_BOARD_ROW_EXCLUDE_MARGIN_PX`：检测框外扩后屏蔽框内深度点的边距，默认 `6` px；只屏蔽商品附近的局部像素，商品左右仍可用于识别同一行的层板。
 - `SHELF_BOARD_MIN_ROW_SPAN_PX`：上下层板候选的最小图像行间距，默认 `100` px；用于排除相邻背景横线或同一平面产生的窄范围假边界。
-- `SHELF_BOARD_MIN_Z_SPAN_M`：上下层板候选的最小机器人 Z 间距，默认 `0.20` m；用于排除同一层板或窗户背景产生的窄高度配对。
+- `SHELF_BOARD_EXPECTED_Z_SPAN_M`：现场上下层板的标准机器人 Z 间距，默认 `0.38` m。
+- `SHELF_BOARD_MIN_Z_SPAN_M` / `SHELF_BOARD_MAX_Z_SPAN_M`：动态上下板配对允许的间距范围，默认 `0.30..0.46` m；范围外不采用动态结果。
 - `SHELF_BOARD_MAX_REFERENCE_DISTANCE_M`：候选层板距离当前层参考 Z 的最大距离，默认 `0.75` m。
 - `SHELF_BOARD_OBJECT_MARGIN_M`：上下层板内侧留给商品的 Z 安全边距，默认 `0.018` m。
 - `SHELF_BOARD_ROW_MARGIN_PX`：上下层板图像行内侧留给商品的像素边距，默认 `8` px。
