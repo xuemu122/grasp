@@ -69,6 +69,7 @@ class PickCycleRoutingTests(unittest.TestCase):
             ),
             patch.object(shelf_grasp, "load_chassis_place_settings", return_value=(False, "place")),
             patch.object(shelf_grasp, "go_to_place_point", return_value=True) as go_place,
+            patch.object(shelf_grasp, "go_to_stow_pose", return_value=True) as go_stow,
             patch.object(
                 shelf_grasp,
                 "go_to_layer_via_clearance",
@@ -79,35 +80,38 @@ class PickCycleRoutingTests(unittest.TestCase):
         ):
             result = shelf_grasp.finish_pick_cycle(object(), hand, layer_idx)
 
-        return result, hand, transfer_calls, go_place, go_layer, go_layer_from_place
+        return result, hand, transfer_calls, go_place, go_stow, go_layer, go_layer_from_place
 
-    def test_normal_layer_stays_at_place_after_drop(self):
-        result, hand, transfer_calls, go_place, go_layer, go_layer_from_place = self.run_cycle(2)
+    def test_normal_layer_stows_after_drop(self):
+        result, hand, transfer_calls, go_place, go_stow, go_layer, go_layer_from_place = self.run_cycle(2)
 
         self.assertTrue(result)
         self.assertEqual(hand.open_calls, 1)
         self.assertEqual(transfer_calls, [])
-        go_place.assert_called_once_with(ANY)
+        go_place.assert_called_once_with(ANY, visit_transition=True)
+        go_stow.assert_called_once_with(ANY)
         go_layer.assert_not_called()
         go_layer_from_place.assert_not_called()
 
     def test_layer_three_transfers_through_layer_two(self):
-        result, hand, transfer_calls, go_place, go_layer, go_layer_from_place = self.run_cycle(3)
+        result, hand, transfer_calls, go_place, go_stow, go_layer, go_layer_from_place = self.run_cycle(3)
 
         self.assertTrue(result)
         self.assertEqual(hand.open_calls, 1)
         self.assertEqual(transfer_calls, [2])
-        go_place.assert_called_once_with(ANY)
+        go_place.assert_called_once_with(ANY, visit_transition=True)
+        go_stow.assert_called_once_with(ANY)
         go_layer.assert_not_called()
         go_layer_from_place.assert_not_called()
 
     def test_low_layer_uses_layer_three_then_layer_two(self):
-        result, hand, transfer_calls, go_place, go_layer, go_layer_from_place = self.run_cycle(4)
+        result, hand, transfer_calls, go_place, go_stow, go_layer, go_layer_from_place = self.run_cycle(4)
 
         self.assertTrue(result)
         self.assertEqual(hand.open_calls, 1)
         self.assertEqual(transfer_calls, [3, 2])
-        go_place.assert_called_once_with(ANY)
+        go_place.assert_called_once_with(ANY, visit_transition=True)
+        go_stow.assert_called_once_with(ANY)
         go_layer.assert_not_called()
         go_layer_from_place.assert_not_called()
 
@@ -193,12 +197,64 @@ class PickCycleRoutingTests(unittest.TestCase):
                 "__layer_3__", arm, hand, None, None, None, origin
             )
 
-        stow.assert_called_once_with(arm, from_shelf_pose=True)
+        stow.assert_called_once_with(arm, from_shelf_pose=True, skip_transition=False)
         stow_move.assert_called_once_with(arm, 3)
         direct_move.assert_not_called()
         unknown_move.assert_not_called()
         self.assertEqual((action, origin, target),
                          ("continue", shelf_grasp.LAYER_ENTRY_SHELF, None))
+
+    def test_startup_stow_skips_place_transition(self):
+        arm = Mock()
+        with patch.object(shelf_grasp, "go_to_stow_pose", return_value=True) as stow:
+            action, origin, target = shelf_grasp._handle_worker_command(
+                "__stow_pose__",
+                arm,
+                FakeHand(),
+                None,
+                None,
+                None,
+                shelf_grasp.LAYER_ENTRY_STARTUP,
+            )
+
+        stow.assert_called_once_with(arm, from_shelf_pose=False, skip_transition=True)
+        self.assertEqual((action, origin, target), ("continue", shelf_grasp.LAYER_ENTRY_STOW, None))
+
+    def test_chassis_move_holds_transition_then_places_and_stows(self):
+        arm = object()
+        hand = FakeHand()
+        calls = []
+        with (
+            patch.object(shelf_grasp, "SKIP_HAND", False),
+            patch.object(shelf_grasp, "MOTION_SETTLE_S", 0.0),
+            patch.object(shelf_grasp, "_place_point_pose", ([0] * 6, "test-place")),
+            patch.object(shelf_grasp, "load_chassis_place_settings", return_value=(True, "place")),
+            patch.object(shelf_grasp, "chassis_at_place", return_value=False),
+            patch.object(
+                shelf_grasp,
+                "go_to_place_transition",
+                side_effect=lambda _arm: calls.append("transition") or True,
+            ),
+            patch.object(
+                shelf_grasp,
+                "move_chassis_to_place",
+                side_effect=lambda _marker: calls.append("move") or True,
+            ),
+            patch.object(
+                shelf_grasp,
+                "go_to_place_point",
+                side_effect=lambda _arm, visit_transition=True: calls.append(f"place:{visit_transition}") or True,
+            ),
+            patch.object(
+                shelf_grasp,
+                "go_to_stow_pose",
+                side_effect=lambda _arm: calls.append("stow") or True,
+            ),
+        ):
+            self.assertTrue(shelf_grasp.finish_pick_cycle(arm, hand, 2))
+
+        self.assertEqual(calls, ["transition", "move", "place:False", "stow"])
+        self.assertEqual(hand.open_calls, 1)
 
     def test_stow_entry_moves_directly_to_layer_without_place_transition(self):
         arm = Mock()

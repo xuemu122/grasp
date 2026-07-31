@@ -58,6 +58,7 @@ class DobotArm:
                 print(
                     f"[自碰撞] Nova5 URDF 护栏已启用 "
                     f"(margin={SELF_COLLISION_MARGIN_M*1000:.0f}mm, "
+                    f"camera_margin={self.self_collision_guard.camera_margin_m*1000:.0f}mm, "
                     f"samples={SELF_COLLISION_PATH_SAMPLES}, tool={tool_size_label_mm()})"
                 )
             except Exception as e:

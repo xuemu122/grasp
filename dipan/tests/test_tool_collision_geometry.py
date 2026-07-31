@@ -77,6 +77,7 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         self.assertEqual(len(camera_specs), 4)
         self.assertTrue(guard.check([-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]).ok)
         self.assertTrue(guard.check([0.0] * 6).ok)
+        self.assertTrue(guard.check([-106.5, -2.2, 98.1, -178.1, -88.2, 93.3]).ok)
 
     def test_self_collision_hand_envelope_and_tool_pairs(self):
         parts = hand_capsule_parts()

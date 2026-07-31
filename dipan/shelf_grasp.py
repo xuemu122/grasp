@@ -125,6 +125,7 @@ SAVE_DEBUG_IMAGES = os.getenv("SAVE_DEBUG_IMAGES", "0").lower() in ("1", "true",
 FAILURE_DIAGNOSTIC_PATH = os.getenv("SHELF_FAILURE_DIAGNOSTIC_PATH", "/tmp/shelf_failure_latest.jpg")
 LAYER_ENTRY_SHELF = "shelf"
 LAYER_ENTRY_STOW = "stow"
+LAYER_ENTRY_STARTUP = "startup"
 LAYER_ENTRY_UNKNOWN = "unknown"
 TARGET_DEPTH_REFINE_RADIUS_PX = int(os.getenv("TARGET_DEPTH_REFINE_RADIUS_PX", "10"))
 TARGET_DEPTH_REFINE_MAX_DELTA_M = float(os.getenv("TARGET_DEPTH_REFINE_MAX_DELTA_M", "0.08"))
@@ -873,13 +874,13 @@ def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: flo
     return True
 
 
-def go_to_place_point(arm: "DobotArm"):
+def go_to_place_point(arm: "DobotArm", visit_transition: bool = True):
     """移动机械臂到记录的放置点 (MovL 笛卡尔)"""
     if _place_point_pose is None:
         print("  [错误] 放置点未记录! 先用 p 进入放置点管理, 拖到目标位置后输入 s")
         return False
     pose, name = _place_point_pose
-    if _place_transition_pose is not None:
+    if visit_transition and _place_transition_pose is not None:
         t_pose, t_name = _place_transition_pose
         print(f"\n[放置过渡点] 关节运动到 {t_name} ...")
         ok = arm.move_pose_safe(t_pose, joints=_place_transition_joints, speed=80)
@@ -947,7 +948,11 @@ def is_at_stow_pose(arm: "DobotArm", verbose=True):
     return matched
 
 
-def go_to_stow_pose(arm: "DobotArm", from_shelf_pose: bool = False):
+def go_to_stow_pose(
+    arm: "DobotArm",
+    from_shelf_pose: bool = False,
+    skip_transition: bool = False,
+):
     """移动到收起姿态；已知在货架层时直接关节收起，避免多余过渡点。"""
     if _stow_pose is None:
         print("  [收起姿态] 未记录, 跳过。可用 u 菜单拖动记录")
@@ -956,7 +961,9 @@ def go_to_stow_pose(arm: "DobotArm", from_shelf_pose: bool = False):
         print("  [收起姿态] 当前已经收起, 跳过机械臂运动")
         return True
 
-    if from_shelf_pose:
+    if skip_transition:
+        print("\n[收起姿态] 冷启动直接尝试收起，跳过放置过渡点 ...")
+    elif from_shelf_pose:
         print("\n[收起姿态] 当前在货架层，直接关节收起，跳过放置过渡点 ...")
     elif _place_transition_pose is not None:
         transition_pose, transition_name = _place_transition_pose
@@ -1075,13 +1082,19 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
                 return False
 
     use_chassis_place, place_marker = load_chassis_place_settings()
+    held_at_transition = False
     if use_chassis_place:
         if chassis_at_place(place_marker):
             print(f"\n[底盘] 已在放置点 {place_marker}，直接执行机械臂放置")
         else:
-            if not go_to_stow_pose(arm, from_shelf_pose=current_layer_idx is not None):
-                print("  [停止] 底盘移动前未能到达收起姿态, 不调用底盘")
+            if not go_to_place_transition(arm):
+                print("  [停止] 底盘移动前未能到达放置过渡点, 不调用底盘")
                 return False
+            held_at_transition = True
+            if hand_ok and not hand.is_holding():
+                print("  [停止] 到达放置过渡点后灵巧手保持失败, 不调用底盘")
+                return False
+            print("  [运输] 机械臂保持在放置过渡点，开始移动底盘")
             if not move_chassis_to_place(place_marker):
                 print("  [停止] 底盘未能前往放置固定点, 不继续机械臂放置")
                 return False
@@ -1091,13 +1104,17 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_la
         return False
 
     print(f"\n[Place] 前往放置点 ({_place_point_pose[1]}) ...")
-    if not go_to_place_point(arm):
+    if not go_to_place_point(arm, visit_transition=not held_at_transition):
         print("  [停止] 前往放置点失败, 停在当前位置, 不继续后续订单")
         return False
     if hand_ok:
         hand.open()
     time.sleep(MOTION_SETTLE_S)
-    print("[流程] 已放置并停在放置点, 下一单直接前往目标层或收起后切换货架")
+    print("[流程] 商品已放置，开始收起机械臂")
+    if not go_to_stow_pose(arm):
+        print("  [停止] 商品已放置，但机械臂收起失败")
+        return False
+    print("[流程] 商品已放置且机械臂已收起")
     return True
 
 
@@ -1426,7 +1443,11 @@ def _handle_worker_command(cmd, arm, hand, camera, locator, transformer, layer_e
 
     if cmd in ("__stow_pose__", "__safe_stow__"):
         print("[前端常驻模式] 收到底盘移动前安全收起指令", flush=True)
-        stowed = go_to_stow_pose(arm, from_shelf_pose=layer_entry_origin == LAYER_ENTRY_SHELF)
+        stowed = go_to_stow_pose(
+            arm,
+            from_shelf_pose=layer_entry_origin == LAYER_ENTRY_SHELF,
+            skip_transition=layer_entry_origin == LAYER_ENTRY_STARTUP,
+        )
         if stowed:
             print("[前端常驻模式][完成] 已到达收起姿态", flush=True)
         else:
@@ -1672,7 +1693,7 @@ def main():
         worker_poweroff_requested = False
         latest_failure_image = None
         # 待机启动时不知道机械臂当前位于哪条已规划路径上，禁止直接横移进层。
-        layer_entry_origin = LAYER_ENTRY_UNKNOWN if SHELF_GRASP_IDLE_STARTUP else LAYER_ENTRY_SHELF
+        layer_entry_origin = LAYER_ENTRY_STARTUP if SHELF_GRASP_IDLE_STARTUP else LAYER_ENTRY_SHELF
 
         def worker_fail(message: str):
             diagnostic_path = _save_failure_diagnostic(latest_failure_image)
@@ -2374,12 +2395,12 @@ def main():
                 worker_fail("灵巧手闭合/保持失败")
                 continue
 
-            # 6. 放置并停在放置点, 下一单再按目标层移动
+            # 6. 先在过渡点保持夹持，底盘到位后放置，再收起等待下一单。
             if not finish_pick_cycle(arm, hand, _current_layer_idx):
                 print("  [停止] 放置失败, 本次抓取未完成")
                 worker_fail("放置失败")
                 continue
-            layer_entry_origin = LAYER_ENTRY_UNKNOWN
+            layer_entry_origin = LAYER_ENTRY_STOW
             time.sleep(MOTION_SETTLE_S)
             auto_attempt_succeeded = True
 

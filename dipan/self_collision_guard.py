@@ -152,10 +152,15 @@ class Nova5SelfCollisionGuard:
         urdf_path: str = NOVA5_URDF,
         srdf_path: str = NOVA5_SRDF,
         margin_m: float = 0.015,
+        camera_margin_m: Optional[float] = None,
     ):
         self.urdf_path = urdf_path
         self.srdf_path = srdf_path
         self.margin_m = float(margin_m)
+        self.camera_margin_m = float(
+            os.getenv("SELF_COLLISION_CAMERA_MARGIN_M", "0.0")
+            if camera_margin_m is None else camera_margin_m
+        )
         self.joints = self._load_urdf_joints(urdf_path)
         self.disabled_pairs = self._load_disabled_pairs(srdf_path)
         self.disabled_pairs.add(tuple(sorted(("base_link", "Link2"))))
@@ -310,7 +315,12 @@ class Nova5SelfCollisionGuard:
             spec_a, a0, a1 = world_capsules[i]
             spec_b, b0, b1 = world_capsules[j]
             dist = _segment_segment_distance(a0, a1, b0, b1)
-            clearance = dist - spec_a.radius_m - spec_b.radius_m - self.margin_m
+            pair_margin = (
+                self.camera_margin_m
+                if "tool_camera" in (spec_a.name, spec_b.name)
+                else self.margin_m
+            )
+            clearance = dist - spec_a.radius_m - spec_b.radius_m - pair_margin
             min_clearance = min(min_clearance, clearance)
             if clearance < 0.0:
                 issues.append(CollisionIssue(spec_a.name, spec_b.name, dist, clearance))
