@@ -19,7 +19,23 @@ class FakeHand:
         return True
 
 
+class StartupHand(FakeHand):
+    def __init__(self):
+        super().__init__()
+        self.connect_calls = 0
+
+    def connect(self):
+        self.connect_calls += 1
+
+
 class PickCycleRoutingTests(unittest.TestCase):
+    def test_startup_connects_and_opens_hand_without_arm_motion(self):
+        hand = StartupHand()
+
+        self.assertTrue(shelf_grasp._connect_and_open_hand(hand))
+        self.assertEqual(hand.connect_calls, 1)
+        self.assertEqual(hand.open_calls, 1)
+
     def test_temporary_policy_forces_wide_products_to_side_grasp(self):
         detection = Mock(depth_m=0.5, bbox=(10, 20, 130, 180))
         transformer = Mock(fy=390.4)

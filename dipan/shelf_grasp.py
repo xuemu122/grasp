@@ -1592,6 +1592,13 @@ def _save_failure_diagnostic(image):
     return None
 
 
+def _connect_and_open_hand(hand):
+    """Initialize the gripper without requiring any arm motion."""
+    hand.connect()
+    print("[启动] 机械臂保持当前位置，先张开灵巧手")
+    return hand.open()
+
+
 def _clear_failure_diagnostic():
     try:
         os.remove(FAILURE_DIAGNOSTIC_PATH)
@@ -1670,14 +1677,12 @@ def main():
     else:
         print("\n[3/4] 连接 Aero Hand 灵巧手 ...")
         hand = AeroGripper()
-        hand.connect()
+        _connect_and_open_hand(hand)
 
     if _current_layer_idx == STARTUP_LAYER_IDX:
         save_shelf_layers()
     if not SHELF_GRASP_IDLE_STARTUP and not SAFE_NAV_STARTUP and _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
-        if go_to_layer_via_clearance(arm, _current_layer_idx) and hand is not None:
-            hand.open()
-            time.sleep(MOTION_SETTLE_S)
+        go_to_layer_via_clearance(arm, _current_layer_idx)
 
     # ── 4. 手眼标定 ──
     print("\n[4/4] 手眼标定 ...")
