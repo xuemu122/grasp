@@ -146,6 +146,9 @@ DEPTH_GUARD_FINGER_RADIUS_M = float(os.getenv("DEPTH_GUARD_FINGER_RADIUS_M", str
 DEPTH_GUARD_APPROACH_LENGTH_M = float(os.getenv("DEPTH_GUARD_APPROACH_LENGTH_M", "0.08"))
 DEPTH_GUARD_PATH_SAMPLES = int(os.getenv("DEPTH_GUARD_PATH_SAMPLES", "8"))
 DEPTH_GUARD_MIN_HIT_POINTS = max(1, int(os.getenv("DEPTH_GUARD_MIN_HIT_POINTS", "2")))
+DEPTH_GUARD_NOISE_FILTER_RADIUS_PX = max(0, int(os.getenv("DEPTH_GUARD_NOISE_FILTER_RADIUS_PX", "2")))
+DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT = max(1, int(os.getenv("DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT", "4")))
+DEPTH_GUARD_NOISE_FILTER_TOLERANCE_M = float(os.getenv("DEPTH_GUARD_NOISE_FILTER_TOLERANCE_M", "0.025"))
 DEPTH_GUARD_MAX_DEPTH_M = float(os.getenv("DEPTH_GUARD_MAX_DEPTH_M", "1.20"))
 DEPTH_GUARD_EXCLUDE_MARGIN_PX = int(os.getenv("DEPTH_GUARD_EXCLUDE_MARGIN_PX", "32"))
 DEPTH_GUARD_SELF_MASK_ENABLE = os.getenv("DEPTH_GUARD_SELF_MASK_ENABLE", "1").lower() in ("1", "true", "yes", "on")
@@ -2116,11 +2119,15 @@ def main():
                     self_camera_box_max_local_m=(
                         DEPTH_GUARD_SELF_CAMERA_BOX_MAX_M if DEPTH_GUARD_CAMERA_ENABLE else None
                     ),
+                    noise_filter_radius_px=DEPTH_GUARD_NOISE_FILTER_RADIUS_PX,
+                    noise_filter_min_support=DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT,
+                    noise_filter_tolerance_m=DEPTH_GUARD_NOISE_FILTER_TOLERANCE_M,
                     return_pixels=True,
                 )
                 print(
                     f"  [深度护栏] 障碍点={len(depth_obstacles_m)} "
                     f"(stride={DEPTH_GUARD_STRIDE}, max_depth={DEPTH_GUARD_MAX_DEPTH_M:.2f}m, "
+                    f"噪点滤波={DEPTH_GUARD_NOISE_FILTER_RADIUS_PX}px/{DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT}点±{DEPTH_GUARD_NOISE_FILTER_TOLERANCE_M*1000:.0f}mm, "
                     f"排除框={len(depth_guard_exclude_bboxes)}, 外扩={DEPTH_GUARD_EXCLUDE_MARGIN_PX}px, "
                     f"自手部={'on' if DEPTH_GUARD_SELF_MASK_ENABLE else 'off'} "
                     f"r=掌{DEPTH_GUARD_SELF_MASK_RADIUS_M*1000:.0f}/指{DEPTH_GUARD_SELF_MASK_FINGER_RADIUS_M*1000:.0f}mm, "

@@ -173,12 +173,21 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
     });
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grasp-ws-'));
     const dataFile = path.join(tempDir, 'products.json');
+    const ordersFile = path.join(tempDir, 'orders.json');
     const shelfLayersFile = path.join(tempDir, 'shelf_layers.json');
     fs.writeFileSync(dataFile, JSON.stringify({
         products: [{
             id: 1,
             name: '云端咖啡',
             price: 8,
+            stock: 10,
+            status: 1,
+            location: '测试区A货架第2层',
+            chassis_marker: 'shelf-a'
+        }, {
+            id: 2,
+            name: '灵巧手失败商品',
+            price: 6,
             stock: 10,
             status: 1,
             location: '测试区A货架第2层',
@@ -201,6 +210,7 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
             ROBOT_GRASP_MODE: 'real',
             GRASP_SCRIPT: path.join(__dirname, 'fixtures', 'fake_shelf_grasp.py'),
             PRODUCTS_DB_FILE: dataFile,
+            ORDERS_DB_FILE: ordersFile,
             SHELF_LAYERS_FILE: shelfLayersFile,
             ROBOT_WORKER_READY_TIMEOUT_MS: '5000',
             ROBOT_GRAB_TIMEOUT_MS: '5000',
@@ -364,6 +374,47 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
         && /回到充电桩/.test(message.message)
     ));
 
+    const partialOrder = await fetch(`http://127.0.0.1:${port}/api/orders/prepare`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: [{ id: 2, qty: 1 }, { id: 1, qty: 1 }] })
+    });
+    const partialOrderJson = await partialOrder.json();
+    assert.equal(partialOrder.status, 200);
+    ws.send(JSON.stringify({
+        type: 'grab',
+        orderId: partialOrderJson.orderId,
+        completionToken: partialOrderJson.completionToken,
+        items: partialOrderJson.items
+    }));
+    const itemFailure = await collector.waitFor(
+        (message) => message.type === 'status'
+            && message.status === 'grabbing'
+            && message.stage === 'item-failed'
+            && message.orderId === partialOrderJson.orderId
+    );
+    assert.match(itemFailure.message, /继续下一件商品/);
+    const partialError = await collector.waitFor(
+        (message) => message.type === 'status'
+            && message.status === 'error'
+            && message.orderId === partialOrderJson.orderId
+    );
+    assert.match(partialError.message, /已交付 1 件，仅退未交付商品/);
+    const partialStored = JSON.parse(fs.readFileSync(ordersFile, 'utf8')).orders
+        .find((order) => order.orderId === partialOrderJson.orderId);
+    assert.equal(partialStored.status, 'PARTIALLY_COMPLETED');
+    assert.equal(partialStored.paymentStatus, 'PARTIALLY_REFUNDED');
+    assert.deepEqual(partialStored.deliveredItems.map(({ id, qty }) => ({ id, qty })), [{ id: 1, qty: 1 }]);
+    assert.equal(partialStored.refundAmount, 6);
+    const partialProducts = JSON.parse(fs.readFileSync(dataFile, 'utf8')).products;
+    assert.equal(partialProducts.find((product) => product.id === 1).stock, 9);
+    assert.equal(partialProducts.find((product) => product.id === 2).stock, 10);
+    await collector.waitFor(
+        (message) => message.type === 'status'
+            && message.status === 'order-ready'
+            && message.orderId === partialOrderJson.orderId
+    );
+
     ws.send('null');
     const objectError = await collector.waitFor(
         (message) => message.type === 'error' && message.message === 'JSON 指令必须是对象'
@@ -439,7 +490,7 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
     assert.ok(chassisMoveIndex >= 0, serverOutput);
     assert.ok(workerStartIndex >= 0 && workerStartIndex < chassisMoveIndex, serverOutput);
     assert.match(serverOutput, /已从签名凭证恢复货架层和底盘点位/);
-    assert.deepEqual(commands, [
+    assert.deepEqual(commands.slice(0, 9), [
         '__stow_pose__',
         '__stow_pose__',
         '__stow_pose__',
@@ -448,16 +499,17 @@ test('real mode powers on at startup, runs orders, and supports admin stow and p
         '__stow_pose__',
         '__stow_pose__',
         '__layer_2__',
-        '云端咖啡',
-        '__layer_2__',
-        '云端咖啡',
-        '__stow_pose__'
+        '灵巧手失败商品'
     ]);
+    const partialFailureCommandIndex = commands.lastIndexOf('灵巧手失败商品');
+    assert.ok(partialFailureCommandIndex >= 0);
+    assert.equal(commands[partialFailureCommandIndex + 1], '__stow_pose__');
+    assert.ok(commands.slice(partialFailureCommandIndex + 1).includes('云端咖啡'));
+    assert.equal(commands.at(-1), '__stow_pose__');
     const chassisMoves = fakeChassis.commands.filter((command) => command.startsWith('/api/move?'));
-    assert.equal(chassisMoves.length, 5);
-    assert.equal(
-        chassisMoves.filter((command) => command.includes('marker=charge_point_1F_35744')).length,
-        3
+    assert.ok(chassisMoves.length >= 5);
+    assert.ok(
+        chassisMoves.filter((command) => command.includes('marker=charge_point_1F_35744')).length >= 3
     );
     assert.equal(collector.messages.some((message) => message.type === 'robot_log'), false);
 

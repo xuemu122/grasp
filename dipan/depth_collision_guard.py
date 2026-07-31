@@ -41,6 +41,9 @@ def depth_to_robot_obstacles(
     self_hand_backoff_m: float = 0.03,
     self_camera_box_min_local_m: Optional[Sequence[float]] = None,
     self_camera_box_max_local_m: Optional[Sequence[float]] = None,
+    noise_filter_radius_px: int = 0,
+    noise_filter_min_support: int = 1,
+    noise_filter_tolerance_m: float = 0.025,
     return_pixels: bool = False,
 ) -> np.ndarray:
     if depth_img is None:
@@ -56,6 +59,32 @@ def depth_to_robot_obstacles(
     depth_scale = getattr(camera, "_depth_scale", None) or 0.001
     depth_m = depth_img[grid_y, grid_x].astype(np.float32) * float(depth_scale)
     valid = (depth_m >= min_depth_m) & (depth_m <= max_depth_m)
+
+    # Reject isolated depth speckles before projecting them into the robot frame.
+    # A real shelf or bottle surface has nearby pixels at a similar depth; a
+    # single flying pixel should not become an obstacle capsule hit.
+    filter_radius = max(0, int(noise_filter_radius_px))
+    min_support = max(1, int(noise_filter_min_support))
+    if filter_radius > 0 and min_support > 1:
+        support = np.zeros_like(valid, dtype=np.int16)
+        for dy in range(-filter_radius, filter_radius + 1):
+            for dx in range(-filter_radius, filter_radius + 1):
+                sample_x = grid_x + dx
+                sample_y = grid_y + dy
+                inside = (
+                    (sample_x >= 0) & (sample_x < w)
+                    & (sample_y >= 0) & (sample_y < h)
+                )
+                neighbor = depth_img[
+                    np.clip(sample_y, 0, h - 1),
+                    np.clip(sample_x, 0, w - 1),
+                ].astype(np.float32) * float(depth_scale)
+                neighbor_valid = (neighbor >= min_depth_m) & (neighbor <= max_depth_m)
+                support += (
+                    inside & neighbor_valid
+                    & (np.abs(neighbor - depth_m) <= float(noise_filter_tolerance_m))
+                ).astype(np.int16)
+        valid &= support >= min_support
 
     boxes = []
     if exclude_bbox is not None:

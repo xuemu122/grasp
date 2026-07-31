@@ -1,9 +1,10 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
 
-from depth_collision_guard import check_hand_path, hand_path_hit_mask
+from depth_collision_guard import check_hand_path, depth_to_robot_obstacles, hand_path_hit_mask
 from dobot_arm import DobotArm
 from self_collision_guard import Nova5SelfCollisionGuard
 from tool_geometry import camera_box_bounds, camera_capsule_strips, hand_capsule_parts
@@ -77,6 +78,41 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         )
         self.assertFalse(result.ok)
         self.assertEqual(result.hit_count, 2)
+
+    def test_depth_obstacle_filter_rejects_isolated_speckle(self):
+        depth = np.zeros((24, 24), dtype=np.uint16)
+        depth[8, 8] = 500
+        camera = SimpleNamespace(_depth_scale=0.001)
+        transformer = SimpleNamespace(
+            cx=0.0,
+            cy=0.0,
+            fx=100.0,
+            fy=100.0,
+            T_flange_to_cam=np.eye(4, dtype=np.float32),
+            _rpy_to_rot=lambda *_args: np.eye(3, dtype=np.float32),
+        )
+        points = depth_to_robot_obstacles(
+            depth,
+            camera,
+            transformer,
+            [0, 0, 0, 0, 0, 0],
+            stride=8,
+            noise_filter_radius_px=2,
+            noise_filter_min_support=4,
+        )
+        self.assertEqual(len(points), 0)
+
+        depth[7:10, 7:10] = 500
+        points = depth_to_robot_obstacles(
+            depth,
+            camera,
+            transformer,
+            [0, 0, 0, 0, 0, 0],
+            stride=8,
+            noise_filter_radius_px=2,
+            noise_filter_min_support=4,
+        )
+        self.assertEqual(len(points), 1)
 
     def test_camera_box_is_centered_at_palm_root(self):
         self.assertAlmostEqual(self.box_min[0], -0.15)

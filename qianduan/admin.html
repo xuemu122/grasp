@@ -215,6 +215,8 @@
                     <option value="PAID">已支付</option>
                     <option value="PROCESSING">抓取中</option>
                     <option value="COMPLETED">已完成</option>
+                    <option value="PARTIAL_REFUNDING">部分交付，退款中</option>
+                    <option value="PARTIALLY_COMPLETED">部分交付</option>
                     <option value="REFUNDING">退款中</option>
                     <option value="REFUNDED">已退款</option>
                     <option value="FAILED">失败</option>
@@ -798,7 +800,8 @@
 
         const adminOrderStatusLabels = {
             PENDING_PAYMENT: '待支付', PAID: '已支付', PROCESSING: '抓取中',
-            COMPLETED: '已完成', REFUNDING: '退款中', REFUNDED: '已退款',
+            COMPLETED: '已完成', PARTIAL_REFUNDING: '部分交付，退款中',
+            PARTIALLY_COMPLETED: '部分交付', REFUNDING: '退款中', REFUNDED: '已退款',
             FAILED: '失败', PAYMENT_FAILED: '支付创建失败', CLOSED: '已关闭'
         };
 

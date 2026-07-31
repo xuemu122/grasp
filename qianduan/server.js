@@ -595,6 +595,9 @@ function paymentStatusMessage(order) {
             ? '订单处理失败，自动退款暂未成功，请联系管理员处理'
             : (order.failureReason || '订单处理失败，请重新下单');
     }
+    if (order.status === 'PARTIALLY_COMPLETED' && order.refundStatus === 'FAIL') {
+        return '订单已部分交付，未交付商品退款暂未成功，请联系管理员处理';
+    }
     return null;
 }
 
@@ -1697,7 +1700,11 @@ const server = http.createServer(async (req, res) => {
         } catch (error) {
             order.refundStatus = 'FAIL';
             order.refundReason = `${reason} (${error.message})`;
-            setOrderStatus(order, 'FAILED', order.paymentStatus);
+            setOrderStatus(
+                order,
+                Number(order.deliveredUnits || 0) > 0 ? 'PARTIALLY_COMPLETED' : 'FAILED',
+                order.paymentStatus
+            );
             sendJSON(res, { code: 1, message: `自动退款失败: ${error.message}` }, 502);
         }
         return;
@@ -3198,13 +3205,21 @@ async function optimizeOrderItemSequence(items) {
 }
 
 async function executeOrderItems(ws, orderId, items, totalUnits, deliveryProgress) {
-    let completedUnits = 0;
     const productsById = ROBOT_GRASP_REAL
         ? new Map(readProducts().map((product) => [String(product.id), product]))
         : null;
+    const units = [];
     for (const item of items) {
         for (let itemNo = 1; itemNo <= item.qty; itemNo++) {
-            const progressBase = (completedUnits / totalUnits) * 100;
+            units.push({ item, itemNo });
+        }
+    }
+
+    for (let index = 0; index < units.length; index += 1) {
+        const { item, itemNo } = units[index];
+        const label = item.qty > 1 ? `${item.name} (${itemNo}/${item.qty})` : item.name;
+        const progressBase = (index / totalUnits) * 100;
+        try {
             if (ROBOT_GRASP_REAL) {
                 await runRealGrab(
                     ws,
@@ -3218,17 +3233,55 @@ async function executeOrderItems(ws, orderId, items, totalUnits, deliveryProgres
             } else {
                 await runSimulatedGrab(ws, orderId, item, progressBase, totalUnits, itemNo);
             }
-            completedUnits += 1;
+
             const deliveredById = new Map((deliveryProgress.deliveredItems || []).map((entry) => [Number(entry.id), entry]));
             const delivered = deliveredById.get(Number(item.id));
             if (delivered) delivered.qty += 1;
             else deliveryProgress.deliveredItems.push({ id: Number(item.id), qty: 1 });
-            deliveryProgress.completedUnits = completedUnits;
+            deliveryProgress.completedUnits += 1;
             const saved = recordOrderUnitDelivered(orderId, item);
             if (saved) {
                 log(`  ✅ 已交付并记账: ${item.name} (${saved.deliveredUnits}/${totalUnits})`);
             }
+        } catch (error) {
+            const failure = {
+                id: Number(item.id),
+                name: item.name,
+                itemNo,
+                message: error.message
+            };
+            deliveryProgress.failedUnits.push(failure);
+            log(`  ⚠️ 单瓶失败，暂不终止订单: ${error.message}`);
+
+            const hasNext = index + 1 < units.length;
+            sendStatus(ws, 'grabbing', {
+                orderId,
+                item: itemStatus(item),
+                stage: 'item-failed',
+                progress: Math.min(99, ((index + 1) / totalUnits) * 100),
+                message: hasNext
+                    ? `${label} 失败，正在安全收起后继续下一件商品`
+                    : `${label} 失败，已完成本订单全部单瓶尝试`
+            });
+            if (!hasNext) continue;
+
+            if (ROBOT_GRASP_REAL) {
+                try {
+                    await moveRobotToStowPose();
+                    log(`  🔄 ${label} 失败后已安全收起，继续下一件商品`);
+                } catch (stowError) {
+                    deliveryProgress.continuationError = `单瓶失败后无法安全收起: ${stowError.message}`;
+                    log(`  [停止] ${deliveryProgress.continuationError}`);
+                    break;
+                }
+            }
         }
+    }
+
+    if (deliveryProgress.failedUnits.length > 0) {
+        const failures = deliveryProgress.failedUnits.map((item) => item.message).join('；');
+        const suffix = deliveryProgress.continuationError ? `；${deliveryProgress.continuationError}` : '';
+        throw new Error(`部分商品抓取失败: ${failures}${suffix}`);
     }
 }
 
@@ -3308,7 +3361,12 @@ async function handleGrabCommand(ws, msg) {
     activeOrderId = orderId;
     broadcastRobotStatus('busy', `正在处理订单 ${orderId}`);
     let fulfilled = false;
-    const deliveryProgress = { completedUnits: 0, deliveredItems: [] };
+    const deliveryProgress = {
+        completedUnits: 0,
+        deliveredItems: [],
+        failedUnits: [],
+        continuationError: null
+    };
 
     try {
         sendStatus(ws, 'started', {
@@ -3360,7 +3418,13 @@ async function handleGrabCommand(ws, msg) {
                 failureMessage = `${e.message}；自动退款失败，请联系管理员：${refundError.message}`;
                 log(`❌ 订单 ${orderId} 自动退款失败: ${refundError.message}`);
                 const latest = orderById(orderId);
-                if (latest) setOrderStatus(latest, 'FAILED', latest.paymentStatus);
+                if (latest) {
+                    setOrderStatus(
+                        latest,
+                        Number(latest.deliveredUnits || 0) > 0 ? 'PARTIALLY_COMPLETED' : 'FAILED',
+                        latest.paymentStatus
+                    );
+                }
             }
         } else {
             failureMessage = `${e.message}；商品已成功放置，不自动退款`;
