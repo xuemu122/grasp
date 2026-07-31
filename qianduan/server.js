@@ -548,6 +548,19 @@ function orderStatusLabel(status) {
     })[status] || status || '未知';
 }
 
+function paymentStatusLabel(status) {
+    return ({
+        PENDING_PAYMENT: '待支付',
+        PAID: '已支付',
+        PARTIAL_REFUNDING: '部分退款中',
+        PARTIALLY_REFUNDED: '部分退款',
+        REFUNDING: '退款中',
+        REFUNDED: '已退款',
+        PAYMENT_FAILED: '支付失败',
+        CLOSED: '已关闭'
+    })[status] || status || '未知';
+}
+
 function publicOrder(order) {
     return {
         orderId: order.orderId,
@@ -556,6 +569,7 @@ function publicOrder(order) {
         totalAmount: Number(order.totalAmount || 0),
         paymentMode: order.paymentMode || PAYMENT_MODE,
         paymentStatus: order.paymentStatus || 'PENDING_PAYMENT',
+        paymentStatusLabel: paymentStatusLabel(order.paymentStatus || 'PENDING_PAYMENT'),
         status: order.status || 'PENDING_PAYMENT',
         statusLabel: orderStatusLabel(order.status),
         refundId: order.refundId || null,

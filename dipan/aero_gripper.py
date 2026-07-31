@@ -231,16 +231,19 @@ class AeroGripper:
             monitor["low_counts"][idx] += 1
             if monitor["low_counts"][idx] < monitor["consecutive"]:
                 continue
-            monitor["low_counts"][idx] = 0
-
             if command < monitor["max_cmd"] - 1e-6:
                 tightened = min(monitor["max_cmd"], command + monitor["step"])
                 pose[idx] = tightened
+                # Contact loss is already confirmed. Keep tightening at the
+                # normal close cadence until load returns instead of waiting
+                # for a fresh debounce window after every small step.
+                monitor["low_counts"][idx] = max(0, monitor["consecutive"] - 1)
                 events.append(
                     f"[Aero] 保持补紧: {idx}:{COMPACT_NAMES[idx]} "
                     f"{command:.0f}°→{tightened:.0f}° ({load_label})"
                 )
             else:
+                monitor["low_counts"][idx] = 0
                 monitor["weak_at_max"].add(idx)
                 if idx not in monitor["warned_at_max"]:
                     monitor["warned_at_max"].add(idx)
@@ -267,6 +270,9 @@ class AeroGripper:
         if not joints or os.getenv("AERO_HOLD_TIGHTEN_ENABLE", "1").lower() not in ("1", "true", "yes", "on"):
             return None
         min_extra_ma = float(os.getenv("AERO_HOLD_MIN_EXTRA_MA", str(max(60.0, contact_delta_ma * 0.55))))
+        normal_step = float(os.getenv("AERO_FLEX_STEP", "3"))
+        normal_interval_s = float(os.getenv("AERO_FLEX_SETTLE", "0.05"))
+        normal_consecutive = int(os.getenv("AERO_FLEX_CONSECUTIVE", "2"))
         return {
             "joints": joints,
             "profile": profile,
@@ -276,9 +282,9 @@ class AeroGripper:
             "abs_ma": float(os.getenv("AERO_HOLD_ABS_MA", str(abs_ma))),
             "max_cmd": float(os.getenv("AERO_HOLD_TIGHTEN_MAX", str(max_cmd))),
             "min_contacts": max(1, min(len(joints), int(min_contacts))),
-            "step": max(0.1, float(os.getenv("AERO_HOLD_TIGHTEN_STEP", "1"))),
-            "consecutive": max(1, int(os.getenv("AERO_HOLD_TIGHTEN_CONSECUTIVE", "3"))),
-            "interval_s": max(0.05, float(os.getenv("AERO_HOLD_CHECK_INTERVAL_S", "0.2"))),
+            "step": max(0.1, float(os.getenv("AERO_HOLD_TIGHTEN_STEP", str(normal_step)))),
+            "consecutive": max(1, int(os.getenv("AERO_HOLD_TIGHTEN_CONSECUTIVE", str(normal_consecutive)))),
+            "interval_s": max(0.01, float(os.getenv("AERO_HOLD_CHECK_INTERVAL_S", str(normal_interval_s)))),
             "samples": max(1, int(os.getenv("AERO_HOLD_CURRENT_SAMPLES", "1"))),
             "sample_delay_s": max(0.0, float(os.getenv("AERO_HOLD_CURRENT_SAMPLE_DELAY", "0"))),
             "low_counts": {idx: 0 for idx in joints},

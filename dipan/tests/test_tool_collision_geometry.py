@@ -79,6 +79,33 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.hit_count, 2)
 
+    def test_depth_guard_uses_separate_camera_support_threshold(self):
+        camera_points = np.asarray(
+            [[-0.10, -0.02 + index * 0.008, -0.0125] for index in range(6)],
+            dtype=np.float32,
+        )
+        mixed_points = np.concatenate(
+            [camera_points, np.asarray([[0.005, 0.0, 0.10]], dtype=np.float32)],
+            axis=0,
+        )
+        result = check_hand_path(
+            mixed_points,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            0.25,
+            0.01,
+            samples=2,
+            flange_rotation_m=np.eye(3),
+            camera_box_min_local_m=self.box_min,
+            camera_box_max_local_m=self.box_max,
+            min_hit_points=2,
+            camera_min_hit_points=12,
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.hand_hit_count, 1)
+        self.assertEqual(result.camera_hit_count, 6)
+
     def test_depth_obstacle_filter_rejects_isolated_speckle(self):
         depth = np.zeros((24, 24), dtype=np.uint16)
         depth[8, 8] = 500

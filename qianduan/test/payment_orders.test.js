@@ -117,6 +117,8 @@ test('free payment order is persisted, completed and refundable', async (t) => {
     const refunded = await postJson(`${base}/api/admin/orders/${prepared.json.orderId}/refund`, { reason: '测试退款' }, { Cookie: cookie });
     assert.equal(refunded.response.status, 200);
     assert.equal(refunded.json.data.status, 'REFUNDED');
+    assert.equal(refunded.json.data.statusLabel, '已退款');
+    assert.equal(refunded.json.data.paymentStatusLabel, '已退款');
     const products = await (await fetch(`${base}/api/products`)).json();
     assert.equal(products.data[0].stock, 5);
 
@@ -188,6 +190,7 @@ test('free payment order is persisted, completed and refundable', async (t) => {
     assert.equal(partialFailure.response.status, 200);
     assert.equal(partialFailure.json.data.status, 'PARTIALLY_COMPLETED');
     assert.equal(partialFailure.json.data.paymentStatus, 'PARTIALLY_REFUNDED');
+    assert.equal(partialFailure.json.data.paymentStatusLabel, '部分退款');
     assert.equal(partialFailure.json.data.deliveredUnits, 1);
     assert.equal(partialFailure.json.data.deliveredAmount, 8);
     assert.equal(partialFailure.json.data.refundAmount, 8);

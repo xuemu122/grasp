@@ -10,9 +10,10 @@ class AeroGripperHoldTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "AERO_HOLD_TIGHTEN_ENABLE": "1",
             "AERO_HOLD_MIN_EXTRA_MA": "100",
-            "AERO_HOLD_TIGHTEN_STEP": "1",
-            "AERO_HOLD_TIGHTEN_CONSECUTIVE": "3",
-        }, clear=False):
+            "AERO_FLEX_STEP": "3",
+            "AERO_FLEX_SETTLE": "0.05",
+            "AERO_FLEX_CONSECUTIVE": "2",
+        }, clear=True):
             return AeroGripper._build_hold_monitor(
                 joints=joints or {3},
                 profile=profile,
@@ -24,20 +25,24 @@ class AeroGripperHoldTests(unittest.TestCase):
                 min_contacts=min_contacts,
             )
 
-    def test_sustained_low_contact_tightens_one_small_step(self):
+    def test_sustained_low_contact_tightens_at_normal_close_cadence(self):
         profile = [(40.0, [100] * 7)]
         monitor = self.build_monitor(profile=profile)
         pose = [0, 0, 0, 40, 0, 0, 0]
         low_currents = [0, 0, 0, 150, 0, 0, 0]
 
-        for _ in range(2):
-            pose, events, weak = AeroGripper._tighten_hold_pose(pose, low_currents, monitor)
-            self.assertEqual(pose[3], 40)
-            self.assertEqual(events, [])
-            self.assertFalse(weak)
+        pose, events, weak = AeroGripper._tighten_hold_pose(pose, low_currents, monitor)
+        self.assertEqual(pose[3], 40)
+        self.assertEqual(events, [])
+        self.assertFalse(weak)
 
         pose, events, weak = AeroGripper._tighten_hold_pose(pose, low_currents, monitor)
-        self.assertEqual(pose[3], 41)
+        self.assertEqual(pose[3], 43)
+        self.assertEqual(len(events), 1)
+        self.assertFalse(weak)
+
+        pose, events, weak = AeroGripper._tighten_hold_pose(pose, low_currents, monitor)
+        self.assertEqual(pose[3], 46)
         self.assertEqual(len(events), 1)
         self.assertFalse(weak)
 
@@ -58,10 +63,12 @@ class AeroGripperHoldTests(unittest.TestCase):
         pose = [0, 0, 0, 80, 0, 0, 0]
         currents = [0, 0, 0, 150, 0, 0, 0]
 
+        all_events = []
         for _ in range(3):
             pose, events, weak = AeroGripper._tighten_hold_pose(pose, currents, monitor)
+            all_events.extend(events)
         self.assertEqual(pose[3], 80)
-        self.assertEqual(len(events), 1)
+        self.assertEqual(len(all_events), 1)
         self.assertTrue(weak)
 
     def test_one_weak_finger_is_allowed_when_minimum_contacts_remain(self):

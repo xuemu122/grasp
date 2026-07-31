@@ -804,6 +804,12 @@
             PARTIALLY_COMPLETED: '部分交付', REFUNDING: '退款中', REFUNDED: '已退款',
             FAILED: '失败', PAYMENT_FAILED: '支付创建失败', CLOSED: '已关闭'
         };
+        const adminPaymentStatusLabels = {
+            PENDING_PAYMENT: '待支付', PAID: '已支付',
+            PARTIAL_REFUNDING: '部分退款中', PARTIALLY_REFUNDED: '部分退款',
+            REFUNDING: '退款中', REFUNDED: '已退款',
+            PAYMENT_FAILED: '支付失败', CLOSED: '已关闭'
+        };
 
         function adminOrderTime(value) {
             if (!value) return '-';
@@ -842,7 +848,7 @@
                         <td><strong>${esc(order.orderId)}</strong><br><small>${esc(order.paymentMode || '')}</small></td>
                         <td class="order-items-summary">${items || '-'}</td>
                         <td style="color:var(--primary);font-weight:700;">¥${Number(order.totalAmount || 0).toFixed(2)}</td>
-                        <td>${esc(order.paymentStatus || '-')}</td>
+                        <td>${esc(order.paymentStatusLabel || adminPaymentStatusLabels[order.paymentStatus] || order.paymentStatus || '-')}</td>
                         <td><span class="status-badge ${order.status === 'REFUNDED' ? 'off' : (order.status === 'COMPLETED' ? 'on' : 'warn')}" title="${esc(statusLabel)}">${esc(statusLabel)}</span></td>
                         <td>${esc(adminOrderTime(order.createdAt))}</td>
                         <td class="actions"><button class="btn btn-primary btn-sm" type="button" onclick="showAdminOrderDetail('${esc(order.orderId)}')">详情</button>${canRefund ? `<button class="btn btn-danger btn-sm" type="button" onclick="refundAdminOrder('${esc(order.orderId)}')">退款</button>` : ''}</td>
@@ -860,7 +866,7 @@
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '订单读取失败');
                 const order = json.data;
                 const items = (order.items || []).map((item) => `${item.name} × ${item.qty}`).join('、');
-                alert(`订单号：${order.orderId}\n商品：${items}\n金额：¥${Number(order.totalAmount || 0).toFixed(2)}\n状态：${adminOrderStatusLabels[order.status] || order.status}\n支付：${order.paymentStatus}\n创建：${adminOrderTime(order.createdAt)}`);
+                alert(`订单号：${order.orderId}\n商品：${items}\n金额：¥${Number(order.totalAmount || 0).toFixed(2)}\n状态：${adminOrderStatusLabels[order.status] || order.status}\n支付：${order.paymentStatusLabel || adminPaymentStatusLabels[order.paymentStatus] || order.paymentStatus}\n创建：${adminOrderTime(order.createdAt)}`);
             } catch (error) {
                 showToast(error.message, 'error');
             }
