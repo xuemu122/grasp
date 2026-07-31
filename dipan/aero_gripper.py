@@ -397,7 +397,12 @@ class AeroGripper:
             delta_ma = float(os.getenv("AERO_FLEX_DELTA_MA", "180"))
             abs_ma = float(os.getenv("AERO_FLEX_ABS_MA", "650"))
             max_steps = int(os.getenv("AERO_FLEX_MAX_STEPS", "300"))
-            profile_path = os.getenv("AERO_FLEX_PROFILE", DEFAULT_AERO_FLEX_PROFILE)
+            profile_value = os.getenv("AERO_FLEX_PROFILE", DEFAULT_AERO_FLEX_PROFILE).strip()
+            profile_path = (
+                os.path.abspath(os.path.expanduser(profile_value))
+                if profile_value
+                else ""
+            )
             active_joints = _parse_index_set(os.getenv("AERO_FLEX_ACTIVE_JOINTS"), "1,2,3,4,5,6")
             required_raw = os.getenv("AERO_FLEX_REQUIRED_FINGERS", "")
             required_fingers = (
@@ -419,12 +424,27 @@ class AeroGripper:
                 raise ValueError(f"required fingers 未激活: {missing_required}")
 
             empty_profile = None
-            if profile_path and os.path.exists(profile_path):
-                empty_profile = _load_empty_profile(profile_path)
+            profile_error = None
+            if profile_path and os.path.isfile(profile_path):
+                try:
+                    empty_profile = _load_empty_profile(profile_path)
+                except (OSError, ValueError) as exc:
+                    profile_error = str(exc)
             if profile_path and empty_profile:
                 print(f"[Aero] 柔性抓取: 使用空载曲线 {profile_path}")
+            elif profile_path and os.path.exists(profile_path):
+                print(
+                    f"[Aero][警告] 空载曲线内容无效: {profile_path}"
+                    f"{f' ({profile_error})' if profile_error else ''}, "
+                    "使用起始基线电流判断"
+                )
+            elif profile_path:
+                print(
+                    f"[Aero][警告] 空载曲线文件不存在: {profile_path}, "
+                    "使用起始基线电流判断"
+                )
             else:
-                print("[Aero][警告] 柔性抓取未找到空载曲线, 使用基线电流判断")
+                print("[Aero] 未配置空载曲线, 使用起始基线电流判断")
 
             values = {idx: start for idx in active_joints}
             for idx in required_fingers:

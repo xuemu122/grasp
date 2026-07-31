@@ -41,6 +41,11 @@ class VerticalTransformer(FakeTransformer):
         return np.array([point[0], point[1], (100.0 - point[1]) * 0.002], dtype=float)
 
 
+class ArbitraryWorldZTransformer(VerticalTransformer):
+    def camera_to_robot(self, point, _flange_pose=None, debug=False):
+        return np.array([point[0], point[1], -12.34], dtype=float)
+
+
 def detection(name, row, depth):
     return SimpleNamespace(
         class_name=name,
@@ -194,8 +199,94 @@ class ShelfBoardFilterTests(unittest.TestCase):
         self.assertEqual(mode, "right_side")
         self.assertAlmostEqual(world_z, 0.09, places=5)
         self.assertAlmostEqual(grip_pixel[1], 55.0, places=5)
-        self.assertGreaterEqual(world_z, 0.065)
-        self.assertLessEqual(world_z, 0.11)
+        clearance = grasp_planner.side_grasp_bottom_clearance_m(det, grip_pixel, 100.0)
+        self.assertAlmostEqual(clearance, 0.09, places=5)
+
+    def test_side_grasp_minimum_is_measured_from_detection_box_bottom(self):
+        det = SimpleNamespace(bbox=(10, 0, 30, 100), depth_m=0.14)
+        with (
+            patch.object(grasp_planner, "FORCE_SIDE_GRASP", True),
+            patch.object(grasp_planner, "SIDE_GRASP_MIN_HEIGHT_M", 0.065),
+            patch.object(grasp_planner, "SIDE_GRASP_MAX_HEIGHT_M", 0.11),
+            patch.object(grasp_planner, "SIDE_GRASP_LOWER_SHIFT_M", 0.01),
+        ):
+            _, _, world_z, mode, _, grip_pixel = grasp_planner.plan_edge_grasp(
+                det,
+                "right",
+                ArbitraryWorldZTransformer(),
+                (0, 0, 0, 0, 0, 0),
+                fx=100.0,
+            )
+
+        self.assertEqual(mode, "right_side")
+        self.assertEqual(world_z, -12.34)
+        clearance = grasp_planner.side_grasp_bottom_clearance_m(det, grip_pixel, 100.0)
+        self.assertAlmostEqual(clearance, 0.068, places=5)
+        self.assertAlmostEqual(grip_pixel[1], 51.4285714, places=5)
+
+    def test_side_grasp_maximum_is_measured_from_detection_box_bottom(self):
+        det = SimpleNamespace(bbox=(10, 0, 30, 200), depth_m=0.2)
+        with (
+            patch.object(grasp_planner, "FORCE_SIDE_GRASP", True),
+            patch.object(grasp_planner, "SIDE_GRASP_MIN_HEIGHT_M", 0.065),
+            patch.object(grasp_planner, "SIDE_GRASP_MAX_HEIGHT_M", 0.11),
+            patch.object(grasp_planner, "SIDE_GRASP_LOWER_SHIFT_M", 0.01),
+        ):
+            _, _, _, mode, _, grip_pixel = grasp_planner.plan_edge_grasp(
+                det,
+                "right",
+                ArbitraryWorldZTransformer(),
+                (0, 0, 0, 0, 0, 0),
+                fx=100.0,
+            )
+
+        self.assertEqual(mode, "right_side")
+        clearance = grasp_planner.side_grasp_bottom_clearance_m(det, grip_pixel, 100.0)
+        self.assertAlmostEqual(clearance, 0.11, places=5)
+
+    def test_near_miss_log_bbox_keeps_clearance_relative_to_box_bottom(self):
+        det = SimpleNamespace(bbox=(457, 233, 551, 444), depth_m=0.318)
+        transformer = ArbitraryWorldZTransformer()
+        transformer.fy = 390.0
+        with (
+            patch.object(grasp_planner, "FORCE_SIDE_GRASP", True),
+            patch.object(grasp_planner, "SIDE_GRASP_MIN_HEIGHT_M", 0.065),
+            patch.object(grasp_planner, "SIDE_GRASP_MAX_HEIGHT_M", 0.11),
+            patch.object(grasp_planner, "SIDE_GRASP_LOWER_SHIFT_M", 0.01),
+        ):
+            _, _, _, mode, _, grip_pixel = grasp_planner.plan_edge_grasp(
+                det,
+                "right",
+                transformer,
+                (0, 0, 0, 0, 0, 0),
+                fx=390.4,
+            )
+
+        self.assertEqual(mode, "right_side")
+        clearance = grasp_planner.side_grasp_bottom_clearance_m(det, grip_pixel, transformer.fy)
+        self.assertAlmostEqual(clearance, 0.0760192, places=5)
+
+    def test_side_grasp_clearance_is_invalid_without_depth(self):
+        det = SimpleNamespace(bbox=(10, 0, 30, 100), depth_m=None)
+        self.assertIsNone(grasp_planner.side_grasp_bottom_clearance_m(det, (30, 50), 390.0))
+
+    def test_low_side_grasp_pixel_is_moved_to_preferred_safe_height(self):
+        det = SimpleNamespace(bbox=(10, 0, 30, 100), depth_m=0.2)
+        corrected, before_m, after_m = grasp_planner.clamp_side_grasp_pixel_to_safe_clearance(
+            det, (30, 90), 100.0
+        )
+        self.assertAlmostEqual(before_m, 0.02, places=5)
+        self.assertAlmostEqual(after_m, 0.068, places=5)
+        self.assertAlmostEqual(corrected[1], 66.0, places=5)
+
+    def test_high_side_grasp_pixel_is_moved_to_maximum_safe_height(self):
+        det = SimpleNamespace(bbox=(10, 0, 30, 100), depth_m=0.2)
+        corrected, before_m, after_m = grasp_planner.clamp_side_grasp_pixel_to_safe_clearance(
+            det, (30, 20), 100.0
+        )
+        self.assertAlmostEqual(before_m, 0.16, places=5)
+        self.assertAlmostEqual(after_m, 0.11, places=5)
+        self.assertAlmostEqual(corrected[1], 45.0, places=5)
 
 
 if __name__ == "__main__":

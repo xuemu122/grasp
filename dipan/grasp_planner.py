@@ -10,6 +10,7 @@ TARGET_ROI_Y_MIN = int(os.getenv("TARGET_ROI_Y_MIN", "85"))
 TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "430"))
 SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv("SIDE_GRASP_MIN_HEIGHT_M", "0.065"))
 SIDE_GRASP_MAX_HEIGHT_M = float(os.getenv("SIDE_GRASP_MAX_HEIGHT_M", "0.11"))
+SIDE_GRASP_LOW_TARGET_HEIGHT_M = float(os.getenv("SIDE_GRASP_LOW_TARGET_HEIGHT_M", "0.068"))
 SIDE_GRASP_LOWER_SHIFT_M = float(os.getenv("SIDE_GRASP_LOWER_SHIFT_M", "0.01"))
 LAYER_Z_FILTER_ENABLE = os.getenv("LAYER_Z_FILTER_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 LAYER_Z_TOLERANCE_M = float(os.getenv("LAYER_Z_TOLERANCE_M", "0.16"))
@@ -34,6 +35,47 @@ MAX_GRASP_DEPTH_M = float(os.getenv("MAX_GRASP_DEPTH_M", "0.52"))  # 超过此�
 ALLOW_NO_DEPTH_GRASP = os.getenv("ALLOW_NO_DEPTH_GRASP", "0").lower() in ("1", "true", "yes", "on")
 # Temporary field policy: prefer side grasps for every product unless explicitly disabled.
 FORCE_SIDE_GRASP = os.getenv("FORCE_SIDE_GRASP", "1").lower() in ("1", "true", "yes", "on")
+
+
+def side_grasp_bottom_clearance_m(det, grip_pixel, fy):
+    """Return grasp-point height above the detection-box bottom in image space."""
+    depth = float(det.depth_m or 0.0)
+    fy = float(fy)
+    if depth <= 0.0 or fy <= 0.0 or not np.isfinite(depth) or not np.isfinite(fy):
+        return None
+    _, _, _, y2 = det.bbox
+    grip_v = float(grip_pixel[1])
+    if not np.isfinite(grip_v):
+        return None
+    return (float(y2) - grip_v) * depth / fy
+
+
+def clamp_side_grasp_pixel_to_safe_clearance(det, grip_pixel, fy):
+    """Move an out-of-range side-grasp pixel into the box-relative safe band."""
+    clearance_m = side_grasp_bottom_clearance_m(det, grip_pixel, fy)
+    if clearance_m is None:
+        return None, None, None
+    if SIDE_GRASP_MIN_HEIGHT_M <= clearance_m <= SIDE_GRASP_MAX_HEIGHT_M:
+        return tuple(grip_pixel), clearance_m, clearance_m
+
+    _, y1, _, y2 = [float(value) for value in det.bbox]
+    depth = float(det.depth_m)
+    real_h = max(0.0, (y2 - y1) * depth / float(fy))
+    if real_h < SIDE_GRASP_MIN_HEIGHT_M:
+        return None, clearance_m, None
+    if clearance_m < SIDE_GRASP_MIN_HEIGHT_M:
+        target_m = min(
+            max(SIDE_GRASP_LOW_TARGET_HEIGHT_M, SIDE_GRASP_MIN_HEIGHT_M),
+            SIDE_GRASP_MAX_HEIGHT_M,
+            real_h,
+        )
+    else:
+        target_m = min(SIDE_GRASP_MAX_HEIGHT_M, real_h)
+    corrected_v = y2 - target_m * float(fy) / depth
+    corrected_v = max(y1, min(y2, corrected_v))
+    corrected_pixel = (float(grip_pixel[0]), corrected_v)
+    corrected_clearance_m = side_grasp_bottom_clearance_m(det, corrected_pixel, fy)
+    return corrected_pixel, clearance_m, corrected_clearance_m
 
 
 def axis_aligned_approach_m(current_xyz_m, grasp_xyz_m, forward_dir, min_backoff_m):
@@ -497,45 +539,37 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
 
     if FORCE_SIDE_GRASP or real_w <= 0.08:
         edge_u = x1 if edge == "left" else x2
-        p_bottom_cam = transformer.pixel_to_camera(edge_u, y2, depth)
-        p_top_cam = transformer.pixel_to_camera(edge_u, y1, depth)
-        p_bottom_robot = transformer.camera_to_robot(p_bottom_cam, flange_pose, debug=False)
-        p_top_robot = transformer.camera_to_robot(p_top_cam, flange_pose, debug=False)
-        world_h = p_top_robot[2] - p_bottom_robot[2]
-
-        if real_h <= SIDE_GRASP_MIN_HEIGHT_M or world_h <= SIDE_GRASP_MIN_HEIGHT_M:
+        if real_h <= SIDE_GRASP_MIN_HEIGHT_M:
             edge_u = (x1 + x2) / 2
             edge_v = y1
             mode = "top_center"
             print(
-                f"  → 物体高度 {real_h*100:.1f}cm / Z高差 {world_h*100:.1f}cm ≤ 侧抓下限 "
+                f"  → 检测框高度 {real_h*100:.1f}cm ≤ 侧抓下限 "
                 f"{SIDE_GRASP_MIN_HEIGHT_M*100:.1f}cm, 改为上面抓取"
             )
         else:
-            midpoint_height_m = real_h / 2
-            original_ratio = max(midpoint_height_m / real_h, SIDE_GRASP_MIN_HEIGHT_M / world_h)
-            original_height_m = world_h * original_ratio
+            original_height_m = real_h / 2.0
             side_height_m = float(np.clip(
                 original_height_m - SIDE_GRASP_LOWER_SHIFT_M,
-                SIDE_GRASP_MIN_HEIGHT_M,
+                max(SIDE_GRASP_MIN_HEIGHT_M, SIDE_GRASP_LOW_TARGET_HEIGHT_M),
                 SIDE_GRASP_MAX_HEIGHT_M,
             ))
-            pixel_ratio = side_height_m / world_h
+            pixel_ratio = side_height_m / real_h
             pixel_ratio = max(0.0, min(1.0, pixel_ratio))
             edge_v = y2 + pixel_ratio * (y1 - y2)
             edge_v = max(y1, min(y2, edge_v))
             mode = f"{edge}_side"
-            side_height_m = world_h * pixel_ratio
-            if side_height_m > SIDE_GRASP_MAX_HEIGHT_M:
-                side_height_m = SIDE_GRASP_MAX_HEIGHT_M
-                pixel_ratio = side_height_m / max(world_h, 0.001)
-                edge_v = y2 + pixel_ratio * (y1 - y2)
-                edge_v = max(y1, min(y2, edge_v))
+            measured_clearance_m = side_grasp_bottom_clearance_m(det, (edge_u, edge_v), fy)
+            clearance_label = (
+                "无效"
+                if measured_clearance_m is None
+                else f"{measured_clearance_m*100:.1f}cm"
+            )
             width_label = "强制侧抓" if FORCE_SIDE_GRASP and real_w > 0.08 else "窄盒"
             print(
                 f"  → {width_label} ({real_w*100:.1f}cm), 从{edge}侧边缘抓取, "
                 f"原高度 {original_height_m*100:.1f}cm, 下移 {SIDE_GRASP_LOWER_SHIFT_M*100:.1f}cm, "
-                f"抓点离底部 Z高差 {side_height_m*100:.1f}cm, 像素=({edge_u:.0f},{edge_v:.0f})"
+                f"抓点距检测框底边 {clearance_label}, 像素=({edge_u:.0f},{edge_v:.0f})"
             )
     else:
         edge_u = (x1 + x2) / 2

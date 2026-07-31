@@ -26,9 +26,12 @@ from aero_gripper import AeroGripper
 from dobot_arm import DobotArm, _clamp_cp
 from grasp_planner import (
     FORCE_SIDE_GRASP,
+    SIDE_GRASP_MAX_HEIGHT_M,
+    SIDE_GRASP_MIN_HEIGHT_M,
     TARGET_ROI_Y_MIN,
     TARGET_ROI_Y_MAX,
     axis_aligned_approach_m,
+    clamp_side_grasp_pixel_to_safe_clearance,
     detect_shelf_board_bounds,
     explain_target_filter,
     pick_target_box,
@@ -2036,6 +2039,46 @@ def main():
             )
             print(f"抓取点 ({grip_mode}): ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
             latest_failure_image = _draw_failure_diagnostic(best_img, detections, target, grip_pixel)
+
+            if grip_mode.endswith("_side"):
+                corrected_pixel, original_clearance_m, bottom_clearance_m = (
+                    clamp_side_grasp_pixel_to_safe_clearance(target, grip_pixel, camera.fy)
+                )
+                if corrected_pixel is None or bottom_clearance_m is None:
+                    clearance_label = (
+                        "无效"
+                        if original_clearance_m is None
+                        else f"{original_clearance_m*100:.1f}cm"
+                    )
+                    message = (
+                        f"侧抓点距检测框底边 {clearance_label}, 且缺少可用深度/框高，无法安全纠偏"
+                    )
+                    print(f"  [抓点硬纠偏][中止] {message}; 不发送机械臂动作")
+                    if SHELF_GRASP_WORKER:
+                        worker_fail(message)
+                        continue
+                    if SHELF_GRASP_AUTO_ONCE:
+                        raise RuntimeError(message)
+                    continue
+                if corrected_pixel != tuple(grip_pixel):
+                    old_pixel = grip_pixel
+                    grip_pixel = corrected_pixel
+                    p_cam = transformer.pixel_to_camera(grip_pixel[0], grip_pixel[1], target.depth_m)
+                    p_robot = transformer.camera_to_robot(p_cam, flange_pose, debug=True)
+                    wx, wy, wz = float(p_robot[0]), float(p_robot[1]), float(p_robot[2])
+                    latest_failure_image = _draw_failure_diagnostic(
+                        best_img, detections, target, grip_pixel
+                    )
+                    print(
+                        f"  [抓点硬纠偏] 距检测框底边 {original_clearance_m*100:.1f}cm → "
+                        f"{bottom_clearance_m*100:.1f}cm, 像素Y {old_pixel[1]:.1f} → {grip_pixel[1]:.1f}"
+                    )
+                    print(f"  [抓点硬纠偏] 更新抓取点: ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
+                else:
+                    print(
+                        f"  [抓点硬纠偏] 距检测框底边 {bottom_clearance_m*100:.1f}cm, "
+                        f"已在 {SIDE_GRASP_MIN_HEIGHT_M*100:.1f}..{SIDE_GRASP_MAX_HEIGHT_M*100:.1f}cm 安全区间"
+                    )
 
             if SAVE_DEBUG_IMAGES:
                 # 重新画正确的抓取点 (覆盖上面简单画的黄点)
