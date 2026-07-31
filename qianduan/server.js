@@ -16,6 +16,7 @@ const { spawn } = require('child_process');
 const { WebSocket, WebSocketServer } = require('ws');
 const { ChassisClient } = require('./chassis_client');
 const { PaymentClient } = require('./payment_client');
+const { orderItemsByNearestPickup } = require('./order_routing');
 
 const PORT = Number(process.env.PORT || 3000);
 const WS_PORT = Number(process.env.WS_PORT || 3001);
@@ -2954,6 +2955,65 @@ function resolveOrderItems(msg, orderId) {
     return normalizeOrderItems(orderItems);
 }
 
+function chassisPointFromStatus(status) {
+    const pose = chassisResults(status).current_pose || {};
+    const x = Number(pose.x);
+    const y = Number(pose.y);
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+}
+
+async function optimizeOrderItemSequence(items) {
+    const settings = readChassisSettings();
+    if (!ROBOT_GRASP_REAL || !settings.navigation_enabled || items.length < 2) return items;
+
+    const productsById = new Map(readProducts().map((product) => [String(product.id), product]));
+    let markerResponse;
+    let statusResponse;
+    try {
+        const client = chassisClient();
+        [markerResponse, statusResponse] = await Promise.all([
+            client.request('/api/markers/query_list'),
+            client.request('/api/robot_status')
+        ]);
+    } catch (error) {
+        log(`  [订单排序] 无法读取底盘位置，保持下单顺序: ${error.message}`);
+        return items;
+    }
+    if (markerResponse.status !== 'OK' || statusResponse.status !== 'OK') {
+        log('  [订单排序] 底盘状态不可用，保持下单顺序');
+        return items;
+    }
+
+    const markers = new Map(normalizeMarkers(chassisResults(markerResponse)).map((marker) => [marker.name, marker]));
+    const placePoint = markers.get(settings.place_marker);
+    const currentPoint = chassisPointFromStatus(statusResponse)
+        || markers.get(CHASSIS_CHARGE_MARKER)
+        || placePoint;
+    if (!currentPoint || !placePoint) {
+        log('  [订单排序] 缺少当前位姿或放置点坐标，保持下单顺序');
+        return items;
+    }
+
+    const markerNameForItem = (item) => {
+        const product = productsById.get(String(item.id));
+        return item.chassis_marker || (product && product.chassis_marker) || '';
+    };
+    const ordered = orderItemsByNearestPickup(items, {
+        markers,
+        startPoint: currentPoint,
+        placePoint,
+        markerNameForItem
+    });
+    if (ordered === items) {
+        log('  [订单排序] 商品点位坐标不完整，保持下单顺序');
+        return items;
+    }
+
+    const sequence = ordered.map((item) => `${item.name}x${item.qty}@${markerNameForItem(item)}`);
+    log(`  🧭 订单逐瓶取放排序: ${sequence.join(' -> ')}`);
+    return ordered;
+}
+
 async function executeOrderItems(ws, orderId, items, totalUnits) {
     let completedUnits = 0;
     const productsById = ROBOT_GRASP_REAL
@@ -3063,7 +3123,8 @@ async function handleGrabCommand(ws, msg) {
             message: '订单已接收'
         });
 
-        await executeOrderItems(ws, orderId, items, totalUnits);
+        const orderedItems = await optimizeOrderItemSequence(items);
+        await executeOrderItems(ws, orderId, orderedItems, totalUnits);
         fulfilled = true;
         const placedOrder = orderById(orderId);
         if (placedOrder) {
