@@ -159,4 +159,53 @@ test('free payment order is persisted, completed and refundable', async (t) => {
     assert.equal(duplicateFailure.json.data.refundId, failure.json.data.refundId);
     const productsAfterFailure = await (await fetch(`${base}/api/products`)).json();
     assert.equal(productsAfterFailure.data[0].stock, 5);
+
+    const partialPrepared = await postJson(`${base}/api/orders/prepare`, { items: [{ id: 1, qty: 2 }] });
+    const partialStartedAt = String(Date.now());
+    const partialStartedSignature = crypto.createHmac('sha256', callbackSecret)
+        .update(`${partialStartedAt}:${partialPrepared.json.orderId}:${partialPrepared.json.completionToken}:started`)
+        .digest('base64url');
+    await postJson(
+        `${base}/api/orders/${partialPrepared.json.orderId}/started`,
+        { completionToken: partialPrepared.json.completionToken },
+        { 'X-Grasp-Timestamp': partialStartedAt, 'X-Grasp-Signature': partialStartedSignature }
+    );
+
+    const partialReason = '第二瓶抓取失败';
+    const partialFailedAt = String(Date.now());
+    const partialFailureSignature = crypto.createHmac('sha256', callbackSecret)
+        .update(`${partialFailedAt}:${partialPrepared.json.orderId}:${partialPrepared.json.completionToken}:${partialReason}`)
+        .digest('base64url');
+    const partialFailure = await postJson(
+        `${base}/api/orders/${partialPrepared.json.orderId}/failure`,
+        {
+            completionToken: partialPrepared.json.completionToken,
+            reason: partialReason,
+            deliveredItems: [{ id: 1, qty: 1 }]
+        },
+        { 'X-Grasp-Timestamp': partialFailedAt, 'X-Grasp-Signature': partialFailureSignature }
+    );
+    assert.equal(partialFailure.response.status, 200);
+    assert.equal(partialFailure.json.data.status, 'PARTIALLY_COMPLETED');
+    assert.equal(partialFailure.json.data.paymentStatus, 'PARTIALLY_REFUNDED');
+    assert.equal(partialFailure.json.data.deliveredUnits, 1);
+    assert.equal(partialFailure.json.data.deliveredAmount, 8);
+    assert.equal(partialFailure.json.data.refundAmount, 8);
+    assert.deepEqual(partialFailure.json.data.deliveredItems.map(({ id, qty }) => ({ id, qty })), [{ id: 1, qty: 1 }]);
+    const productsAfterPartialFailure = await (await fetch(`${base}/api/products`)).json();
+    assert.equal(productsAfterPartialFailure.data[0].stock, 4);
+
+    const duplicatePartialFailure = await postJson(
+        `${base}/api/orders/${partialPrepared.json.orderId}/failure`,
+        {
+            completionToken: partialPrepared.json.completionToken,
+            reason: partialReason,
+            deliveredItems: [{ id: 1, qty: 1 }]
+        },
+        { 'X-Grasp-Timestamp': partialFailedAt, 'X-Grasp-Signature': partialFailureSignature }
+    );
+    assert.equal(duplicatePartialFailure.response.status, 200);
+    assert.equal(duplicatePartialFailure.json.data.refundId, partialFailure.json.data.refundId);
+    const productsAfterDuplicatePartialFailure = await (await fetch(`${base}/api/products`)).json();
+    assert.equal(productsAfterDuplicatePartialFailure.data[0].stock, 4);
 });

@@ -145,6 +145,7 @@ DEPTH_GUARD_HAND_RADIUS_M = float(os.getenv("DEPTH_GUARD_HAND_RADIUS_M", str(HAN
 DEPTH_GUARD_FINGER_RADIUS_M = float(os.getenv("DEPTH_GUARD_FINGER_RADIUS_M", str(HAND_FINGER_THICKNESS_M * 0.5 + DEPTH_GUARD_CLEARANCE_M)))
 DEPTH_GUARD_APPROACH_LENGTH_M = float(os.getenv("DEPTH_GUARD_APPROACH_LENGTH_M", "0.08"))
 DEPTH_GUARD_PATH_SAMPLES = int(os.getenv("DEPTH_GUARD_PATH_SAMPLES", "8"))
+DEPTH_GUARD_MIN_HIT_POINTS = max(1, int(os.getenv("DEPTH_GUARD_MIN_HIT_POINTS", "2")))
 DEPTH_GUARD_MAX_DEPTH_M = float(os.getenv("DEPTH_GUARD_MAX_DEPTH_M", "1.20"))
 DEPTH_GUARD_EXCLUDE_MARGIN_PX = int(os.getenv("DEPTH_GUARD_EXCLUDE_MARGIN_PX", "32"))
 DEPTH_GUARD_SELF_MASK_ENABLE = os.getenv("DEPTH_GUARD_SELF_MASK_ENABLE", "1").lower() in ("1", "true", "yes", "on")
@@ -263,12 +264,13 @@ def _depth_guard_path_ok(
         flange_rotation_m=flange_rotation_m,
         camera_box_min_local_m=DEPTH_GUARD_CAMERA_BOX_MIN_M if DEPTH_GUARD_CAMERA_ENABLE else None,
         camera_box_max_local_m=DEPTH_GUARD_CAMERA_BOX_MAX_M if DEPTH_GUARD_CAMERA_ENABLE else None,
+        min_hit_points=DEPTH_GUARD_MIN_HIT_POINTS,
     )
     min_dist_mm = result.min_distance_m * 1000.0 if np.isfinite(result.min_distance_m) else float("inf")
     if not quiet:
         print(
             f"  [深度护栏] {label}: 最近 {min_dist_mm:.0f}mm, "
-            f"命中 {result.hit_count}/{result.checked_points}, "
+            f"独立命中 {result.hit_count}/{result.checked_points} (阈值 {DEPTH_GUARD_MIN_HIT_POINTS}), "
             f"模型 {_depth_guard_radius_label()}, "
             f"长度 {hand_length_m*1000:.0f}mm"
             + (
@@ -490,7 +492,7 @@ def _save_depth_guard_viz(
     min_mm = float(np.min(finite_min) * 1000.0) if len(finite_min) else float("inf")
     cv2.putText(
         viz,
-        f"{label} hit={int(np.count_nonzero(hit_mask))} min={min_mm:.0f}mm model={_depth_guard_radius_label()} len={hand_length_m*1000:.0f} camera=collision-only",
+        f"{label} hit={int(np.count_nonzero(hit_mask))}/{DEPTH_GUARD_MIN_HIT_POINTS} min={min_mm:.0f}mm model={_depth_guard_radius_label()} len={hand_length_m*1000:.0f} camera=collision-only",
         (12, 24),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.55,

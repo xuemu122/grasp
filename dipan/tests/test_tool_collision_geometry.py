@@ -46,6 +46,38 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         )
         self.assertEqual(hit_mask.tolist(), [True])
 
+    def test_depth_guard_counts_unique_points_across_path_samples(self):
+        one_noise_point = np.asarray([[0.005, 0.0, 0.10]], dtype=np.float32)
+        result = check_hand_path(
+            one_noise_point,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.08],
+            [0.0, 0.0, 1.0],
+            0.25,
+            0.01,
+            samples=8,
+            min_hit_points=2,
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.hit_count, 1)
+
+        two_obstacle_points = np.asarray(
+            [[0.005, 0.0, 0.10], [-0.005, 0.0, 0.12]],
+            dtype=np.float32,
+        )
+        result = check_hand_path(
+            two_obstacle_points,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.08],
+            [0.0, 0.0, 1.0],
+            0.25,
+            0.01,
+            samples=8,
+            min_hit_points=2,
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.hit_count, 2)
+
     def test_camera_box_is_centered_at_palm_root(self):
         self.assertAlmostEqual(self.box_min[0], -0.15)
         self.assertAlmostEqual(self.box_max[0], -0.09)

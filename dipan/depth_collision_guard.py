@@ -217,6 +217,7 @@ def check_hand_path(
     flange_rotation_m: Optional[np.ndarray] = None,
     camera_box_min_local_m: Optional[Sequence[float]] = None,
     camera_box_max_local_m: Optional[Sequence[float]] = None,
+    min_hit_points: int = 1,
 ) -> DepthGuardResult:
     points = np.asarray(obstacle_points_m, dtype=np.float32)
     if points.size == 0:
@@ -234,7 +235,7 @@ def check_hand_path(
     check_camera = camera_box_min_local_m is not None and camera_box_max_local_m is not None
 
     min_dist = float("inf")
-    hit_count = 0
+    hit_mask = np.zeros((points.shape[0],), dtype=bool)
     for alpha in np.linspace(0.0, 1.0, max(2, int(samples))):
         flange = (1.0 - alpha) * start + alpha * end
         fingertip = flange + float(hand_length_m) * hand_dir
@@ -276,9 +277,11 @@ def check_hand_path(
                     min_dist = min(min_dist, float(np.min(camera_d[camera_ok])))
                 sample_hits |= (camera_d <= 1e-6) & camera_ok
 
-            hit_count += int(np.count_nonzero(sample_hits))
+            hit_mask |= sample_hits
 
-    return DepthGuardResult(hit_count == 0, min_dist, hit_count, int(points.shape[0]))
+    hit_count = int(np.count_nonzero(hit_mask))
+    required_hits = max(1, int(min_hit_points))
+    return DepthGuardResult(hit_count < required_hits, min_dist, hit_count, int(points.shape[0]))
 
 
 def hand_path_hit_mask(

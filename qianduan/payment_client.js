@@ -167,11 +167,24 @@ class PaymentClient {
         return response.data || response.result || response;
     }
 
-    async refund(orderId, reason, refundRequestId) {
+    async refund(orderId, reason, refundRequestId, { refundAmount = null, totalAmount = null } = {}) {
+        const body = { orderId, reason, refundRequestId };
+        const partial = Number.isFinite(Number(refundAmount))
+            && Number(refundAmount) > 0
+            && Number.isFinite(Number(totalAmount))
+            && Number(refundAmount) < Number(totalAmount);
+        if (partial) {
+            const refundCents = Math.round(Number(refundAmount) * 100);
+            const totalCents = Math.round(Number(totalAmount) * 100);
+            body.partial = true;
+            body.refundAmount = Number(refundAmount);
+            body.totalAmount = Number(totalAmount);
+            body.amount = { refund: refundCents, total: totalCents, currency: 'CNY' };
+        }
         const response = await this.request(
             'POST',
             '/api/WeChatPay/refund',
-            { orderId, reason, refundRequestId },
+            body,
             refundRequestId ? { 'Idempotency-Key': refundRequestId } : {}
         );
         const data = response.data || response.result || response;

@@ -538,6 +538,8 @@ function orderStatusLabel(status) {
         PROCESSING: '抓取中',
         PLACED: '已放置待确认',
         COMPLETED: '已完成',
+        PARTIAL_REFUNDING: '部分交付，退款中',
+        PARTIALLY_COMPLETED: '部分交付',
         FAILED: '失败',
         REFUNDING: '退款中',
         REFUNDED: '已退款',
@@ -560,6 +562,10 @@ function publicOrder(order) {
         refundStatus: order.refundStatus || null,
         refundReason: order.refundReason || null,
         refundTrigger: order.refundTrigger || null,
+        refundAmount: Number(order.refundAmount || 0),
+        deliveredItems: order.deliveredItems || [],
+        deliveredUnits: Number(order.deliveredUnits || 0),
+        deliveredAmount: Number(order.deliveredAmount || 0),
         failureReason: order.failureReason || null,
         createdAt: order.createdAt,
         paidAt: order.paidAt || null,
@@ -575,6 +581,10 @@ function paymentStatusMessage(order) {
     if (order.paymentStatus === 'REFUNDED') {
         return order.refundReason ? `订单已退款：${order.refundReason}` : '订单已退款';
     }
+    if (order.paymentStatus === 'PARTIALLY_REFUNDED') {
+        return `订单部分交付，未交付商品已退款 ¥${Number(order.refundAmount || 0).toFixed(2)}`;
+    }
+    if (order.paymentStatus === 'PARTIAL_REFUNDING') return '订单部分交付，未交付商品正在退款';
     if (order.paymentStatus === 'REFUNDING') return '订单正在退款，请勿重复支付';
     if (order.paymentStatus === 'CLOSED') return '支付订单已关闭，请重新下单';
     if (order.paymentStatus === 'PAYMENT_FAILED') {
@@ -604,6 +614,72 @@ function setOrderStatus(order, status, paymentStatus = order.paymentStatus) {
     order.paymentStatus = paymentStatus;
     order.updatedAt = new Date().toISOString();
     return saveOrder(order);
+}
+
+function setOrderDeliveredItems(order, deliveredItems) {
+    const orderedById = new Map((order.items || []).map((item) => [Number(item.id), item]));
+    const deliveredById = new Map();
+    for (const raw of deliveredItems || []) {
+        const id = Number(raw && raw.id);
+        const qty = Number(raw && raw.qty);
+        const ordered = orderedById.get(id);
+        if (!ordered || !Number.isInteger(qty) || qty < 1) throw new Error('已交付商品记录无效');
+        const nextQty = (deliveredById.get(id) || 0) + qty;
+        if (nextQty > Number(ordered.qty)) throw new Error(`商品 ${ordered.name || id} 的交付数量超过下单数量`);
+        deliveredById.set(id, nextQty);
+    }
+
+    order.deliveredItems = [...deliveredById.entries()].map(([id, qty]) => {
+        const ordered = orderedById.get(id);
+        const unitPrice = Number(ordered.unitPrice || 0);
+        return {
+            id,
+            name: ordered.name || '',
+            qty,
+            unitPrice,
+            lineTotal: Number((unitPrice * qty).toFixed(2))
+        };
+    });
+    order.deliveredUnits = order.deliveredItems.reduce((sum, item) => sum + item.qty, 0);
+    order.deliveredAmount = Number(order.deliveredItems.reduce((sum, item) => sum + item.lineTotal, 0).toFixed(2));
+    order.lastDeliveredAt = order.deliveredUnits > 0 ? new Date().toISOString() : null;
+    return saveOrder(order);
+}
+
+function recordOrderUnitDelivered(orderId, item) {
+    const order = orderById(orderId);
+    if (!order) return null;
+    const delivered = Array.isArray(order.deliveredItems)
+        ? order.deliveredItems.map((entry) => ({ id: entry.id, qty: entry.qty }))
+        : [];
+    const existing = delivered.find((entry) => Number(entry.id) === Number(item.id));
+    if (existing) existing.qty += 1;
+    else delivered.push({ id: Number(item.id), qty: 1 });
+    return setOrderDeliveredItems(order, delivered);
+}
+
+function orderDeliveryBreakdown(order) {
+    const deliveredById = new Map((order.deliveredItems || []).map((item) => [Number(item.id), Number(item.qty)]));
+    const undeliveredItems = [];
+    for (const item of order.items || []) {
+        const deliveredQty = Math.min(Number(item.qty), Math.max(0, deliveredById.get(Number(item.id)) || 0));
+        const qty = Number(item.qty) - deliveredQty;
+        if (qty <= 0) continue;
+        const unitPrice = Number(item.unitPrice || 0);
+        undeliveredItems.push({
+            id: Number(item.id),
+            name: item.name || '',
+            qty,
+            unitPrice,
+            lineTotal: Number((unitPrice * qty).toFixed(2))
+        });
+    }
+    return {
+        deliveredUnits: Number(order.deliveredUnits || 0),
+        deliveredAmount: Number(order.deliveredAmount || 0),
+        undeliveredItems,
+        refundAmount: Number(undeliveredItems.reduce((sum, item) => sum + item.lineTotal, 0).toFixed(2))
+    };
 }
 
 function reserveOrderInventory(order) {
@@ -726,6 +802,44 @@ function completePaidOrder(orderId, completionToken) {
     return { alreadyCompleted: false, updated };
 }
 
+function restoredInventoryQuantities(reservation) {
+    const restored = new Map();
+    for (const entry of Object.values(reservation.partialRestores || {})) {
+        for (const item of entry.items || []) {
+            const id = Number(item.id);
+            restored.set(id, (restored.get(id) || 0) + Number(item.qty || 0));
+        }
+    }
+    return restored;
+}
+
+function restoreOrderInventoryItems(order, items, restoreKey) {
+    const store = readProductStore();
+    const reservation = store.reservedOrders[order.orderId];
+    if (!reservation) throw new Error('订单缺少库存预占记录，拒绝恢复部分库存');
+    reservation.partialRestores = reservation.partialRestores || {};
+    if (reservation.partialRestores[restoreKey]) return false;
+
+    const requested = normalizeInventoryItems(items);
+    const orderedById = new Map(normalizeInventoryItems(reservation.items || order.items || []).map((item) => [item.id, item.qty]));
+    const restored = restoredInventoryQuantities(reservation);
+    for (const item of requested) {
+        const remaining = Number(orderedById.get(item.id) || 0) - Number(restored.get(item.id) || 0);
+        if (item.qty > remaining) throw new Error(`商品 ${item.name || item.id} 的恢复库存数量超过未恢复数量`);
+    }
+
+    const restoredAt = new Date().toISOString();
+    for (const item of requested) {
+        const product = store.products.find((candidate) => Number(candidate.id) === item.id);
+        if (!product) throw new Error(`恢复库存时商品不存在: ${item.name || item.id}`);
+        product.stock = Number(product.stock) + item.qty;
+    }
+    reservation.partialRestores[restoreKey] = { restoredAt, items: requested };
+    order.partialStockRestoredAt = restoredAt;
+    writeProductStore(store);
+    return true;
+}
+
 function restoreCompletedOrderInventory(order) {
     if (order.stockRestoredAt) return false;
     const store = readProductStore();
@@ -737,9 +851,12 @@ function restoreCompletedOrderInventory(order) {
             return false;
         }
         const releasedAt = new Date().toISOString();
+        const alreadyRestored = restoredInventoryQuantities(reservation);
         for (const item of normalizeInventoryItems(reservation.items || order.items || [])) {
+            const qty = Math.max(0, item.qty - Number(alreadyRestored.get(item.id) || 0));
+            if (qty <= 0) continue;
             const product = store.products.find((candidate) => Number(candidate.id) === item.id);
-            if (product) product.stock = Number(product.stock) + item.qty;
+            if (product) product.stock = Number(product.stock) + qty;
         }
         reservation.releasedAt = releasedAt;
         if (completion) completion.inventoryRestoredAt = releasedAt;
@@ -762,19 +879,43 @@ function restoreCompletedOrderInventory(order) {
     return true;
 }
 
-async function refundOrder(order, reason, trigger = 'admin', { resume = false } = {}) {
+async function refundOrder(order, reason, trigger = 'admin', {
+    resume = false,
+    refundItems = null,
+    refundAmount = null
+} = {}) {
     if (order.status === 'REFUNDED' || order.paymentStatus === 'REFUNDED') return order;
-    const refunding = order.status === 'REFUNDING' || order.paymentStatus === 'REFUNDING';
+    if (order.paymentStatus === 'PARTIALLY_REFUNDED') return order;
+    const refunding = ['REFUNDING', 'PARTIAL_REFUNDING'].includes(order.status)
+        || ['REFUNDING', 'PARTIAL_REFUNDING'].includes(order.paymentStatus);
     if (refunding && !resume) return order;
-    if (!['PAID', 'REFUNDING'].includes(order.paymentStatus)) throw new Error('订单尚未支付，不能退款');
+    if (!['PAID', 'REFUNDING', 'PARTIAL_REFUNDING'].includes(order.paymentStatus)) {
+        throw new Error('订单尚未支付，不能退款');
+    }
+
+    const amount = Number(resume && order.refundAmount ? order.refundAmount : refundAmount);
+    const totalAmount = Number(order.totalAmount || 0);
+    const partial = Boolean(
+        (resume && order.refundIsPartial)
+        || (Number.isFinite(amount) && amount > 0 && amount < totalAmount - 0.001)
+    );
+    const selectedItems = partial
+        ? normalizeInventoryItems(resume && order.refundItems ? order.refundItems : refundItems)
+        : null;
+    const effectiveAmount = partial ? Number(amount.toFixed(2)) : totalAmount;
 
     order.refundReason = reason;
     order.refundTrigger = trigger;
+    order.refundAmount = effectiveAmount;
+    order.refundIsPartial = partial;
+    order.refundItems = selectedItems;
     order.refundRequestedAt = order.refundRequestedAt || new Date().toISOString();
-    order.refundRequestId = order.refundRequestId || `GRASP-REFUND-${crypto.createHash('sha256').update(order.orderId).digest('hex').slice(0, 24)}`;
+    order.refundRequestId = order.refundRequestId || `GRASP-REFUND-${crypto.createHash('sha256')
+        .update(`${order.orderId}:${effectiveAmount.toFixed(2)}`)
+        .digest('hex').slice(0, 24)}`;
     order.refundAttemptCount = Number(order.refundAttemptCount || 0) + 1;
     order.refundLastAttemptAt = new Date().toISOString();
-    setOrderStatus(order, 'REFUNDING', 'REFUNDING');
+    setOrderStatus(order, partial ? 'PARTIAL_REFUNDING' : 'REFUNDING', partial ? 'PARTIAL_REFUNDING' : 'REFUNDING');
 
     let refund;
     try {
@@ -782,23 +923,32 @@ async function refundOrder(order, reason, trigger = 'admin', { resume = false } 
             refund = { refundId: `FREE-${Date.now().toString(36).toUpperCase()}`, refundStatus: 'SUCCESS' };
         } else {
             if (!order.externalOrderId) throw new Error('订单没有外部支付订单号');
-            refund = await paymentClient.refund(order.externalOrderId, reason, order.refundRequestId);
+            refund = await paymentClient.refund(order.externalOrderId, reason, order.refundRequestId, {
+                refundAmount: partial ? effectiveAmount : null,
+                totalAmount
+            });
         }
     } catch (error) {
         order.refundStatus = 'FAIL';
         order.refundReason = `${reason} (${error.message})`;
-        setOrderStatus(order, 'FAILED', 'PAID');
+        setOrderStatus(order, partial ? 'PARTIALLY_COMPLETED' : 'FAILED', 'PAID');
         throw error;
     }
 
     order.refundId = refund.refundId || order.refundId || null;
     order.refundStatus = refund.refundStatus;
     if (refund.refundStatus === 'SUCCESS') {
-        order.refundedAt = new Date().toISOString();
-        restoreCompletedOrderInventory(order);
-        setOrderStatus(order, 'REFUNDED', 'REFUNDED');
+        if (partial) {
+            order.partiallyRefundedAt = new Date().toISOString();
+            restoreOrderInventoryItems(order, selectedItems, order.refundRequestId);
+            setOrderStatus(order, 'PARTIALLY_COMPLETED', 'PARTIALLY_REFUNDED');
+        } else {
+            order.refundedAt = new Date().toISOString();
+            restoreCompletedOrderInventory(order);
+            setOrderStatus(order, 'REFUNDED', 'REFUNDED');
+        }
     } else {
-        setOrderStatus(order, 'REFUNDING', 'REFUNDING');
+        setOrderStatus(order, partial ? 'PARTIAL_REFUNDING' : 'REFUNDING', partial ? 'PARTIAL_REFUNDING' : 'REFUNDING');
     }
     return order;
 }
@@ -884,19 +1034,29 @@ function postOrderStatusCallback(pathname, body, headers = {}) {
     });
 }
 
-async function refundFailedExecution(orderId, completionToken, reason) {
+async function refundFailedExecution(orderId, completionToken, reason, deliveredItems = []) {
     const localOrder = orderById(orderId);
     if (localOrder && localOrder.paymentStatus === 'PAID') {
+        if (Array.isArray(deliveredItems) && deliveredItems.length > 0) {
+            setOrderDeliveredItems(localOrder, deliveredItems);
+        }
         localOrder.failureReason = reason;
         localOrder.failedAt = new Date().toISOString();
         saveOrder(localOrder);
+        const delivery = orderDeliveryBreakdown(localOrder);
+        if (delivery.deliveredUnits > 0 && delivery.refundAmount > 0) {
+            return publicOrder(await refundOrder(localOrder, reason, 'robot-failure', {
+                refundItems: delivery.undeliveredItems,
+                refundAmount: delivery.refundAmount
+            }));
+        }
         return publicOrder(await refundOrder(localOrder, reason, 'robot-failure'));
     }
     if (!ORDER_STATUS_CALLBACK_URL || !ORDER_STATUS_CALLBACK_SECRET) {
         throw new Error('未配置 ORDER_STATUS_CALLBACK_URL/SECRET，无法通知云端自动退款');
     }
     const timestamp = String(Date.now());
-    const body = { orderId, completionToken, reason };
+    const body = { orderId, completionToken, reason, deliveredItems };
     const signature = orderCallbackSignature(timestamp, orderId, completionToken, reason);
     const response = await postOrderStatusCallback(`/api/orders/${encodeURIComponent(orderId)}/failure`, body, {
         'X-Grasp-Timestamp': timestamp,
@@ -1002,15 +1162,24 @@ async function refundTimedOutOrders() {
                 order.failureReason = reason;
                 order.failedAt = new Date().toISOString();
                 saveOrder(order);
-                await refundOrder(order, reason, 'execution-timeout');
-                log(`💸 订单 ${order.orderId} 执行超时，已触发自动退款`);
+                const delivery = orderDeliveryBreakdown(order);
+                if (delivery.deliveredUnits > 0 && delivery.refundAmount > 0) {
+                    await refundOrder(order, reason, 'execution-timeout', {
+                        refundItems: delivery.undeliveredItems,
+                        refundAmount: delivery.refundAmount
+                    });
+                    log(`💸 订单 ${order.orderId} 执行超时，仅退款未交付商品 ¥${delivery.refundAmount.toFixed(2)}`);
+                } else {
+                    await refundOrder(order, reason, 'execution-timeout');
+                    log(`💸 订单 ${order.orderId} 执行超时，已触发自动退款`);
+                }
             } catch (error) {
                 log(`❌ 订单 ${order.orderId} 超时自动退款失败: ${error.message}`);
             }
         }
         const pendingRefunds = readOrderStore().orders.filter((order) => (
-            order.status === 'REFUNDING'
-            && order.paymentStatus === 'REFUNDING'
+            ['REFUNDING', 'PARTIAL_REFUNDING'].includes(order.status)
+            && ['REFUNDING', 'PARTIAL_REFUNDING'].includes(order.paymentStatus)
             && (!Number.isFinite(Date.parse(order.refundLastAttemptAt))
                 || now - Date.parse(order.refundLastAttemptAt) >= ORDER_REFUND_SWEEP_INTERVAL_MS)
         ));
@@ -1018,7 +1187,7 @@ async function refundTimedOutOrders() {
             try {
                 const reason = order.refundReason || '继续处理未完成退款';
                 const updated = await refundOrder(order, reason, order.refundTrigger || 'refund-recovery', { resume: true });
-                log(updated.status === 'REFUNDED'
+                log(['REFUNDED', 'PARTIALLY_COMPLETED'].includes(updated.status)
                     ? `💸 订单 ${order.orderId} 退款状态已恢复为成功`
                     : `⏳ 订单 ${order.orderId} 退款仍在处理中`);
             } catch (error) {
@@ -1501,6 +1670,14 @@ const server = http.createServer(async (req, res) => {
         }
         const order = orderById(orderId);
         if (!order) { sendJSON(res, { code: 1, message: '订单不存在' }, 404); return; }
+        if (Array.isArray(body && body.deliveredItems) && body.deliveredItems.length > 0) {
+            try {
+                setOrderDeliveredItems(order, body.deliveredItems);
+            } catch (error) {
+                sendJSON(res, { code: 1, message: error.message }, 400);
+                return;
+            }
+        }
         if (order.placedAt || order.completedAt || ['PLACED', 'COMPLETED'].includes(order.status)) {
             sendJSON(res, { code: 0, skipped: true, message: '订单已成功放置，不执行自动退款', data: publicOrder(order) });
             return;
@@ -1509,7 +1686,13 @@ const server = http.createServer(async (req, res) => {
             order.failureReason = reason;
             order.failedAt = new Date().toISOString();
             saveOrder(order);
-            const refunded = await refundOrder(order, reason, 'robot-failure');
+            const delivery = orderDeliveryBreakdown(order);
+            const refunded = delivery.deliveredUnits > 0 && delivery.refundAmount > 0
+                ? await refundOrder(order, reason, 'robot-failure', {
+                    refundItems: delivery.undeliveredItems,
+                    refundAmount: delivery.refundAmount
+                })
+                : await refundOrder(order, reason, 'robot-failure');
             sendJSON(res, { code: 0, data: publicOrder(refunded) });
         } catch (error) {
             order.refundStatus = 'FAIL';
@@ -3014,7 +3197,7 @@ async function optimizeOrderItemSequence(items) {
     return ordered;
 }
 
-async function executeOrderItems(ws, orderId, items, totalUnits) {
+async function executeOrderItems(ws, orderId, items, totalUnits, deliveryProgress) {
     let completedUnits = 0;
     const productsById = ROBOT_GRASP_REAL
         ? new Map(readProducts().map((product) => [String(product.id), product]))
@@ -3036,6 +3219,15 @@ async function executeOrderItems(ws, orderId, items, totalUnits) {
                 await runSimulatedGrab(ws, orderId, item, progressBase, totalUnits, itemNo);
             }
             completedUnits += 1;
+            const deliveredById = new Map((deliveryProgress.deliveredItems || []).map((entry) => [Number(entry.id), entry]));
+            const delivered = deliveredById.get(Number(item.id));
+            if (delivered) delivered.qty += 1;
+            else deliveryProgress.deliveredItems.push({ id: Number(item.id), qty: 1 });
+            deliveryProgress.completedUnits = completedUnits;
+            const saved = recordOrderUnitDelivered(orderId, item);
+            if (saved) {
+                log(`  ✅ 已交付并记账: ${item.name} (${saved.deliveredUnits}/${totalUnits})`);
+            }
         }
     }
 }
@@ -3116,6 +3308,7 @@ async function handleGrabCommand(ws, msg) {
     activeOrderId = orderId;
     broadcastRobotStatus('busy', `正在处理订单 ${orderId}`);
     let fulfilled = false;
+    const deliveryProgress = { completedUnits: 0, deliveredItems: [] };
 
     try {
         sendStatus(ws, 'started', {
@@ -3124,7 +3317,7 @@ async function handleGrabCommand(ws, msg) {
         });
 
         const orderedItems = await optimizeOrderItemSequence(items);
-        await executeOrderItems(ws, orderId, orderedItems, totalUnits);
+        await executeOrderItems(ws, orderId, orderedItems, totalUnits, deliveryProgress);
         fulfilled = true;
         const placedOrder = orderById(orderId);
         if (placedOrder) {
@@ -3149,9 +3342,20 @@ async function handleGrabCommand(ws, msg) {
                 saveOrder(failedOrder);
             }
             try {
-                const refunded = await refundFailedExecution(orderId, msg.completionToken, e.message);
-                failureMessage = `${e.message}；订单已${refunded.status === 'REFUNDED' ? '自动退款' : '提交退款'}`;
-                log(`💸 订单 ${orderId} 未完成抓取放置，已触发自动退款`);
+                const refunded = await refundFailedExecution(
+                    orderId,
+                    msg.completionToken,
+                    e.message,
+                    deliveryProgress.deliveredItems
+                );
+                const partial = refunded.paymentStatus === 'PARTIALLY_REFUNDED'
+                    || refunded.paymentStatus === 'PARTIAL_REFUNDING';
+                failureMessage = partial
+                    ? `${e.message}；已交付 ${refunded.deliveredUnits} 件，仅退未交付商品 ¥${Number(refunded.refundAmount).toFixed(2)}`
+                    : `${e.message}；订单已${refunded.status === 'REFUNDED' ? '自动退款' : '提交退款'}`;
+                log(partial
+                    ? `💸 订单 ${orderId} 已交付 ${refunded.deliveredUnits} 件，仅退款未交付商品 ¥${Number(refunded.refundAmount).toFixed(2)}`
+                    : `💸 订单 ${orderId} 未完成抓取放置，已触发自动退款`);
             } catch (refundError) {
                 failureMessage = `${e.message}；自动退款失败，请联系管理员：${refundError.message}`;
                 log(`❌ 订单 ${orderId} 自动退款失败: ${refundError.message}`);
