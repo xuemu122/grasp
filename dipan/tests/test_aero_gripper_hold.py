@@ -6,6 +6,14 @@ from aero_gripper import AeroGripper
 
 
 class AeroGripperHoldTests(unittest.TestCase):
+    def test_temperature_trip_reports_hot_actuator(self):
+        result = AeroGripper._temperature_trip([30, 31, 32, 33, 66, 34, 35], 65)
+        self.assertEqual(result, (66.0, [(4, 66.0)]))
+
+    def test_temperature_trip_ignores_unreadable_values(self):
+        self.assertIsNone(AeroGripper._temperature_trip([30] * 6, 65))
+        self.assertIsNone(AeroGripper._temperature_trip([30, 31, float("nan"), 33, 34, 35, 36], 65))
+
     def build_monitor(self, profile=None, max_cmd=80, joints=None, min_contacts=1):
         with patch.dict(os.environ, {
             "AERO_HOLD_TIGHTEN_ENABLE": "1",
