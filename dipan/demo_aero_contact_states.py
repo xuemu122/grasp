@@ -548,8 +548,10 @@ def main() -> int:
                     )
                 )
                 if over_temperature:
-                    stop_reason = f"温度达到 {max(finite_temperatures):.1f}C"
-                    break
+                    print(
+                        f"[接触状态][温度提示] 温度达到 {max(finite_temperatures):.1f}C "
+                        f">= {args.max_temperature_c:.1f}C，仅后台记录，不改变手部动作"
+                    )
                 if should_stop:
                     stop_reason = f"检测到{STATE_LABELS[features.raw_state]}"
                     break

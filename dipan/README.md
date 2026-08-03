@@ -372,7 +372,7 @@ python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 80 --step 2
 
 `demo_aero_contact_states.py` 是独立的灵巧手实验程序，不会调用机械臂、订单服务或 `shelf_grasp.py`。它让选定关节逐步闭合，同时读取电流、实际位置和温度；默认用 `runtime/aero_empty.csv` 的同角度空载电流包络扣除绳腱/机构本身的负载。
 
-状态优先级为：`空载`、`浅层接触`、`持续接触`、`饱和堆积`、`挤压溢出`。普通状态默认连续 2 步确认，溢出和过温立即停止；结束时默认安全张开。默认不修改当前力矩上限，必须让空载曲线采集时的力矩设置和实验保持一致。
+状态优先级为：`空载`、`浅层接触`、`持续接触`、`饱和堆积`、`挤压溢出`。普通状态默认连续 2 步确认，溢出立即停止；温度超限只后台打印，不改变手部动作。结束时默认安全张开，可用 `--no-release-after` 禁止。默认不修改当前力矩上限，必须让空载曲线采集时的力矩设置和实验保持一致。
 
 首次建议从较小范围开始，并让手指周围保持空旷：
 
@@ -393,7 +393,7 @@ python3 demo_aero_contact_states.py --max 90 --step 1 --release-after
 python3 demo_aero_contact_states.py --drive-joints 3 --sense-joints 3 --max 45 --step 1
 ```
 
-如需在识别到饱和堆积时停止，可使用 `--stop-on saturation`。默认只在挤压溢出、硬过流或过温时提前停止，这些安全停止不能关闭。每次运行会在 `/tmp/aero_contact_states_*.csv` 写逐步数据，并生成同名 `.summary.json`，其中包含状态切换、最大电流/残差和停止原因。阈值可通过 `--contact-extra-ma`、`--saturation-depth-deg`、`--overflow-extra-ma` 等参数调节。
+如需在识别到饱和堆积时停止，可使用 `--stop-on saturation`。默认在挤压溢出或硬过流时提前停止，温度只记录和提示。每次运行会在 `/tmp/aero_contact_states_*.csv` 写逐步数据，并生成同名 `.summary.json`，其中包含状态切换、最大电流/残差和停止原因。阈值可通过 `--contact-extra-ma`、`--saturation-depth-deg`、`--overflow-extra-ma` 等参数调节。
 
 目标选择支持两层规则：先按目标关键词过滤，再由 `pick_target_box()` 做几何选择。主菜单里输入 `?` 可查看当前模型的全部 `class_id:class_name`；输入 `c` 可以设置任意目标商品/类别/id；也可以直接输入目标名开始抓取，例如 `雪碧`、`褪黑素`、`sprite`、`ths`、`class_id:63`。输入 `all` 或 `clear` 会清空目标，恢复任意候选抓取。
 

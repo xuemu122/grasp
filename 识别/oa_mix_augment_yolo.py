@@ -388,6 +388,26 @@ def _write_yaml(build_root: Path, output_root: Path, names, nc):
     return out_yaml
 
 
+def _normalize_names(names, nc):
+    if isinstance(names, dict):
+        normalized = []
+        for class_id in range(nc):
+            value = names.get(class_id)
+            if value is None:
+                value = names.get(str(class_id))
+            if value is None:
+                value = f"class_{class_id}"
+            normalized.append(str(value))
+        return normalized
+
+    normalized = [str(name) for name in list(names)]
+    if len(normalized) < nc:
+        normalized.extend(f"class_{class_id}" for class_id in range(len(normalized), nc))
+    else:
+        normalized = normalized[:nc]
+    return normalized
+
+
 def _write_record(record, split_name, build_root, classes, copies, include_original, rng, np_rng):
     image_path = record["image"]
     label_path = record["label"]
@@ -456,22 +476,34 @@ def main():
 
     names = data.get("names", [])
     nc = int(data.get("nc", len(names)))
-    if isinstance(names, dict):
-        name_ids = {int(key) for key in names}
-        if name_ids != set(range(nc)):
-            raise ValueError(f"names 键必须完整覆盖 0..{nc - 1}")
-    elif len(names) != nc:
-        raise ValueError(f"nc={nc}，但 names 有 {len(names)} 项")
     observed_classes = {label[0] for record in records for label in record["labels"]}
-    invalid_classes = sorted(class_id for class_id in observed_classes if class_id < 0 or class_id >= nc)
-    if invalid_classes:
-        raise ValueError(f"标签类别超出 YAML 的 0..{nc - 1}: {invalid_classes}")
+    if any(class_id < 0 for class_id in observed_classes):
+        invalid_classes = sorted(class_id for class_id in observed_classes if class_id < 0)
+        raise ValueError(f"标签类别不能为负数: {invalid_classes}")
+    observed_max = max(observed_classes)
+    effective_nc = max(nc, observed_max + 1)
+    if isinstance(names, dict):
+        try:
+            name_count = max((int(key) for key in names), default=-1) + 1
+        except ValueError as exc:
+            raise ValueError("names 为字典时，键必须是整数或数字字符串") from exc
+        effective_nc = max(effective_nc, name_count)
+    else:
+        effective_nc = max(effective_nc, len(names))
+    if effective_nc != nc:
+        print(
+            f"[OA-Mix] auto nc: yaml={nc}, labels={observed_max + 1} -> using {effective_nc}",
+            flush=True,
+        )
+    names = _normalize_names(names, effective_nc)
+    nc = effective_nc
 
     classes = _parse_classes(args.classes)
     if classes is not None and not (classes & observed_classes):
         raise ValueError(
             f"--classes={args.classes} 与数据集类别不相交；当前标签类别为 "
-            f"{min(observed_classes)}-{max(observed_classes)}，删除 --classes 可增强全部类别"
+            f"{min(observed_classes)}-{observed_max}。"
+            f"如果想处理全部类别，去掉 --classes；如果只想筛选，请改成这个范围内的 id。"
         )
     ratios = _parse_split_ratios(args.split)
     split_records = _split_records(records, ratios, args.seed)

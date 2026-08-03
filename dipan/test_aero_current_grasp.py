@@ -46,7 +46,8 @@ def parse_args():
     parser.add_argument("--abs-ma", type=float, default=float(os.getenv("AERO_TEST_ABS_MA", "650")), help="绝对电流阈值 mA")
     parser.add_argument("--trigger-count", type=int, default=int(os.getenv("AERO_TEST_TRIGGER_COUNT", "1")), help="至少多少路电机超过阈值才停止")
     parser.add_argument("--consecutive", type=int, default=int(os.getenv("AERO_TEST_CONSECUTIVE", "2")), help="连续多少步触发才停止")
-    parser.add_argument("--min-cmd", type=float, default=float(os.getenv("AERO_TEST_MIN_CMD", "5")), help="1-6号低于该角度时只记录不触发")
+    parser.add_argument("--min-cmd", type=float, default=float(os.getenv("AERO_TEST_MIN_CMD", "5")), help="非逐指模式低于该角度时只记录不触发; 逐指模式不使用角度下限")
+    parser.add_argument("--contact-loss-consecutive", type=int, default=int(os.getenv("AERO_TEST_CONTACT_LOSS_CONSECUTIVE", "2")), help="逐指收紧途中连续多少次失去接触才取消误触发")
     parser.add_argument("--ignore-actuators", default=os.getenv("AERO_TEST_IGNORE_ACTUATORS", ""), help="不参与触发的电机号, 如 5 或 2,5")
     parser.add_argument("--active-joints", default=os.getenv("AERO_TEST_ACTIVE_JOINTS", "1,2,3,4,5,6"), help="随step变化的compact关节号, 如 3 或 3,4,5,6")
     parser.add_argument("--disable-trigger", action="store_true", help="只记录电流曲线, 不因电流停止")
@@ -57,6 +58,7 @@ def parse_args():
     parser.add_argument("--required-fingers", default=os.getenv("AERO_TEST_REQUIRED_FINGERS", ""), help="per-finger模式下必须抓紧的手指; 默认使用active-joints里的3-6")
     parser.add_argument("--extra-close", type=float, default=float(os.getenv("AERO_TEST_EXTRA_CLOSE", "8")), help="单根手指触发后继续闭合多少度再锁住")
     parser.add_argument("--thumb-follow", action="store_true", help="per-finger模式下1/2号拇指继续跟随递增")
+    parser.add_argument("--thumb-follow-max", type=float, default=float(os.getenv("AERO_TEST_THUMB_FOLLOW_MAX", "60")), help="拇指跟随的最大角度; 默认60度, 避免等待其他手指时持续硬拉")
     parser.add_argument("--max-steps", type=int, default=int(os.getenv("AERO_TEST_MAX_STEPS", "300")), help="per-finger最大循环步数兜底")
     parser.add_argument("--torque-limit", type=int, default=int(os.getenv("AERO_TEST_TORQUE_LIMIT", "0")), help="可选: 先把0-6号位置控制力矩限制到0..1000")
     parser.add_argument("--hold-seconds", type=float, default=float(os.getenv("AERO_TEST_HOLD_SECONDS", "5")), help="触发后保持秒数")
@@ -182,12 +184,26 @@ def temperature_status(temperatures, max_temperature_c):
     return f"temp4={temperatures[4]:.1f}C max_temp={max(temperatures):.1f}C", hot
 
 
-def write_log_row(writer, step_idx, command_value, currents, baseline, temperatures=None, reason=""):
+def write_log_row(
+    writer,
+    step_idx,
+    command_value,
+    currents,
+    baseline,
+    temperatures=None,
+    commands=None,
+    reason="",
+):
     abs_curr, delta = current_summary(currents, baseline)
     writer.writerow({
         "time": f"{time.time():.3f}",
         "step": step_idx,
         "cmd_1_6": f"{command_value:.2f}",
+        "commands_1_6": (
+            " ".join(f"{float(commands[idx]):.1f}" for idx in range(1, 7))
+            if commands is not None
+            else ""
+        ),
         "currents_ma": " ".join(f"{v:.1f}" for v in currents),
         "abs_ma": " ".join(f"{v:.1f}" for v in abs_curr),
         "delta_ma": " ".join(f"{v:.1f}" for v in delta),
@@ -224,6 +240,69 @@ def triggered_actuators(args, ignored, currents, baseline, empty_profile, comman
     return over, abs_curr, delta, profile_extra, profile_cmd
 
 
+def update_per_finger_locks(
+    sent_values,
+    active_over,
+    required_fingers,
+    hit_counts,
+    pending_targets,
+    pending_loss_counts,
+    target_confirm_counts,
+    locked,
+    consecutive,
+    contact_loss_consecutive,
+    extra_close,
+    max_cmd,
+    step,
+    follow_limits=None,
+):
+    """Advance independent fingers and lock only after the tighter target was sent."""
+    events = []
+    for idx in required_fingers:
+        if idx in locked:
+            continue
+        if idx in pending_targets:
+            if idx in active_over:
+                pending_loss_counts[idx] = 0
+            else:
+                pending_loss_counts[idx] = pending_loss_counts.get(idx, 0) + 1
+                target_confirm_counts[idx] = 0
+                if pending_loss_counts[idx] >= max(1, contact_loss_consecutive):
+                    target = pending_targets.pop(idx)
+                    pending_loss_counts[idx] = 0
+                    hit_counts[idx] = 0
+                    events.append(f"contact_lost:{idx}@{sent_values[idx]:.1f}/target:{target:.1f}")
+                continue
+            if sent_values[idx] >= pending_targets[idx] - 1e-6:
+                target_confirm_counts[idx] = target_confirm_counts.get(idx, 0) + 1
+                if target_confirm_counts[idx] >= max(1, consecutive):
+                    locked[idx] = float(sent_values[idx])
+                    pending_targets.pop(idx, None)
+                    pending_loss_counts[idx] = 0
+                    target_confirm_counts[idx] = 0
+                    events.append(f"lock:{idx}@{locked[idx]:.1f}")
+            continue
+        hit_counts[idx] = hit_counts[idx] + 1 if idx in active_over else 0
+        if hit_counts[idx] >= max(1, consecutive):
+            target = min(max_cmd, sent_values[idx] + extra_close)
+            pending_targets[idx] = float(target)
+            pending_loss_counts[idx] = 0
+            target_confirm_counts[idx] = 0
+            events.append(f"contact:{idx}@{sent_values[idx]:.1f}->target:{target:.1f}")
+        elif sent_values[idx] >= max_cmd - 1e-6:
+            locked[idx] = float(sent_values[idx])
+            events.append(f"max:{idx}@{locked[idx]:.1f}")
+
+    next_values = dict(sent_values)
+    follow_limits = follow_limits or {}
+    for idx in next_values:
+        if idx in locked:
+            continue
+        limit = pending_targets.get(idx, follow_limits.get(idx, max_cmd))
+        next_values[idx] = min(float(limit), float(sent_values[idx]) + step)
+    return next_values, events
+
+
 def main():
     args = parse_args()
     if args.fast:
@@ -234,6 +313,10 @@ def main():
         raise ValueError("--step 必须 > 0")
     if args.max < args.start:
         raise ValueError("--max 必须 >= --start")
+    if not args.start <= args.thumb_follow_max <= args.max:
+        raise ValueError("--thumb-follow-max 必须位于 --start..--max")
+    if args.contact_loss_consecutive <= 0:
+        raise ValueError("--contact-loss-consecutive 必须 > 0")
     if args.temperature_every <= 0:
         raise ValueError("--temperature-every 必须 > 0")
     ignored = parse_index_set(args.ignore_actuators, "--ignore-actuators")
@@ -292,6 +375,7 @@ def main():
                 "time",
                 "step",
                 "cmd_1_6",
+                "commands_1_6",
                 "currents_ma",
                 "abs_ma",
                 "delta_ma",
@@ -338,10 +422,16 @@ def main():
 
             if args.per_finger:
                 values = {idx: args.start for idx in active_joints}
+                if args.thumb_follow:
+                    for idx in (1, 2):
+                        values.setdefault(idx, args.start)
                 for idx in required_fingers:
                     values.setdefault(idx, args.start)
                 hit_counts = {idx: 0 for idx in required_fingers}
                 locked = {}
+                pending_targets = {}
+                pending_loss_counts = {idx: 0 for idx in required_fingers}
+                target_confirm_counts = {idx: 0 for idx in required_fingers}
                 step_idx = 0
 
                 while any(idx not in locked for idx in required_fingers):
@@ -349,7 +439,8 @@ def main():
                         pending = sorted(idx for idx in required_fingers if idx not in locked)
                         print(f"[Aero测试][停止] 达到最大循环步数 {args.max_steps}, 未完成: {pending}")
                         break
-                    pose = compact_pose_values(args.thumb0, values)
+                    sent_values = dict(values)
+                    pose = compact_pose_values(args.thumb0, sent_values)
                     final_pose = pose
                     hand.set_joint_positions(pose)
                     time.sleep(args.settle)
@@ -365,17 +456,18 @@ def main():
                         args.max_temperature_c,
                     )
 
-                    command_value = max(values.get(idx, args.start) for idx in required_fingers)
+                    command_value = max(sent_values.get(idx, args.start) for idx in required_fingers)
                     abs_curr, delta = current_summary(currents, baseline)
                     profile_extra = None
                     profile_cmd = None
                     over = []
                     if empty_profile:
                         profile_extra = [0.0] * 7
+                        profile_cmds = [args.start] * 7
                         for idx in range(1, 7):
-                            profile_cmd, profile_abs = profile_abs_envelope(
+                            profile_cmds[idx], profile_abs = profile_abs_envelope(
                                 empty_profile,
-                                values.get(idx, args.start),
+                                sent_values.get(idx, args.start),
                                 args.profile_window_deg,
                             )
                             profile_extra[idx] = max(0.0, abs_curr[idx] - profile_abs[idx])
@@ -386,34 +478,26 @@ def main():
                             idx for idx in range(1, 7)
                             if idx not in ignored and (delta[idx] >= args.delta_ma or abs_curr[idx] >= args.abs_ma)
                         ]
-                    active_over = [idx for idx in over if idx in required_fingers and values.get(idx, args.start) >= args.min_cmd]
-                    events = []
-                    for idx in required_fingers:
-                        if idx in locked:
-                            continue
-                        if idx in active_over:
-                            hit_counts[idx] += 1
-                        else:
-                            hit_counts[idx] = 0
-                        if hit_counts[idx] >= max(1, args.consecutive):
-                            lock_value = min(args.max, values.get(idx, args.start) + args.extra_close)
-                            values[idx] = lock_value
-                            locked[idx] = lock_value
-                            events.append(f"lock:{idx}@{lock_value:.1f}")
-
-                    movable = [idx for idx in active_joints if idx not in locked]
-                    if args.thumb_follow:
-                        movable.extend(idx for idx in (1, 2) if idx not in active_joints)
-                    for idx in set(movable):
-                        values[idx] = min(args.max, values.get(idx, args.start) + args.step)
-
-                    saturated = [
-                        idx for idx in required_fingers
-                        if idx not in locked and values.get(idx, args.start) >= args.max
+                    active_over = [
+                        idx for idx in over
+                        if idx in required_fingers
                     ]
-                    for idx in saturated:
-                        locked[idx] = values.get(idx, args.max)
-                        events.append(f"max:{idx}@{locked[idx]:.1f}")
+                    values, events = update_per_finger_locks(
+                        sent_values,
+                        active_over,
+                        required_fingers,
+                        hit_counts,
+                        pending_targets,
+                        pending_loss_counts,
+                        target_confirm_counts,
+                        locked,
+                        args.consecutive,
+                        args.contact_loss_consecutive,
+                        args.extra_close,
+                        args.max,
+                        args.step,
+                        ({1: args.thumb_follow_max, 2: args.thumb_follow_max} if args.thumb_follow else None),
+                    )
 
                     reason = ";".join(events)
                     write_log_row(
@@ -423,16 +507,19 @@ def main():
                         currents,
                         baseline,
                         latest_temperatures,
+                        sent_values,
                         reason,
                     )
                     log_rows += 1
                     f.flush()
-                    value_text = " ".join(f"{idx}:{values.get(idx, 0):.1f}" for idx in range(1, 7))
+                    sent_text = " ".join(f"{idx}:{sent_values.get(idx, 0):.1f}" for idx in range(1, 7))
+                    next_text = " ".join(f"{idx}:{values.get(idx, 0):.1f}" for idx in range(1, 7))
                     print(
-                        f"[Aero测试] step={step_idx:03d} values={value_text} "
-                        f"over={over or '-'} locked={sorted(locked)} "
+                        f"[Aero测试] step={step_idx:03d} sent={sent_text} next={next_text} "
+                        f"over={over or '-'} pending={pending_targets} locked={sorted(locked)} "
                         + (
-                            f"profile_cmd={profile_cmd:.1f} max_extra={max(profile_extra[1:]):.1f}mA "
+                            f"profile_cmds={'/'.join(f'{profile_cmds[idx]:.0f}' for idx in range(1, 7))} "
+                            f"max_extra={max(profile_extra[1:]):.1f}mA "
                             if profile_extra is not None
                             else f"max_delta={max(delta[1:]):.1f}mA max_abs={max(abs_curr[1:]):.1f}mA "
                         )
@@ -448,7 +535,10 @@ def main():
                             "[Aero测试][完成] 所需手指已抓紧/到上限: "
                             + ", ".join(f"{idx}:{COMPACT_NAMES[idx]}={locked[idx]:.1f}" for idx in sorted(required_fingers))
                         )
-                        time.sleep(max(0.0, args.hold_seconds))
+                        hold_seconds = max(0.0, args.hold_seconds)
+                        print(f"[Aero测试][保持] 全部手指保持 {hold_seconds:.1f}s ...")
+                        time.sleep(hold_seconds)
+                        print("[Aero测试][保持完成] 准备结束测试")
                         break
                     step_idx += 1
                 return
@@ -500,6 +590,7 @@ def main():
                     currents,
                     baseline,
                     latest_temperatures,
+                    pose,
                     reason,
                 )
                 log_rows += 1
