@@ -61,6 +61,8 @@ def parse_args():
     parser.add_argument("--torque-limit", type=int, default=int(os.getenv("AERO_TEST_TORQUE_LIMIT", "0")), help="可选: 先把0-6号位置控制力矩限制到0..1000")
     parser.add_argument("--hold-seconds", type=float, default=float(os.getenv("AERO_TEST_HOLD_SECONDS", "5")), help="触发后保持秒数")
     parser.add_argument("--release-after", action="store_true", help="测试结束后张开")
+    parser.add_argument("--temperature-every", type=int, default=int(os.getenv("AERO_TEST_TEMPERATURE_EVERY", "1")), help="每多少步读取一次温度; 默认每步")
+    parser.add_argument("--max-temperature-c", type=float, default=float(os.getenv("AERO_TEST_MAX_TEMPERATURE_C", "65")), help="温度提示阈值; 只打印/记录, 不改变测试动作")
     parser.add_argument("--log", default=os.getenv("AERO_TEST_LOG", ""), help="CSV日志路径; 默认测试日志写 /tmp")
     return parser.parse_args()
 
@@ -158,7 +160,29 @@ def current_summary(currents, baseline):
     return abs_curr, delta
 
 
-def write_log_row(writer, step_idx, command_value, currents, baseline, reason=""):
+def read_temperatures(hand):
+    try:
+        temperatures = hand.get_actuator_temperatures()
+    except Exception as exc:
+        print(f"[Aero测试][警告] 温度读取失败: {exc}")
+        return None
+    if temperatures is None or len(temperatures) != 7:
+        return None
+    return [float(value) for value in temperatures]
+
+
+def temperature_status(temperatures, max_temperature_c):
+    if temperatures is None:
+        return "temp=无效", []
+    hot = [
+        (idx, value)
+        for idx, value in enumerate(temperatures)
+        if value >= float(max_temperature_c)
+    ]
+    return f"temp4={temperatures[4]:.1f}C max_temp={max(temperatures):.1f}C", hot
+
+
+def write_log_row(writer, step_idx, command_value, currents, baseline, temperatures=None, reason=""):
     abs_curr, delta = current_summary(currents, baseline)
     writer.writerow({
         "time": f"{time.time():.3f}",
@@ -169,6 +193,14 @@ def write_log_row(writer, step_idx, command_value, currents, baseline, reason=""
         "delta_ma": " ".join(f"{v:.1f}" for v in delta),
         "max_abs_ma": f"{max(abs_curr[1:]):.1f}",
         "max_delta_ma": f"{max(delta[1:]):.1f}",
+        "temperatures_c": (
+            " ".join(f"{value:.1f}" for value in temperatures)
+            if temperatures is not None
+            else ""
+        ),
+        "motor4_temperature_c": (
+            f"{temperatures[4]:.1f}" if temperatures is not None else ""
+        ),
         "reason": reason,
     })
 
@@ -202,6 +234,8 @@ def main():
         raise ValueError("--step 必须 > 0")
     if args.max < args.start:
         raise ValueError("--max 必须 >= --start")
+    if args.temperature_every <= 0:
+        raise ValueError("--temperature-every 必须 > 0")
     ignored = parse_index_set(args.ignore_actuators, "--ignore-actuators")
     active_joints = parse_index_set(args.active_joints, "--active-joints", min_value=1, max_value=6)
     if not active_joints:
@@ -263,6 +297,8 @@ def main():
                 "delta_ma",
                 "max_abs_ma",
                 "max_delta_ma",
+                "temperatures_c",
+                "motor4_temperature_c",
                 "reason",
             ],
         )
@@ -284,6 +320,21 @@ def main():
             if baseline is None:
                 raise RuntimeError("无法读取基线电流")
             print("[Aero测试] 基线电流(mA): " + " ".join(f"{v:.1f}" for v in baseline))
+            latest_temperatures = read_temperatures(hand)
+            temperature_text, hot_actuators = temperature_status(
+                latest_temperatures,
+                args.max_temperature_c,
+            )
+            print(f"[Aero测试] 初始温度: {temperature_text}")
+            if hot_actuators:
+                print(
+                    "[Aero测试][温度提示] "
+                    + ", ".join(
+                        f"{idx}:{COMPACT_NAMES[idx]}={temperature:.1f}C"
+                        for idx, temperature in hot_actuators
+                    )
+                    + "; 仅记录，不改变测试动作"
+                )
 
             if args.per_finger:
                 values = {idx: args.start for idx in active_joints}
@@ -307,6 +358,12 @@ def main():
                         print(f"[Aero测试][警告] step={step_idx}: 电流读取失败, 继续")
                         step_idx += 1
                         continue
+                    if step_idx % args.temperature_every == 0:
+                        latest_temperatures = read_temperatures(hand)
+                    temperature_text, hot_actuators = temperature_status(
+                        latest_temperatures,
+                        args.max_temperature_c,
+                    )
 
                     command_value = max(values.get(idx, args.start) for idx in required_fingers)
                     abs_curr, delta = current_summary(currents, baseline)
@@ -359,7 +416,15 @@ def main():
                         events.append(f"max:{idx}@{locked[idx]:.1f}")
 
                     reason = ";".join(events)
-                    write_log_row(writer, step_idx, command_value, currents, baseline, reason)
+                    write_log_row(
+                        writer,
+                        step_idx,
+                        command_value,
+                        currents,
+                        baseline,
+                        latest_temperatures,
+                        reason,
+                    )
                     log_rows += 1
                     f.flush()
                     value_text = " ".join(f"{idx}:{values.get(idx, 0):.1f}" for idx in range(1, 7))
@@ -372,7 +437,10 @@ def main():
                             else f"max_delta={max(delta[1:]):.1f}mA max_abs={max(abs_curr[1:]):.1f}mA "
                         )
                         + reason
+                        + f" {temperature_text}"
                     )
+                    if hot_actuators:
+                        print("[Aero测试][温度提示] 超过阈值，仅记录，不改变测试动作")
 
                     if all(idx in locked for idx in required_fingers):
                         triggered = True
@@ -399,6 +467,12 @@ def main():
                     value += args.step
                     step_idx += 1
                     continue
+                if step_idx % args.temperature_every == 0:
+                    latest_temperatures = read_temperatures(hand)
+                temperature_text, hot_actuators = temperature_status(
+                    latest_temperatures,
+                    args.max_temperature_c,
+                )
 
                 over, abs_curr, delta, profile_extra, profile_cmd = triggered_actuators(
                     args, ignored, currents, baseline, empty_profile, value
@@ -419,7 +493,15 @@ def main():
                 elif over:
                     reason = f"candidate({consecutive_hits}/{max(1, args.consecutive)}):" + ",".join(str(i) for i in over)
 
-                write_log_row(writer, step_idx, value, currents, baseline, reason)
+                write_log_row(
+                    writer,
+                    step_idx,
+                    value,
+                    currents,
+                    baseline,
+                    latest_temperatures,
+                    reason,
+                )
                 log_rows += 1
                 f.flush()
                 print(
@@ -431,7 +513,10 @@ def main():
                         else ""
                     )
                     + f"over={over or '-'} {reason}"
+                    + f" {temperature_text}"
                 )
+                if hot_actuators:
+                    print("[Aero测试][温度提示] 超过阈值，仅记录，不改变测试动作")
 
                 if triggered:
                     names = ", ".join(f"{i}:{COMPACT_NAMES[i]}" for i in over)
