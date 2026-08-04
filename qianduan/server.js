@@ -85,6 +85,7 @@ const ROBOT_GRAB_TIMEOUT_MS = Number(process.env.ROBOT_GRAB_TIMEOUT_MS || 120000
 const ROBOT_STOW_TIMEOUT_MS = Number(process.env.ROBOT_STOW_TIMEOUT_MS || 120000);
 const ORDER_READY_CLOSE_DELAY_MS = Number(process.env.ORDER_READY_CLOSE_DELAY_MS || 3000);
 const ROBOT_FILTER_PREVIEW_TIMEOUT_MS = Number(process.env.ROBOT_FILTER_PREVIEW_TIMEOUT_MS || 30000);
+const ROBOT_INVENTORY_SCAN_TIMEOUT_MS = Number(process.env.ROBOT_INVENTORY_SCAN_TIMEOUT_MS || 60000);
 const ROBOT_MAX_ITEM_QTY = Number(process.env.ROBOT_MAX_ITEM_QTY || 20);
 const ROBOT_MAX_ORDER_UNITS = Number(process.env.ROBOT_MAX_ORDER_UNITS || 50);
 const ROBOT_SIM_DELAY_SCALE = Math.max(0, Number(process.env.ROBOT_SIM_DELAY_SCALE || 1));
@@ -94,6 +95,8 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const ADMIN_SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const ADMIN_SESSION_TTL_MS = Number(process.env.ADMIN_SESSION_TTL_MS || 8 * 60 * 60 * 1000);
 const ADMIN_COOKIE_NAME = 'grasp_admin_session';
+const INVENTORY_SCAN_FILE = process.env.INVENTORY_SCAN_FILE
+    || path.join(path.dirname(PRODUCTS_DB_FILE), 'inventory_scan.json');
 const ORDER_TOKEN_SECRET = process.env.ORDER_TOKEN_SECRET || ADMIN_SESSION_SECRET;
 const ORDER_TOKEN_TTL_MS = Number(process.env.ORDER_TOKEN_TTL_MS || 24 * 60 * 60 * 1000);
 if (process.env.ORDER_TOKEN_SECRET && Buffer.byteLength(ORDER_TOKEN_SECRET, 'utf8') < 32) {
@@ -122,6 +125,8 @@ let robotFailureRecoveryPromise = null;
 let robotPoweredOff = false;
 let robotEmergencyStopped = false;
 let robotFilterPreviewPromise = null;
+let inventoryScanPromise = null;
+let inventoryScanCancelRequested = false;
 let chassisNavigationPromise = null;
 let chassisRasterCache = null;
 let chassisMapRefreshPromise = null;
@@ -179,7 +184,7 @@ function parseLayerFromLocation(location) {
  * @returns {{ layer: number, name: string, pose: number[] } | null}
  */
 function getShelfPoseForProduct(product) {
-    const layerIndex = parseLayerFromLocation(product.location);
+    const layerIndex = Number(product.shelf_layer) || parseLayerFromLocation(product.location);
     if (layerIndex === null) return null;
 
     const shelfData = loadShelfLayers();
@@ -369,6 +374,9 @@ function recordLoginFailure(ip) {
 
 function normalizeProduct(raw, fallbackId = 1) {
     const id = Number(raw.id || fallbackId);
+    const parsedLayer = parseLayerFromLocation(raw.location || '');
+    const shelfNumber = Number(raw.shelf_number ?? raw.shelfNumber);
+    const shelfLayer = Number(raw.shelf_layer ?? raw.shelfLayer ?? parsedLayer);
     return {
         id,
         name: raw.name || '',
@@ -380,6 +388,9 @@ function normalizeProduct(raw, fallbackId = 1) {
         photo_back: raw.photo_back || '',
         location: raw.location || '',
         chassis_marker: raw.chassis_marker || raw.marker_name || '',
+        shelf_number: Number.isInteger(shelfNumber) && shelfNumber >= 1 && shelfNumber <= 7 ? shelfNumber : null,
+        shelf_zone: String(raw.shelf_zone || raw.shelfZone || '').trim().toUpperCase(),
+        shelf_layer: Number.isInteger(shelfLayer) && shelfLayer >= 1 && shelfLayer <= 10 ? shelfLayer : null,
         shelf_x: Number(raw.shelf_x || 0),
         shelf_y: Number(raw.shelf_y || 0),
         shelf_z: Number(raw.shelf_z || 50),
@@ -419,6 +430,68 @@ function writeProductStore(store) {
 function writeProducts(products) {
     const store = readProductStore();
     writeProductStore({ ...store, products });
+}
+
+function shelfZoneForNumber(shelfNumber) {
+    if (shelfNumber <= 2) return 'A';
+    if (shelfNumber <= 4) return 'B';
+    if (shelfNumber <= 6) return 'C';
+    return 'D';
+}
+
+function defaultInventoryShelves() {
+    return Array.from({ length: 7 }, (_, index) => ({
+        shelf: index + 1,
+        zone: shelfZoneForNumber(index + 1),
+        marker: ''
+    }));
+}
+
+function normalizeInventoryShelves(rawShelves, { requireMarkers = false } = {}) {
+    const rows = Array.isArray(rawShelves) ? rawShelves : [];
+    return defaultInventoryShelves().map((fallback) => {
+        const raw = rows.find((item) => Number(item && item.shelf) === fallback.shelf) || {};
+        const marker = String(raw.marker || raw.chassis_marker || '').trim();
+        if (requireMarkers && !marker) throw new Error(`${fallback.shelf}号货架尚未配置底盘点位`);
+        if (marker) validateChassisMarkerName(marker);
+        return { ...fallback, marker };
+    });
+}
+
+function readInventoryScanStore() {
+    const fallback = { shelves: defaultInventoryShelves(), last_scan: null };
+    if (!fs.existsSync(INVENTORY_SCAN_FILE)) return fallback;
+    try {
+        const data = JSON.parse(fs.readFileSync(INVENTORY_SCAN_FILE, 'utf8'));
+        return {
+            shelves: normalizeInventoryShelves(data.shelves),
+            last_scan: data.last_scan && typeof data.last_scan === 'object' ? data.last_scan : null
+        };
+    } catch (error) {
+        log(`⚠️ 巡架识别配置读取失败: ${error.message}`);
+        return fallback;
+    }
+}
+
+function writeInventoryScanStore(store) {
+    fs.mkdirSync(path.dirname(INVENTORY_SCAN_FILE), { recursive: true });
+    const tempFile = `${INVENTORY_SCAN_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tempFile, JSON.stringify(store, null, 2), 'utf8');
+    fs.renameSync(tempFile, INVENTORY_SCAN_FILE);
+}
+
+function saveInventoryScanState(state) {
+    const store = readInventoryScanStore();
+    writeInventoryScanStore({ ...store, last_scan: state });
+}
+
+function inventoryScanSnapshot() {
+    const store = readInventoryScanStore();
+    return {
+        shelves: store.shelves,
+        task: store.last_scan || { status: 'idle', progress: 0, results: [] },
+        running: Boolean(inventoryScanPromise)
+    };
 }
 
 function readOrderStore() {
@@ -1308,7 +1381,7 @@ function normalizeOrderItems(items) {
         const name = String(item.name || '').trim();
         if (!name) throw new Error(`第 ${index + 1} 个商品缺少 name`);
         if (/\r|\n/.test(name)) throw new Error(`商品名称不能包含换行: ${name}`);
-        if (['**stow**', '__stow__', '__shutdown__', '__poweroff__', '__shutdown_power__', '__quit__', '__exit__'].includes(name)) {
+        if (['**stow**', '__stow__', '__shutdown__', '__poweroff__', '__shutdown_power__', '__quit__', '__exit__', '__inventory_scan__', '__scan_layer__'].includes(name)) {
             throw new Error(`商品名称使用了保留控制词: ${name}`);
         }
 
@@ -1503,7 +1576,7 @@ const server = http.createServer(async (req, res) => {
                     lineTotal: Number((unitPrice * item.qty).toFixed(2)),
                     paymentMenuItemId: null,
                     productStock: Number(product.stock) || 0,
-                    shelf_layer: parseLayerFromLocation(product.location),
+                    shelf_layer: Number(product.shelf_layer) || parseLayerFromLocation(product.location),
                     chassis_marker: product.chassis_marker || null
                 };
             });
@@ -1874,6 +1947,100 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    if (pathname === '/api/admin/inventory-scan' && req.method === 'GET') {
+        if (!requireAdmin(req, res)) return;
+        sendJSON(res, { code: 0, data: inventoryScanSnapshot() });
+        return;
+    }
+
+    if (pathname === '/api/admin/inventory-scan/config' && req.method === 'PUT') {
+        if (!requireAdmin(req, res)) return;
+        if (inventoryScanPromise) {
+            sendJSON(res, { code: 1, message: '巡架识别进行中，暂不能修改点位配置' }, 409);
+            return;
+        }
+        const body = await parseBody(req);
+        try {
+            const shelves = normalizeInventoryShelves(body && body.shelves);
+            const store = readInventoryScanStore();
+            writeInventoryScanStore({ ...store, shelves });
+            sendJSON(res, { code: 0, message: '货架点位对应关系已保存', data: shelves });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 400);
+        }
+        return;
+    }
+
+    if (pathname === '/api/admin/inventory-scan/start' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        if (inventoryScanPromise) {
+            sendJSON(res, { code: 1, message: '巡架识别已经在运行' }, 409);
+            return;
+        }
+        const operation = currentRobotOperation();
+        if (operation) {
+            sendJSON(res, { code: 1, message: `${operation.label}，暂不能开始巡架识别` }, 409);
+            return;
+        }
+        try {
+            const shelves = normalizeInventoryShelves(readInventoryScanStore().shelves, { requireMarkers: true });
+            const task = {
+                id: `SCAN-${Date.now()}`,
+                status: 'running',
+                progress: 0,
+                current_shelf: null,
+                current_layer: null,
+                message: '准备开始巡架识别',
+                started_at: new Date().toISOString(),
+                completed_at: null,
+                results: []
+            };
+            inventoryScanCancelRequested = false;
+            saveInventoryScanState(task);
+            inventoryScanPromise = runInventoryScan(task, shelves)
+                .catch((error) => finishInventoryScanWithError(task, error))
+                .finally(() => {
+                    inventoryScanPromise = null;
+                    broadcastRobotStatus();
+                });
+            broadcastRobotStatus('inventory-scanning', task.message);
+            sendJSON(res, { code: 0, message: '巡架识别已启动', data: task }, 202);
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 400);
+        }
+        return;
+    }
+
+    if (pathname === '/api/admin/inventory-scan/stop' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        if (!inventoryScanPromise) {
+            sendJSON(res, { code: 0, message: '当前没有正在运行的巡架识别' });
+            return;
+        }
+        inventoryScanCancelRequested = true;
+        const store = readInventoryScanStore();
+        if (store.last_scan) {
+            saveInventoryScanState({ ...store.last_scan, status: 'stopping', message: '正在停止巡架识别' });
+        }
+        if (ROBOT_GRASP_REAL && chassisNavigationPromise) {
+            chassisClient().request('/api/move/cancel').catch((error) => log(`⚠️ 停止巡架时取消底盘导航失败: ${error.message}`));
+        }
+        sendJSON(res, { code: 0, message: '停止指令已发送' }, 202);
+        return;
+    }
+
+    if (pathname === '/api/admin/inventory-scan/products' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        const body = await parseBody(req);
+        try {
+            const saved = saveInventoryScanProducts(body && body.rows);
+            sendJSON(res, { code: 0, message: `已保存 ${saved.length} 条商品信息`, data: saved });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 400);
+        }
+        return;
+    }
+
     // GET /api/products - 获取所有商品
     if (pathname === '/api/products' && req.method === 'GET') {
         try {
@@ -1933,7 +2100,7 @@ const server = http.createServer(async (req, res) => {
             const products = readProducts();
             const index = products.findIndex((item) => String(item.id) === updateMatch[1]);
             if (index < 0) { sendJSON(res, { code: 1, message: '商品不存在' }, 404); return; }
-            const allowed = ['name','spec','packaging','category','manufacturer','photo_front','photo_back','location','chassis_marker','shelf_x','shelf_y','shelf_z','emoji','price','stock','status'];
+            const allowed = ['name','spec','packaging','category','manufacturer','photo_front','photo_back','location','chassis_marker','shelf_number','shelf_zone','shelf_layer','shelf_x','shelf_y','shelf_z','emoji','price','stock','status'];
             const patch = {};
             for (const key of allowed) {
                 if (body[key] !== undefined) {
@@ -2372,6 +2539,7 @@ function currentRobotOperation() {
     if (robotEmergencyPromise) return { status: 'emergency-stopping', label: '正在执行急停' };
     if (robotEmergencyStopped) return { status: 'emergency-stopped', label: '急停已触发，请人工检查并重启后端' };
     if (robotFailureRecoveryPromise) return { status: 'returning', label: '订单失败后正在收起并回充' };
+    if (inventoryScanPromise) return { status: 'inventory-scanning', label: '正在巡架识别商品' };
     if (chassisNavigationPromise) return { status: 'chassis-moving', label: '底盘正在运动' };
     if (robotShutdownPromise) return { status: 'shutting-down', label: '机器人正在收起、断电并回充' };
     if (robotPoweroffPromise) return { status: 'powering-off', label: '机器人正在断电关闭' };
@@ -3776,7 +3944,7 @@ async function resolveLayerIndex(body) {
         const product = products.find((p) =>
             p.name === body.productName || String(p.id) === String(body.productName));
         if (product) {
-            const idx = parseLayerFromLocation(product.location);
+            const idx = Number(product.shelf_layer) || parseLayerFromLocation(product.location);
             if (idx) {
                 log(`📦 商品"${product.name}" 位于 ${product.location} → 货架层 ${idx}`);
                 return idx;
@@ -3789,7 +3957,7 @@ async function resolveLayerIndex(body) {
         const products = readProducts();
         const product = products.find((p) => String(p.id) === String(body.productId));
         if (product) {
-            const idx = parseLayerFromLocation(product.location);
+            const idx = Number(product.shelf_layer) || parseLayerFromLocation(product.location);
             if (idx) {
                 log(`📦 商品 id=${product.id} "${product.name}" 位于 ${product.location} → 货架层 ${idx}`);
                 return idx;
@@ -4048,6 +4216,217 @@ async function powerOffRobotWorker() {
         robotPoweroffPromise = null;
         broadcastRobotStatus('powered-off', '机器人已断电，抓取程序已关闭');
     }
+}
+
+function simulatedInventoryRecognition(shelf, layer) {
+    try {
+        const configured = JSON.parse(process.env.ROBOT_SCAN_SIM_RESULTS || '{}');
+        const result = configured[`${shelf}-${layer}`] || configured[`${shelf}:${layer}`];
+        if (result && typeof result === 'object') return result;
+        if (typeof result === 'string') return { dominant_name: result, count: 1, total: 1 };
+    } catch (error) {
+        log(`⚠️ 模拟巡架识别结果配置无效: ${error.message}`);
+    }
+    return { dominant_name: '', count: 0, total: 0, candidates: [] };
+}
+
+function normalizeInventoryRecognition(raw) {
+    const candidates = Array.isArray(raw && raw.candidates)
+        ? raw.candidates.map((item) => ({
+            name: String(item.name || item.class_name || '').trim(),
+            count: Math.max(0, Number(item.count) || 0)
+        })).filter((item) => item.name)
+        : [];
+    return {
+        dominant_name: String(raw && (raw.dominant_name || raw.name) || '').trim(),
+        count: Math.max(0, Number(raw && raw.count) || 0),
+        total: Math.max(0, Number(raw && raw.total) || 0),
+        candidates
+    };
+}
+
+async function recognizeInventoryLayer(shelf, layer) {
+    if (!ROBOT_GRASP_REAL) {
+        await sleep(Math.max(10, 120 * ROBOT_SIM_DELAY_SCALE));
+        return normalizeInventoryRecognition(simulatedInventoryRecognition(shelf, layer));
+    }
+    const worker = await ensureRobotWorker();
+    if (!worker) throw new Error('机器人 worker 未启动');
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let outputTail = '';
+        const cleanup = () => {
+            clearTimeout(timeout);
+            worker.stdout.off('data', onData);
+            worker.stderr.off('data', onData);
+            worker.off('close', onClose);
+        };
+        const finish = (error, result) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            if (error) reject(error);
+            else resolve(normalizeInventoryRecognition(result));
+        };
+        const handleLines = createLineHandler((line) => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            const completed = trimmed.match(/^\[巡架识别\]\[完成\]\s+report=(\S+)/);
+            if (completed) {
+                try {
+                    finish(null, JSON.parse(fs.readFileSync(completed[1], 'utf8')));
+                } catch (error) {
+                    finish(error);
+                }
+            } else if (trimmed.includes('[巡架识别][失败]')) {
+                finish(new Error(trimmed));
+            }
+        });
+        const onData = (chunk) => {
+            outputTail = (outputTail + chunk.toString()).slice(-4000);
+            handleLines(chunk);
+        };
+        const onClose = (code) => finish(new Error(`巡架识别 worker 已退出 code=${code}`));
+        const timeout = setTimeout(() => {
+            finish(new Error(`巡架识别超时 (${ROBOT_INVENTORY_SCAN_TIMEOUT_MS}ms): ${summarizeOutput(outputTail) || '无输出'}`));
+        }, ROBOT_INVENTORY_SCAN_TIMEOUT_MS);
+        worker.stdout.on('data', onData);
+        worker.stderr.on('data', onData);
+        worker.on('close', onClose);
+        worker.stdin.write('__inventory_scan__\n', (error) => {
+            if (error) finish(new Error(`无法发送巡架识别命令: ${error.message}`));
+        });
+    });
+}
+
+function assertInventoryScanContinues() {
+    if (inventoryScanCancelRequested) {
+        const error = new Error('巡架识别已由管理员停止');
+        error.code = 'INVENTORY_SCAN_CANCELED';
+        throw error;
+    }
+}
+
+async function runInventoryScan(task, shelves) {
+    const totalSteps = shelves.length * 2;
+    let completedSteps = 0;
+    for (const shelf of shelves) {
+        assertInventoryScanContinues();
+        task.current_shelf = shelf.shelf;
+        task.current_layer = null;
+        task.message = `正在前往${shelf.shelf}号货架（${shelf.zone}区 / ${shelf.marker}）`;
+        saveInventoryScanState(task);
+        broadcastRobotStatus('inventory-scanning', task.message);
+        if (ROBOT_GRASP_REAL) {
+            await moveRobotToStowPose();
+            assertInventoryScanContinues();
+            await navigateChassisToMarker(shelf.marker, { statusMessage: task.message });
+        } else {
+            await sleep(Math.max(10, 120 * ROBOT_SIM_DELAY_SCALE));
+        }
+
+        for (const layer of [1, 2]) {
+            assertInventoryScanContinues();
+            task.current_layer = layer;
+            task.message = `正在识别${shelf.shelf}号货架第${layer}层`;
+            saveInventoryScanState(task);
+            broadcastRobotStatus('inventory-scanning', task.message);
+            const shelfLayer = loadShelfLayers().layers[String(layer)];
+            if (!shelfLayer) throw new Error(`未配置第${layer}层机械臂位姿`);
+            await moveRobotToLayer(layer, shelfLayer, shelfLayer.pose);
+            assertInventoryScanContinues();
+            const recognition = await recognizeInventoryLayer(shelf.shelf, layer);
+            completedSteps += 1;
+            const result = {
+                shelf: shelf.shelf,
+                zone: shelf.zone,
+                marker: shelf.marker,
+                layer,
+                ...recognition,
+                scanned_at: new Date().toISOString()
+            };
+            task.results = task.results.filter((item) => !(item.shelf === shelf.shelf && item.layer === layer));
+            task.results.push(result);
+            task.progress = Math.round(completedSteps / totalSteps * 100);
+            task.message = recognition.dominant_name
+                ? `${shelf.shelf}号货架第${layer}层：${recognition.dominant_name}（${recognition.count}件）`
+                : `${shelf.shelf}号货架第${layer}层未识别到商品`;
+            saveInventoryScanState(task);
+        }
+    }
+
+    task.current_shelf = null;
+    task.current_layer = null;
+    task.message = '14 个货架层已识别完成，正在收起机械臂';
+    saveInventoryScanState(task);
+    if (ROBOT_GRASP_REAL) {
+        await moveRobotToStowPose();
+        if (readChassisSettings().auto_return_charge) {
+            task.message = '识别完成，底盘正在返回充电桩';
+            saveInventoryScanState(task);
+            await navigateChassisToMarker(CHASSIS_CHARGE_MARKER, {
+                arriveOnDocking: true,
+                statusMessage: task.message
+            });
+        }
+    }
+    task.status = 'completed';
+    task.progress = 100;
+    task.message = '巡架识别完成，请核对并填写商品信息';
+    task.completed_at = new Date().toISOString();
+    saveInventoryScanState(task);
+    broadcast({ type: 'inventory_scan', status: 'completed', task, timestamp: Date.now() });
+    return task;
+}
+
+function finishInventoryScanWithError(task, error) {
+    const canceled = inventoryScanCancelRequested || error.code === 'INVENTORY_SCAN_CANCELED';
+    task.status = canceled ? 'canceled' : 'failed';
+    task.current_shelf = null;
+    task.current_layer = null;
+    task.message = canceled ? '巡架识别已停止' : `巡架识别失败：${error.message}`;
+    task.completed_at = new Date().toISOString();
+    saveInventoryScanState(task);
+    log(`${canceled ? '⏹' : '❌'} ${task.message}`);
+    broadcast({ type: 'inventory_scan', status: task.status, task, timestamp: Date.now() });
+}
+
+function saveInventoryScanProducts(rawRows) {
+    if (!Array.isArray(rawRows)) throw new Error('商品信息必须是数组');
+    if (rawRows.length > 14) throw new Error('一次最多保存 14 条巡架商品信息');
+    const rows = rawRows.map((raw, index) => {
+        const name = String(raw && raw.name || '').trim();
+        const shelf = Number(raw && raw.shelf);
+        const layer = Number(raw && raw.layer);
+        const marker = String(raw && (raw.marker || raw.chassis_marker) || '').trim();
+        if (!name) throw new Error(`第${index + 1}行商品名称不能为空`);
+        if (!Number.isInteger(shelf) || shelf < 1 || shelf > 7) throw new Error(`第${index + 1}行货架号必须是 1..7`);
+        if (![1, 2].includes(layer)) throw new Error(`第${index + 1}行层数只能是 1 或 2`);
+        validateChassisMarkerName(marker);
+        const zone = shelfZoneForNumber(shelf);
+        return { name, shelf, layer, marker, zone };
+    });
+    const products = readProducts();
+    const saved = [];
+    for (const row of rows) {
+        const index = products.findIndex((product) =>
+            Number(product.shelf_number) === row.shelf && Number(product.shelf_layer) === row.layer);
+        const base = index >= 0 ? products[index] : { id: nextProductId(products), status: 1, stock: 100 };
+        const product = normalizeProduct({
+            ...base,
+            name: row.name,
+            shelf_number: row.shelf,
+            shelf_zone: row.zone,
+            shelf_layer: row.layer,
+            chassis_marker: row.marker,
+            location: `${row.zone}区${row.shelf}号货架第${row.layer}层`
+        });
+        if (index >= 0) products[index] = product;
+        else products.push(product);
+        saved.push(product);
+    }
+    writeProducts(products);
+    return saved;
 }
 
 function inferGrabStage(line) {

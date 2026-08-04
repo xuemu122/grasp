@@ -181,6 +181,27 @@ class PickCycleRoutingTests(unittest.TestCase):
         self.assertEqual(layer_entry_origin, shelf_grasp.LAYER_ENTRY_UNKNOWN)
         self.assertEqual(target, "云端咖啡")
 
+    def test_worker_inventory_scan_identifies_without_starting_grasp(self):
+        arm = Mock()
+        arm.get_pose.return_value = [1, 2, 3, 4, 5, 6]
+        with (
+            patch.object(shelf_grasp, "_current_layer_idx", 2),
+            patch.object(shelf_grasp, "_shelf_layer_poses", {2: ([0, 0, 300, 0, 0, 0], "第2层")}),
+            patch.object(shelf_grasp, "_scan_inventory_layer") as scan,
+        ):
+            result = shelf_grasp._handle_worker_command(
+                "__inventory_scan__",
+                arm,
+                FakeHand(),
+                object(),
+                object(),
+                object(),
+                shelf_grasp.LAYER_ENTRY_SHELF,
+            )
+
+        self.assertEqual(result, ("continue", shelf_grasp.LAYER_ENTRY_SHELF, None))
+        scan.assert_called_once()
+
     def test_worker_poweroff_exits_without_stow_motion(self):
         arm = Mock()
         action, layer_entry_origin, target = shelf_grasp._handle_worker_command(

@@ -2,6 +2,7 @@
 import re
 import os
 import sys
+import json
 
 
 print("[fake-worker-started]", flush=True)
@@ -21,6 +22,18 @@ for raw in sys.stdin:
     if command == "__stow_pose__":
         print("[前端常驻模式] 收到底盘移动前安全收起指令", flush=True)
         print("[前端常驻模式][完成] 已到达收起姿态", flush=True)
+        print("[前端常驻模式] 等待商品名 (**stow**=收起并退出) ...", flush=True)
+        continue
+    if command == "__inventory_scan__":
+        report_path = os.getenv("SHELF_INVENTORY_SCAN_REPORT", "/tmp/shelf_inventory_scan.json")
+        with open(report_path, "w", encoding="utf-8") as handle:
+            json.dump({
+                "dominant_name": "测试商品",
+                "count": 3,
+                "total": 4,
+                "candidates": [{"name": "测试商品", "count": 3}]
+            }, handle, ensure_ascii=False)
+        print(f"[巡架识别][完成] report={report_path} dominant=测试商品 count=3 total=4", flush=True)
         print("[前端常驻模式] 等待商品名 (**stow**=收起并退出) ...", flush=True)
         continue
     layer_match = re.fullmatch(r"__layer_(\d+)__", command)

@@ -96,6 +96,11 @@
         .robot-control-card { grid-column: 1 / -1; }
         .robot-control-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
         .robot-control-status { flex: 1; min-width: 240px; color: var(--gray-600); font-size: 0.9rem; }
+        .inventory-scan-card { grid-column: 1 / -1; }
+        .inventory-config-table { min-width: 520px; }
+        .inventory-config-table select { min-width: 220px; }
+        .inventory-result-wrapper { margin-top: 16px; }
+        .inventory-result-wrapper input { min-width: 150px; }
         .order-admin-card { grid-column: 1 / -1; }
         .order-toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
         .order-toolbar .search-box { min-width: 220px; }
@@ -174,6 +179,33 @@
                 <button class="btn btn-danger" id="robotShutdownButton" type="button" onclick="shutdownRobotAdmin()">关闭并回充</button>
                 <button class="btn btn-danger" id="robotEmergencyButton" type="button" onclick="emergencyStopAdmin()">急停</button>
             </div>
+        </div>
+
+        <div class="card inventory-scan-card">
+            <div class="card-title">
+                <span>自动巡架识别 <span class="count" id="inventoryScanProgress">尚未开始</span></span>
+                <span class="status-badge warn" id="inventoryScanBadge">未运行</span>
+            </div>
+            <p class="robot-control-status" id="inventoryScanMessage">配置 1–7 号货架的底盘点位后，可按每架第 1 层、第 2 层进行识别（不抓取）。</p>
+            <div class="table-wrapper">
+                <table class="inventory-config-table">
+                    <thead><tr><th>货架</th><th>分区</th><th>底盘点位</th></tr></thead>
+                    <tbody id="inventoryShelfConfigBody"></tbody>
+                </table>
+            </div>
+            <div class="robot-control-row">
+                <button class="btn btn-primary" type="button" id="saveInventoryConfigButton" onclick="saveInventoryShelfConfig()">保存点位关系</button>
+                <button class="btn btn-primary" type="button" id="startInventoryScanButton" onclick="startInventoryScan()">开始自动巡架</button>
+                <button class="btn btn-danger" type="button" id="stopInventoryScanButton" onclick="stopInventoryScan()" disabled>停止巡架</button>
+                <button class="btn btn-primary" type="button" onclick="loadInventoryScan(true)">刷新识别结果</button>
+            </div>
+            <div class="table-wrapper inventory-result-wrapper">
+                <table>
+                    <thead><tr><th>货架</th><th>分区</th><th>层数</th><th>识别主商品</th><th>数量/总数</th><th>点位</th><th>填写商品名称</th></tr></thead>
+                    <tbody id="inventoryScanResultBody"><tr><td colspan="7" class="empty-state">完成巡架后将在这里生成商品信息表单</td></tr></tbody>
+                </table>
+            </div>
+            <button class="btn btn-primary" type="button" id="saveInventoryProductsButton" onclick="saveInventoryProducts()" disabled>保存扫描商品信息</button>
         </div>
 
         <div class="card chassis-map-card">
@@ -427,6 +459,8 @@
         let shelfLayers = {};
         let chassisMapData = { map: {}, markers: [] };
         let chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'fangzhi' };
+        let inventoryScanData = { shelves: [], task: { status: 'idle', results: [] }, running: false };
+        let inventoryScanTimer = null;
         let adminOrderPage = 1;
         let adminOrderTotalPages = 1;
         let adminAlertMonitorTimer = null;
@@ -480,7 +514,7 @@
 
         async function showAdmin() {
             document.getElementById('loginOverlay').hidden = true;
-            await Promise.all([loadShelfLayers(), loadChassisMap(), loadChassisNavigationConfig(), loadRobotStatus()]);
+            await Promise.all([loadShelfLayers(), loadChassisMap(), loadChassisNavigationConfig(), loadRobotStatus(), loadInventoryScan()]);
             await Promise.all([loadProducts(), loadCategories(), loadAdminOrders(1)]);
             startAdminAlertMonitor();
         }
@@ -734,6 +768,8 @@
                 if (floors.includes(Number(map.floor))) floorSelect.value = String(map.floor);
                 updateChassisMarkerOptions(document.getElementById('formChassisMarker').value);
                 updateChassisPlaceMarkerOptions();
+                renderInventoryShelfConfig();
+                renderInventoryScanResults();
                 renderChassisMap();
             } catch (error) {
                 chassisMapData = { map: {}, markers: [] };
@@ -810,6 +846,178 @@
                 toggle.disabled = false;
                 autoReturnToggle.disabled = false;
                 placeMarker.disabled = false;
+            }
+        }
+
+        function inventoryMarkerOptions(selected = '') {
+            const markers = [...(chassisMapData.markers || [])].sort((a, b) =>
+                a.floor - b.floor || a.name.localeCompare(b.name, 'zh-CN'));
+            let options = '<option value="">请选择点位</option>';
+            for (const marker of markers) {
+                options += `<option value="${esc(marker.name)}"${marker.name === selected ? ' selected' : ''}>${esc(marker.name)} (${marker.x.toFixed(2)}, ${marker.y.toFixed(2)})</option>`;
+            }
+            if (selected && !markers.some((marker) => marker.name === selected)) {
+                options += `<option value="${esc(selected)}" selected>${esc(selected)}（底盘当前未返回）</option>`;
+            }
+            return options;
+        }
+
+        function renderInventoryShelfConfig() {
+            const body = document.getElementById('inventoryShelfConfigBody');
+            if (!body) return;
+            const shelves = inventoryScanData.shelves || [];
+            body.innerHTML = shelves.map((row) => `<tr>
+                <td><strong>${row.shelf}号货架</strong></td>
+                <td>${esc(row.zone)}区</td>
+                <td><select class="form-select" id="inventoryMarker-${row.shelf}">${inventoryMarkerOptions(row.marker)}</select></td>
+            </tr>`).join('');
+        }
+
+        function renderInventoryScanResults() {
+            const body = document.getElementById('inventoryScanResultBody');
+            if (!body) return;
+            const results = [...(inventoryScanData.task?.results || [])].sort((a, b) => a.shelf - b.shelf || a.layer - b.layer);
+            if (!results.length) {
+                body.innerHTML = '<tr><td colspan="7" class="empty-state">暂无识别结果</td></tr>';
+                document.getElementById('saveInventoryProductsButton').disabled = true;
+                return;
+            }
+            const shelfOptions = (selected) => Array.from({ length: 7 }, (_, index) => {
+                const shelf = index + 1;
+                return `<option value="${shelf}"${shelf === Number(selected) ? ' selected' : ''}>${shelf}号</option>`;
+            }).join('');
+            body.innerHTML = results.map((row, index) => {
+                const candidates = (row.candidates || []).map((item) => `${item.name} ${item.count}件`).join('、');
+                return `<tr class="inventory-result-row" data-index="${index}">
+                    <td><select class="form-select" data-field="shelf" onchange="updateInventoryResultZone(this)">${shelfOptions(row.shelf)}</select></td>
+                    <td data-field="zone">${esc(row.zone)}区</td>
+                    <td><select class="form-select" data-field="layer"><option value="1"${row.layer === 1 ? ' selected' : ''}>第1层</option><option value="2"${row.layer === 2 ? ' selected' : ''}>第2层</option></select></td>
+                    <td title="${esc(candidates)}"><strong>${esc(row.dominant_name) || '未识别'}</strong></td>
+                    <td>${Number(row.count) || 0} / ${Number(row.total) || 0}</td>
+                    <td><select class="form-select" data-field="marker">${inventoryMarkerOptions(row.marker)}</select></td>
+                    <td><input class="form-input" data-field="name" value="${esc(row.dominant_name)}" placeholder="填写商品名称"></td>
+                </tr>`;
+            }).join('');
+            document.getElementById('saveInventoryProductsButton').disabled = false;
+        }
+
+        function updateInventoryResultZone(select) {
+            const shelf = Number(select.value);
+            const zone = shelf <= 2 ? 'A' : shelf <= 4 ? 'B' : shelf <= 6 ? 'C' : 'D';
+            select.closest('tr').querySelector('[data-field="zone"]').textContent = `${zone}区`;
+        }
+
+        function updateInventoryScanControls() {
+            const task = inventoryScanData.task || { status: 'idle', progress: 0 };
+            const running = inventoryScanData.running || ['running', 'stopping'].includes(task.status);
+            const labels = {
+                idle: '未运行', running: '识别中', stopping: '停止中',
+                completed: '已完成', canceled: '已停止', failed: '失败'
+            };
+            const badge = document.getElementById('inventoryScanBadge');
+            badge.textContent = labels[task.status] || task.status;
+            badge.className = `status-badge ${task.status === 'completed' ? 'on' : (task.status === 'failed' ? 'off' : 'warn')}`;
+            document.getElementById('inventoryScanProgress').textContent = task.status === 'idle' ? '尚未开始' : `${Number(task.progress) || 0}%`;
+            document.getElementById('inventoryScanMessage').textContent = task.message || '尚未开始巡架识别';
+            document.getElementById('startInventoryScanButton').disabled = running;
+            document.getElementById('stopInventoryScanButton').disabled = !running;
+            document.getElementById('saveInventoryConfigButton').disabled = running;
+            if (inventoryScanTimer) clearTimeout(inventoryScanTimer);
+            inventoryScanTimer = running ? setTimeout(() => loadInventoryScan(), 1500) : null;
+        }
+
+        async function loadInventoryScan(showResultToast = false) {
+            try {
+                const res = await adminFetch('/api/admin/inventory-scan', { cache: 'no-store', preserveSession: true });
+                const json = await readAdminJson(res, '巡架识别接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '巡架识别状态读取失败');
+                inventoryScanData = json.data;
+                renderInventoryShelfConfig();
+                renderInventoryScanResults();
+                updateInventoryScanControls();
+                if (showResultToast) showToast('巡架识别状态已刷新', 'success');
+            } catch (error) {
+                if (showResultToast) showToast(error.message, 'error');
+                if (inventoryScanTimer) clearTimeout(inventoryScanTimer);
+                inventoryScanTimer = null;
+            }
+        }
+
+        async function saveInventoryShelfConfig({ quiet = false } = {}) {
+            const shelves = Array.from({ length: 7 }, (_, index) => {
+                const shelf = index + 1;
+                return {
+                    shelf,
+                    zone: shelf <= 2 ? 'A' : shelf <= 4 ? 'B' : shelf <= 6 ? 'C' : 'D',
+                    marker: document.getElementById(`inventoryMarker-${shelf}`)?.value || ''
+                };
+            });
+            try {
+                const res = await adminFetch('/api/admin/inventory-scan/config', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ shelves })
+                });
+                const json = await readAdminJson(res, '巡架点位保存接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '点位关系保存失败');
+                inventoryScanData.shelves = json.data;
+                if (!quiet) showToast('货架点位对应关系已保存', 'success');
+                return true;
+            } catch (error) {
+                showToast(error.message, 'error');
+                return false;
+            }
+        }
+
+        async function startInventoryScan() {
+            if (!(await saveInventoryShelfConfig({ quiet: true }))) return;
+            try {
+                const res = await adminFetch('/api/admin/inventory-scan/start', { method: 'POST' });
+                const json = await readAdminJson(res, '巡架启动接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '巡架识别启动失败');
+                showToast('巡架识别已启动', 'success');
+                await loadInventoryScan();
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function stopInventoryScan() {
+            if (!confirm('确认停止当前巡架识别吗？机器人会在当前动作结束后停止。')) return;
+            try {
+                const res = await adminFetch('/api/admin/inventory-scan/stop', { method: 'POST' });
+                const json = await readAdminJson(res, '巡架停止接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '停止巡架识别失败');
+                showToast(json.message, 'success');
+                await loadInventoryScan();
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function saveInventoryProducts() {
+            const rows = [...document.querySelectorAll('.inventory-result-row')].map((row) => ({
+                shelf: Number(row.querySelector('[data-field="shelf"]').value),
+                layer: Number(row.querySelector('[data-field="layer"]').value),
+                marker: row.querySelector('[data-field="marker"]').value,
+                name: row.querySelector('[data-field="name"]').value.trim()
+            })).filter((row) => row.name);
+            if (!rows.length) {
+                showToast('请至少填写一个商品名称', 'error');
+                return;
+            }
+            try {
+                const res = await adminFetch('/api/admin/inventory-scan/products', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rows })
+                });
+                const json = await readAdminJson(res, '巡架商品保存接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '扫描商品信息保存失败');
+                showToast(json.message, 'success');
+                await Promise.all([loadProducts(), loadCategories()]);
+            } catch (error) {
+                showToast(error.message, 'error');
             }
         }
 

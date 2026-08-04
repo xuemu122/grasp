@@ -13,6 +13,7 @@ import subprocess
 import re
 import cv2
 import numpy as np
+from collections import Counter
 from typing import Optional
 
 # ── 识别模块：按仓库相对路径加载，避免部署目录变化后入口失效 ──
@@ -1450,6 +1451,72 @@ def _save_filter_preview(camera, locator, transformer, flange_pose, layer_z_m, l
     return report
 
 
+def _scan_inventory_layer(camera, locator, transformer, flange_pose, layer_z_m, layer_idx=None):
+    """Identify the dominant product on the current layer without grasping."""
+    report_path = os.getenv("SHELF_INVENTORY_SCAN_REPORT", "/tmp/shelf_inventory_scan.json")
+    best_img, best_depth = None, None
+    best_score = -1
+    frame_detections = []
+
+    for index in range(DETECTION_CAPTURE_FRAMES + DETECTION_WARMUP_FRAMES):
+        color, depth = camera.read()
+        if color is None:
+            continue
+        if index < DETECTION_WARMUP_FRAMES:
+            continue
+        score, _, _, _, _, _ = _assess_lighting(color)
+        if score > best_score:
+            best_score = score
+            best_img, best_depth = color, depth
+        frame_detections.append(locator.process_frame(color, depth) or [])
+
+    if best_img is None:
+        print("[巡架识别][失败] 相机未返回有效画面", flush=True)
+        return None
+
+    detections, _ = _fuse_detection_tracks(frame_detections, DETECTION_STABILITY_IOU)
+    bounds = detect_shelf_board_bounds(
+        best_depth,
+        camera,
+        transformer,
+        flange_pose,
+        reference_z_m=layer_z_m,
+        exclude_bboxes=[d.bbox for d in detections],
+    )
+    filter_report = explain_target_filter(
+        detections,
+        transformer=transformer,
+        flange_pose=flange_pose,
+        layer_z_m=layer_z_m,
+        shelf_board_bounds=bounds,
+    )
+    accepted = [item for item in filter_report["detections"] if item["accepted"]]
+    counts = Counter(item["class_name"] for item in accepted if item["class_name"])
+    candidates = [
+        {"name": name, "count": count}
+        for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    dominant = candidates[0] if candidates else {"name": "", "count": 0}
+    report = {
+        "current_layer": layer_idx,
+        "dominant_name": dominant["name"],
+        "count": dominant["count"],
+        "total": len(accepted),
+        "candidates": candidates,
+        "captured_frames": len(frame_detections),
+        "filter_mode": filter_report["mode"],
+    }
+    os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as handle:
+        json.dump(report, handle, ensure_ascii=False, indent=2)
+    print(
+        f"[巡架识别][完成] report={report_path} "
+        f"dominant={dominant['name'] or '-'} count={dominant['count']} total={len(accepted)}",
+        flush=True,
+    )
+    return report
+
+
 def _handle_worker_command(cmd, arm, hand, camera, locator, transformer, layer_entry_origin):
     """Handle one stdin control command before the next worker grab.
 
@@ -1489,6 +1556,20 @@ def _handle_worker_command(cmd, arm, hand, camera, locator, transformer, layer_e
         if _current_layer_idx in _shelf_layer_poses:
             current_layer_z_m = _shelf_layer_poses[_current_layer_idx][0][2] / 1000.0
         _save_filter_preview(
+            camera,
+            locator,
+            transformer,
+            arm.get_pose(),
+            current_layer_z_m,
+            _current_layer_idx,
+        )
+        return "continue", layer_entry_origin, None
+
+    if cmd in ("__inventory_scan__", "__scan_layer__"):
+        current_layer_z_m = None
+        if _current_layer_idx in _shelf_layer_poses:
+            current_layer_z_m = _shelf_layer_poses[_current_layer_idx][0][2] / 1000.0
+        _scan_inventory_layer(
             camera,
             locator,
             transformer,
