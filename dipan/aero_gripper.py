@@ -106,6 +106,21 @@ class AeroGripper:
         self._hold_sent = 0
         self._hold_failures = 0
 
+    @staticmethod
+    def _temperature_trip(temperatures, max_temperature_c):
+        """Return (max temperature, hot (index, temperature) pairs), or None."""
+        if temperatures is None or len(temperatures) != 7:
+            return None
+        finite = [float(value) for value in temperatures]
+        if not all(value == value and abs(value) != float("inf") for value in finite):
+            return None
+        hot = [
+            (idx, value)
+            for idx, value in enumerate(finite)
+            if value >= float(max_temperature_c)
+        ]
+        return max(finite), hot
+
     def connect(self):
         print("[Aero] 已连接")
 
@@ -126,6 +141,14 @@ class AeroGripper:
         period = 1.0 / self._hold_hz
         next_tick = time.monotonic() + period
         next_check = time.monotonic()
+        temperature_interval_s = max(0.2, float(os.getenv("AERO_HOLD_TEMPERATURE_INTERVAL_S", "1")))
+        temperature_log_interval_s = max(
+            0.0,
+            float(os.getenv("AERO_HOLD_TEMPERATURE_LOG_INTERVAL_S", "10")),
+        )
+        max_temperature_c = float(os.getenv("AERO_HOLD_MAX_TEMPERATURE_C", "65"))
+        next_temperature_check = time.monotonic()
+        last_temperature_log = 0.0
         consecutive_errors = 0
         last_log = time.monotonic()
         while True:
@@ -165,6 +188,39 @@ class AeroGripper:
                     return
 
             now = time.monotonic()
+            if now >= next_temperature_check:
+                next_temperature_check = now + temperature_interval_s
+                try:
+                    temperatures = self.hand.get_actuator_temperatures()
+                    temperature_trip = self._temperature_trip(
+                        temperatures,
+                        max_temperature_c,
+                    )
+                    if temperature_trip is not None:
+                        max_temperature, hot_actuators = temperature_trip
+                        should_log_temperature = (
+                            temperature_log_interval_s > 0.0
+                            and now - last_temperature_log >= temperature_log_interval_s
+                        )
+                        if should_log_temperature:
+                            temperature_label = " ".join(
+                                f"{idx}:{COMPACT_NAMES[idx]}={float(temperature):.0f}C"
+                                for idx, temperature in enumerate(temperatures)
+                            )
+                            print(f"[Aero] 保持温度: {temperature_label}")
+                            last_temperature_log = now
+                        if hot_actuators:
+                            hot_label = ", ".join(
+                                f"{idx}:{COMPACT_NAMES[idx]}={temperature:.1f}C"
+                                for idx, temperature in hot_actuators
+                            )
+                            if should_log_temperature or temperature_log_interval_s <= 0.0:
+                                print(
+                                    f"[Aero][温度提示] {hot_label} >= {max_temperature_c:.1f}C "
+                                    "，仅后台记录，继续保持抓取，不改变手部动作"
+                                )
+                except Exception as e:
+                    print(f"[Aero][警告] 保持温度读取失败: {e}")
             if monitor is not None and now >= next_check and not stop_event.is_set():
                 next_check = now + monitor["interval_s"]
                 try:
@@ -368,6 +424,14 @@ class AeroGripper:
             return None
         return [sum(row[i] for row in values) / len(values) for i in range(7)]
 
+    def _read_temperatures(self):
+        try:
+            temperatures = self.hand.get_actuator_temperatures()
+        except Exception as exc:
+            print(f"[Aero][警告] 温度读取失败: {exc}")
+            return None
+        return temperatures if temperatures is not None and len(temperatures) == 7 else None
+
     def _pose_from_values(self, thumb0, values_by_joint):
         pose = self.OPEN[:]
         pose[0] = float(thumb0)
@@ -397,6 +461,8 @@ class AeroGripper:
             delta_ma = float(os.getenv("AERO_FLEX_DELTA_MA", "180"))
             abs_ma = float(os.getenv("AERO_FLEX_ABS_MA", "650"))
             max_steps = int(os.getenv("AERO_FLEX_MAX_STEPS", "300"))
+            temperature_every = max(1, int(os.getenv("AERO_FLEX_TEMPERATURE_EVERY", "10")))
+            max_temperature_c = float(os.getenv("AERO_FLEX_MAX_TEMPERATURE_C", "65"))
             profile_value = os.getenv("AERO_FLEX_PROFILE", DEFAULT_AERO_FLEX_PROFILE).strip()
             profile_path = (
                 os.path.abspath(os.path.expanduser(profile_value))
@@ -474,6 +540,22 @@ class AeroGripper:
                 if currents is None:
                     print(f"[Aero][警告] 柔性抓取 step={step_idx}: 电流读取失败")
                     continue
+                if step_idx % temperature_every == 0:
+                    temperature_trip = self._temperature_trip(
+                        self._read_temperatures(),
+                        max_temperature_c,
+                    )
+                    if temperature_trip is not None:
+                        max_temperature, hot_actuators = temperature_trip
+                        if hot_actuators:
+                            hot_label = ", ".join(
+                                f"{idx}:{COMPACT_NAMES[idx]}={temperature:.1f}C"
+                                for idx, temperature in hot_actuators
+                            )
+                            print(
+                                f"[Aero][温度提示] 柔性闭合检测到 {hot_label} "
+                                f"温度 >= {max_temperature_c:.1f}C，仅后台记录，继续闭合"
+                            )
 
                 abs_curr, delta = _current_summary(currents, baseline)
                 over = []
