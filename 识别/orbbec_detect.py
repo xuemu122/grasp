@@ -14,15 +14,7 @@ from typing import Optional, Dict, Tuple
 
 from ultralytics import YOLO
 
-# EasyOCR（ARM 平台 PaddlePaddle 会 segfault，EasyOCR 基于 PyTorch 更稳定）
-try:
-    import easyocr
-    EASYOCR_AVAILABLE = True
-except ImportError:
-    EASYOCR_AVAILABLE = False
-    easyocr = None
-    print("[警告] EasyOCR 未安装，文字识别功能不可用")
-    print("       安装命令: pip install easyocr")
+# EasyOCR 只在显式启用时延迟加载，默认识别流程不引入 OCR 开销。
 
 
 # ============================================================
@@ -647,7 +639,7 @@ class RetailProductLocatorSystem:
                  conf_threshold: float = 0.15,
                  raw_conf_threshold: float = 0.01,
                  class_conf_thresholds: Optional[Dict[int, float]] = None,
-                 use_ocr: bool = True,
+                 use_ocr: bool = False,
                  ocr_interval: int = 90):
         
         print(f"[模型] 加载 YOLO 模型: {model_path}")
@@ -657,7 +649,7 @@ class RetailProductLocatorSystem:
         self.conf_threshold = conf_threshold
         self.raw_conf_threshold = min(raw_conf_threshold, conf_threshold)
         self.class_conf_thresholds = class_conf_thresholds or {}
-        self.use_ocr = use_ocr and EASYOCR_AVAILABLE
+        self.use_ocr = bool(use_ocr)
         names = getattr(self.model, "names", {}) or {}
         print(f"[模型] 显示阈值 conf={self.conf_threshold:.2f}, 原始候选阈值 raw_conf={self.raw_conf_threshold:.2f}")
         if self.class_conf_thresholds:
@@ -704,6 +696,8 @@ class RetailProductLocatorSystem:
         if not self.use_ocr or self.ocr_model is not None:
             return
         try:
+            import easyocr
+
             print("[OCR] 正在初始化 EasyOCR（首次加载模型，约需 20-40 秒）...")
             self.ocr_model = easyocr.Reader(['ch_sim', 'en'], gpu=True)
             print("[OCR] EasyOCR 初始化完成")
@@ -847,7 +841,7 @@ class RetailProductLocatorSystem:
         self.last_candidates = []
 
         self.frame_counter += 1
-        do_ocr_this_frame = (self.frame_counter % self.ocr_interval == 0)
+        do_ocr_this_frame = self.use_ocr and (self.frame_counter % self.ocr_interval == 0)
 
         for box in raw_boxes:
             cls_id = int(box.cls[0])
@@ -913,7 +907,7 @@ class RetailProductLocatorSystem:
                             self._remember_ocr(cls_id, bbox, ocr_text)
                     except Exception:
                         pass
-            if ocr_text is None:
+            if ocr_text is None and self.use_ocr:
                 ocr_text = self._lookup_cached_ocr(cls_id, bbox)
 
             # 映射：优先 OCR 商品名匹配；OCR 无结果/未命中时用 YOLO 类别兜底
@@ -1120,8 +1114,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--conf", type=float, default=0.15, help="显示/输出的置信度阈值")
     parser.add_argument("--raw-conf", type=float, default=0.01, help="YOLO 原始候选阈值")
+    parser.add_argument("--ocr", action="store_true", help="显式启用 OCR（默认关闭）")
+    parser.add_argument("--no-ocr", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--ocr-interval", type=int, default=30, help="OCR 扫描间隔帧数")
-    parser.add_argument("--no-ocr", action="store_true", help="关闭 OCR")
     args = parser.parse_args()
     base_dir = os.path.dirname(os.path.abspath(__file__))
     system = RetailProductLocatorSystem(
@@ -1130,7 +1125,7 @@ if __name__ == "__main__":
             dataset_config_path=os.path.abspath(os.path.join(base_dir, "..", "dataset", "yolo_rpc_test", "dataset.yaml")),
             conf_threshold=args.conf,
             raw_conf_threshold=args.raw_conf,
-            use_ocr=not args.no_ocr,
+            use_ocr=args.ocr and not args.no_ocr,
             ocr_interval=args.ocr_interval,
         )
     system.run()

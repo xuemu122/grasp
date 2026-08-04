@@ -331,11 +331,9 @@ def run_with_realsense():
         model_path=os.path.join(recognition_dir, "best.pt"),
         mapping_path=os.path.join(recognition_dir, "shelf_mapping.yaml"),
         conf_threshold=0.5,
-        use_ocr=True,
-        ocr_interval=90,
+        use_ocr=False,
     )
     locator.init_camera()
-    locator._init_ocr()
 
     # ---- 2. 抓取器 (手腕根部相机, Nova5 + Orca) ----
     grasper = LightweightBoxGrasper(
