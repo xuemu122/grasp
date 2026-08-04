@@ -31,5 +31,7 @@ qianduan/*.log
 # Generated visual/debug artifacts
 dipan/calib_debug_*.png
 *.pt
+*.onnx
+*.engine
 识别/1best.pt
 识别/2best.pt

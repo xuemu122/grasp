@@ -327,8 +327,13 @@ def run_with_realsense():
     print("=" * 50)
 
     # ---- 1. 初始化识别系统 ----
+    default_model_path = os.path.join(recognition_dir, "best.engine")
+    if not os.path.exists(default_model_path):
+        default_model_path = os.path.join(recognition_dir, "best.pt")
+    model_path = os.getenv("YOLO_MODEL_PATH", default_model_path)
+    print(f"  视觉模型: {model_path}")
     locator = MedicineLocatorSystem(
-        model_path=os.path.join(recognition_dir, "best.pt"),
+        model_path=model_path,
         mapping_path=os.path.join(recognition_dir, "shelf_mapping.yaml"),
         conf_threshold=0.5,
         use_ocr=False,

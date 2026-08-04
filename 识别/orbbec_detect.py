@@ -1117,10 +1117,14 @@ if __name__ == "__main__":
     parser.add_argument("--ocr", action="store_true", help="显式启用 OCR（默认关闭）")
     parser.add_argument("--no-ocr", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--ocr-interval", type=int, default=30, help="OCR 扫描间隔帧数")
+    parser.add_argument("--model", default="", help="模型路径（默认优先使用 best.engine）")
     args = parser.parse_args()
     base_dir = os.path.dirname(os.path.abspath(__file__))
+    default_model_path = os.path.join(base_dir, "best.engine")
+    if not os.path.exists(default_model_path):
+        default_model_path = os.path.join(base_dir, "best.pt")
     system = RetailProductLocatorSystem(
-            model_path=os.path.join(base_dir, "best.pt"),
+            model_path=args.model or default_model_path,
             mapping_path=os.path.join(base_dir, "shelf_mapping.yaml"),
             dataset_config_path=os.path.abspath(os.path.join(base_dir, "..", "dataset", "yolo_rpc_test", "dataset.yaml")),
             conf_threshold=args.conf,
