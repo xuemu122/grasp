@@ -562,16 +562,35 @@ function paymentStatusLabel(status) {
 }
 
 function publicOrder(order) {
+    const partialRefunded = order.paymentStatus === 'PARTIALLY_REFUNDED'
+        || (order.refundStatus === 'SUCCESS' && order.refundIsPartial === true)
+        || Boolean(order.partiallyRefundedAt);
+    const fullyRefunded = order.paymentStatus === 'REFUNDED'
+        || (order.refundStatus === 'SUCCESS' && !partialRefunded)
+        || Boolean(order.refundedAt && !order.refundIsPartial);
+    const publicPaymentStatus = fullyRefunded
+        ? 'REFUNDED'
+        : partialRefunded
+            ? 'PARTIALLY_REFUNDED'
+            : (order.paymentStatus || 'PENDING_PAYMENT');
+    const publicStatus = fullyRefunded
+        ? 'REFUNDED'
+        : partialRefunded
+            ? 'PARTIALLY_COMPLETED'
+            : (order.status || 'PENDING_PAYMENT');
+    const publicPaymentStatusLabel = order.refundStatus === 'FAIL' && publicPaymentStatus === 'PAID'
+        ? '退款失败（仍已支付）'
+        : paymentStatusLabel(publicPaymentStatus);
     return {
         orderId: order.orderId,
         externalOrderId: order.externalOrderId || null,
         items: order.items || [],
         totalAmount: Number(order.totalAmount || 0),
         paymentMode: order.paymentMode || PAYMENT_MODE,
-        paymentStatus: order.paymentStatus || 'PENDING_PAYMENT',
-        paymentStatusLabel: paymentStatusLabel(order.paymentStatus || 'PENDING_PAYMENT'),
-        status: order.status || 'PENDING_PAYMENT',
-        statusLabel: orderStatusLabel(order.status),
+        paymentStatus: publicPaymentStatus,
+        paymentStatusLabel: publicPaymentStatusLabel,
+        status: publicStatus,
+        statusLabel: orderStatusLabel(publicStatus),
         refundId: order.refundId || null,
         refundStatus: order.refundStatus || null,
         refundReason: order.refundReason || null,
@@ -920,6 +939,8 @@ async function refundOrder(order, reason, trigger = 'admin', {
         ? normalizeInventoryItems(resume && order.refundItems ? order.refundItems : refundItems)
         : null;
     const effectiveAmount = partial ? Number(amount.toFixed(2)) : totalAmount;
+    const previousRefundId = order.refundId;
+    const previousRefundRequestId = order.refundRequestId;
 
     order.refundReason = reason;
     order.refundTrigger = trigger;
@@ -946,6 +967,25 @@ async function refundOrder(order, reason, trigger = 'admin', {
             });
         }
     } catch (error) {
+        // LyOrder marks an accepted PROCESSING refund as orderStatus=3 immediately.
+        // A later idempotent retry then says the order is no longer payable; that
+        // response means the original refund was accepted, not that it was undone.
+        const alreadyAccepted = Boolean(previousRefundId && previousRefundRequestId)
+            && /仅已支付订单可退款/.test(String(error.message || error));
+        if (alreadyAccepted) {
+            order.refundId = previousRefundId;
+            order.refundStatus = 'SUCCESS';
+            if (partial) {
+                order.partiallyRefundedAt = order.partiallyRefundedAt || new Date().toISOString();
+                restoreOrderInventoryItems(order, selectedItems, order.refundRequestId);
+                setOrderStatus(order, 'PARTIALLY_COMPLETED', 'PARTIALLY_REFUNDED');
+            } else {
+                order.refundedAt = order.refundedAt || new Date().toISOString();
+                restoreCompletedOrderInventory(order);
+                setOrderStatus(order, 'REFUNDED', 'REFUNDED');
+            }
+            return order;
+        }
         order.refundStatus = 'FAIL';
         order.refundReason = `${reason} (${error.message})`;
         setOrderStatus(order, partial ? 'PARTIALLY_COMPLETED' : 'FAILED', 'PAID');

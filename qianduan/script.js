@@ -22,6 +22,38 @@ let ws = null;
 let wsConnected = false;
 let robotAcceptingOrders = false;
 let catalogRefreshPromise = null;
+let robotConnectionProbe = null;
+
+function settleRobotConnectionProbe(connected) {
+    if (!robotConnectionProbe) return;
+    const probe = robotConnectionProbe;
+    robotConnectionProbe = null;
+    clearTimeout(probe.timeout);
+    probe.resolve(connected);
+}
+
+function verifyRobotConnection(timeoutMs = 1500) {
+    if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve(false);
+    if (robotConnectionProbe && robotConnectionProbe.socket === ws) return robotConnectionProbe.promise;
+
+    const socket = ws;
+    let resolveProbe;
+    const promise = new Promise((resolve) => { resolveProbe = resolve; });
+    const timeout = setTimeout(() => {
+        if (robotConnectionProbe && robotConnectionProbe.socket === socket) {
+            settleRobotConnectionProbe(false);
+            socket.close();
+        }
+    }, timeoutMs);
+    robotConnectionProbe = { socket, promise, resolve: resolveProbe, timeout };
+    try {
+        socket.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+    } catch (error) {
+        console.error('机器人连接探测发送失败:', error);
+        settleRobotConnectionProbe(false);
+    }
+    return promise;
+}
 
 function syncOrderButton() {
     const btnSubmit = document.getElementById('btnSubmit');
@@ -49,6 +81,7 @@ function connectWebSocket() {
     };
 
     ws.onclose = () => {
+        settleRobotConnectionProbe(false);
         wsConnected = false;
         logWS('❌ 与后端断开连接，3秒后重连...');
         updateConnectionStatus('disconnected');
@@ -56,6 +89,7 @@ function connectWebSocket() {
     };
 
     ws.onerror = () => {
+        settleRobotConnectionProbe(false);
         wsConnected = false;
         updateConnectionStatus('disconnected');
         logWS('⚠️ WebSocket 连接错误');
@@ -143,6 +177,7 @@ function handleWSMessage(msg) {
             }
             break;
         case 'pong':
+            settleRobotConnectionProbe(true);
             break;
     }
 }
@@ -532,7 +567,7 @@ async function submitOrder() {
     const items = getCartItems();
     if (items.length === 0) return;
 
-    if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN) {
+    if (!(await verifyRobotConnection())) {
         alert('后端未连接，暂时无法下单');
         syncOrderButton();
         return;
@@ -566,7 +601,7 @@ async function submitOrder() {
         return;
     }
 
-    if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN) {
+    if (!(await verifyRobotConnection())) {
         if (prepared.paymentRequired) {
             try {
                 await fetch(graspApi(`/orders/${encodeURIComponent(prepared.orderId)}/cancel-payment`), {
@@ -606,7 +641,7 @@ async function submitOrder() {
         }
     }
 
-    if (!wsConnected) {
+    if (!(await verifyRobotConnection())) {
         alert('⚠️ 后端服务未连接，请先启动后端！\n\n在终端执行: node server.js');
         await requestAutomaticRefund(orderId, prepared.completionToken, '支付成功后机器人连接断开，订单未开始');
         currentOrderId = null;

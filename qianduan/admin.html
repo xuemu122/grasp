@@ -78,6 +78,11 @@
         .toast { position: fixed; top: 20px; right: 20px; padding: 14px 24px; border-radius: 10px; color: white; font-weight: 600; z-index: 9999; animation: slideDown 0.3s ease; box-shadow: var(--shadow-lg); }
         .toast.success { background: var(--success); }
         .toast.error { background: var(--danger); }
+        .toast.warning { background: var(--warning); color: var(--gray-900); }
+        .admin-alert-stack { position: fixed; top: 74px; right: 20px; width: min(360px, calc(100vw - 40px)); display: grid; gap: 8px; z-index: 1900; pointer-events: none; }
+        .admin-alert { padding: 10px 14px; border-radius: 8px; box-shadow: var(--shadow-md); font-size: 0.84rem; font-weight: 600; line-height: 1.45; border: 1px solid transparent; background: white; }
+        .admin-alert.error { color: #991B1B; background: var(--danger-light); border-color: #FCA5A5; }
+        .admin-alert.warning { color: #92400E; background: var(--warning-light); border-color: #FCD34D; }
         @keyframes slideDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: 2000; display: flex; align-items: center; justify-content: center; }
         .modal { background: white; border-radius: var(--radius); padding: 28px; width: 90%; max-width: 520px; max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.2); animation: scaleIn 0.25s ease; }
@@ -409,6 +414,7 @@
     </div>
 
     <div id="toastContainer"></div>
+    <div class="admin-alert-stack" id="adminAlertStack" aria-live="polite"></div>
 
     <script>
         const EMOJI_OPTIONS = ['🥤','💧','🍵','🥛','⚡','🍿','🍞','🍪','🍬','🍜','📦','🧃','🧋','☕','🍺','🥜','🍫','🍩'];
@@ -423,11 +429,16 @@
         let chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'fangzhi' };
         let adminOrderPage = 1;
         let adminOrderTotalPages = 1;
+        let adminAlertMonitorTimer = null;
 
         // ========== 登录与初始化 ==========
         document.addEventListener('DOMContentLoaded', async () => {
             renderEmojiPicker();
             document.getElementById('loginForm').addEventListener('submit', loginAdmin);
+            window.addEventListener('offline', () => setAdminAlert('connection', '管理端网络已断开', 'error'));
+            window.addEventListener('online', () => {
+                if (document.getElementById('loginOverlay').hidden) refreshAdminAlerts();
+            });
             try {
                 const res = await fetch('/api/admin/session', { credentials: 'same-origin' });
                 const session = await res.json();
@@ -471,9 +482,11 @@
             document.getElementById('loginOverlay').hidden = true;
             await Promise.all([loadShelfLayers(), loadChassisMap(), loadChassisNavigationConfig(), loadRobotStatus()]);
             await Promise.all([loadProducts(), loadCategories(), loadAdminOrders(1)]);
+            startAdminAlertMonitor();
         }
 
         function showLogin(message = '') {
+            stopAdminAlertMonitor();
             document.getElementById('loginOverlay').hidden = false;
             document.getElementById('loginError').textContent = message;
             document.getElementById('loginPassword').value = '';
@@ -537,8 +550,10 @@
                 const json = await readAdminJson(res, '机器人状态接口返回了无效数据');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '读取机器人状态失败');
                 renderRobotStatus(json.data);
+                clearAdminAlert('connection');
             } catch (error) {
                 renderRobotStatus({ status: 'standby', label: error.message, busy: true, powered_off: false });
+                setAdminAlert('connection', `盒子连接中断：${error.message}`, 'error');
             }
         }
 
@@ -841,14 +856,23 @@
                     return;
                 }
                 body.innerHTML = json.data.map((order) => {
+                    const refundFinished = ['REFUNDED', 'PARTIALLY_REFUNDED'].includes(order.paymentStatus)
+                        || order.refundStatus === 'SUCCESS' || Boolean(order.refundedAt || order.partiallyRefundedAt);
+                    const refundInProgress = ['REFUNDING', 'PARTIAL_REFUNDING'].includes(order.paymentStatus)
+                        || ['PROCESSING', 'PENDING'].includes(order.refundStatus);
                     const statusLabel = adminOrderStatusLabels[order.status] || order.status;
+                    const paymentLabel = order.refundStatus === 'FAIL'
+                        ? '退款失败（仍已支付）'
+                        : (order.paymentStatusLabel || adminPaymentStatusLabels[order.paymentStatus] || order.paymentStatus || '-');
                     const items = (order.items || []).map((item) => `${esc(item.name)} × ${item.qty}`).join('<br>');
-                    const canRefund = ['PAID', 'COMPLETED', 'FAILED'].includes(order.status) && order.paymentStatus === 'PAID';
+                    const canRefund = !refundFinished && !refundInProgress
+                        && ['PAID', 'COMPLETED', 'FAILED'].includes(order.status)
+                        && order.paymentStatus === 'PAID';
                     return `<tr>
                         <td><strong>${esc(order.orderId)}</strong><br><small>${esc(order.paymentMode || '')}</small></td>
                         <td class="order-items-summary">${items || '-'}</td>
                         <td style="color:var(--primary);font-weight:700;">¥${Number(order.totalAmount || 0).toFixed(2)}</td>
-                        <td>${esc(order.paymentStatusLabel || adminPaymentStatusLabels[order.paymentStatus] || order.paymentStatus || '-')}</td>
+                        <td>${esc(paymentLabel)}</td>
                         <td><span class="status-badge ${order.status === 'REFUNDED' ? 'off' : (order.status === 'COMPLETED' ? 'on' : 'warn')}" title="${esc(statusLabel)}">${esc(statusLabel)}</span></td>
                         <td>${esc(adminOrderTime(order.createdAt))}</td>
                         <td class="actions"><button class="btn btn-primary btn-sm" type="button" onclick="showAdminOrderDetail('${esc(order.orderId)}')">详情</button>${canRefund ? `<button class="btn btn-danger btn-sm" type="button" onclick="refundAdminOrder('${esc(order.orderId)}')">退款</button>` : ''}</td>
@@ -997,6 +1021,8 @@
                 const res = await adminFetch(`/api/products?${params.toString()}`);
                 const json = await res.json();
                 if (json.code !== 0) { showToast('加载失败: ' + json.message, 'error'); return; }
+
+                if (!search && !category) updateStockAlert(json.data);
 
                 document.getElementById('totalCount').textContent = json.total + ' 件';
                 const tbody = document.getElementById('productTableBody');
@@ -1272,6 +1298,62 @@
 
         // ========== 工具函数 ==========
         function esc(str) { const div = document.createElement('div'); div.textContent = str; return div.innerHTML; }
+        function setAdminAlert(key, message, type = 'warning') {
+            const container = document.getElementById('adminAlertStack');
+            let alertNode = container.querySelector(`[data-alert-key="${key}"]`);
+            if (!alertNode) {
+                alertNode = document.createElement('div');
+                alertNode.dataset.alertKey = key;
+                container.appendChild(alertNode);
+            }
+            alertNode.className = `admin-alert ${type}`;
+            alertNode.textContent = message;
+        }
+
+        function clearAdminAlert(key) {
+            document.querySelector(`#adminAlertStack [data-alert-key="${key}"]`)?.remove();
+        }
+
+        function updateStockAlert(products) {
+            const outOfStock = (products || []).filter((product) =>
+                Number(product.status) === 1 && Number(product.stock) <= 0);
+            if (!outOfStock.length) {
+                clearAdminAlert('stock');
+                return;
+            }
+            const names = outOfStock.slice(0, 3).map((product) => product.name).join('、');
+            const extra = outOfStock.length > 3 ? ` 等 ${outOfStock.length} 种` : '';
+            setAdminAlert('stock', `缺货提醒：${names}${extra}`, 'warning');
+        }
+
+        async function checkStockAlert() {
+            try {
+                const res = await adminFetch('/api/products?include_inactive=1', {
+                    cache: 'no-store', preserveSession: true
+                });
+                const json = await readAdminJson(res, '商品库存接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '库存读取失败');
+                updateStockAlert(json.data);
+            } catch (error) {
+                if (!navigator.onLine) setAdminAlert('connection', '管理端网络已断开', 'error');
+            }
+        }
+
+        async function refreshAdminAlerts() {
+            await Promise.all([loadRobotStatus(), checkStockAlert()]);
+        }
+
+        function startAdminAlertMonitor() {
+            stopAdminAlertMonitor(false);
+            adminAlertMonitorTimer = setInterval(refreshAdminAlerts, 15000);
+        }
+
+        function stopAdminAlertMonitor(clearAlerts = true) {
+            if (adminAlertMonitorTimer) clearInterval(adminAlertMonitorTimer);
+            adminAlertMonitorTimer = null;
+            if (clearAlerts) document.getElementById('adminAlertStack').replaceChildren();
+        }
+
         function showToast(msg, type) {
             const container = document.getElementById('toastContainer');
             const toast = document.createElement('div');

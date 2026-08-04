@@ -119,6 +119,18 @@ test('free payment order is persisted, completed and refundable', async (t) => {
     assert.equal(refunded.json.data.status, 'REFUNDED');
     assert.equal(refunded.json.data.statusLabel, '已退款');
     assert.equal(refunded.json.data.paymentStatusLabel, '已退款');
+    const storedOrders = JSON.parse(fs.readFileSync(ordersFile, 'utf8'));
+    const legacyRefunded = storedOrders.orders.find((item) => item.orderId === prepared.json.orderId);
+    legacyRefunded.status = 'FAILED';
+    legacyRefunded.paymentStatus = 'PAID';
+    legacyRefunded.refundStatus = 'SUCCESS';
+    legacyRefunded.refundIsPartial = false;
+    delete legacyRefunded.refundedAt;
+    fs.writeFileSync(ordersFile, JSON.stringify(storedOrders, null, 2));
+    const normalizedList = await fetch(`${base}/api/admin/orders?page=1&pageSize=10`, { headers: { Cookie: cookie } });
+    const normalizedOrder = (await normalizedList.json()).data.find((item) => item.orderId === prepared.json.orderId);
+    assert.equal(normalizedOrder.status, 'REFUNDED');
+    assert.equal(normalizedOrder.paymentStatus, 'REFUNDED');
     const products = await (await fetch(`${base}/api/products`)).json();
     assert.equal(products.data[0].stock, 5);
 
