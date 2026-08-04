@@ -71,6 +71,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `AERO_FLEX_ACTIVE_JOINTS`：柔性抓取参与闭合的 compact 关节，默认 `1,2,3,4,5,6`。
 - `AERO_FLEX_REQUIRED_FINGERS`：柔性抓取必须完成的手指，默认取 active 中的 `3..6`；如果只用两指抓可设为 `3,4`。
 - `AERO_FLEX_PROFILE_DELTA_MA`：相对空载曲线额外增加多少 mA 判定接触，默认 `180`。
+- `AERO_FLEX_JOINT2_STEP`：二号 compact 关节的柔性闭合步长，默认 `5°`；其他关节沿用 `AERO_FLEX_STEP` 的默认 `3°`。保持阶段默认同步放大，可用 `AERO_HOLD_JOINT2_STEP` 单独覆盖。
 - `AERO_FLEX_PROFILE_WINDOW_DEG`：读取空载曲线时取附近角度电流上包络，默认 `6` 度；用于抑制某个角度空载电流异常偏低导致误触发。
 - `AERO_FLEX_EXTRA_CLOSE`：单根手指检测到接触后继续闭合多少度再锁住，默认 `8`。
 - `AERO_FLEX_MIN_CONTACTS`：柔性抓取判定成功所需的最少接触手指数，默认 `2`；仅到达最大闭合角度、不满足接触数时判定为空抓并让订单失败。

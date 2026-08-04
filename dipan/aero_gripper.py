@@ -288,7 +288,8 @@ class AeroGripper:
             if monitor["low_counts"][idx] < monitor["consecutive"]:
                 continue
             if command < monitor["max_cmd"] - 1e-6:
-                tightened = min(monitor["max_cmd"], command + monitor["step"])
+                step = monitor["steps"].get(idx, monitor["step"])
+                tightened = min(monitor["max_cmd"], command + step)
                 pose[idx] = tightened
                 # Contact loss is already confirmed. Keep tightening at the
                 # normal close cadence until load returns instead of waiting
@@ -326,7 +327,11 @@ class AeroGripper:
         if not joints or os.getenv("AERO_HOLD_TIGHTEN_ENABLE", "1").lower() not in ("1", "true", "yes", "on"):
             return None
         min_extra_ma = float(os.getenv("AERO_HOLD_MIN_EXTRA_MA", str(max(60.0, contact_delta_ma * 0.55))))
-        normal_step = float(os.getenv("AERO_FLEX_STEP", "3"))
+        normal_step = float(os.getenv("AERO_HOLD_TIGHTEN_STEP", os.getenv("AERO_FLEX_STEP", "3")))
+        joint2_step = max(
+            0.1,
+            float(os.getenv("AERO_HOLD_JOINT2_STEP", os.getenv("AERO_FLEX_JOINT2_STEP", "5"))),
+        )
         normal_interval_s = float(os.getenv("AERO_FLEX_SETTLE", "0.05"))
         normal_consecutive = int(os.getenv("AERO_FLEX_CONSECUTIVE", "2"))
         return {
@@ -339,6 +344,10 @@ class AeroGripper:
             "max_cmd": float(os.getenv("AERO_HOLD_TIGHTEN_MAX", str(max_cmd))),
             "min_contacts": max(1, min(len(joints), int(min_contacts))),
             "step": max(0.1, float(os.getenv("AERO_HOLD_TIGHTEN_STEP", str(normal_step)))),
+            "steps": {
+                idx: joint2_step if idx == 2 else max(0.1, normal_step)
+                for idx in joints
+            },
             "consecutive": max(1, int(os.getenv("AERO_HOLD_TIGHTEN_CONSECUTIVE", str(normal_consecutive)))),
             "interval_s": max(0.01, float(os.getenv("AERO_HOLD_CHECK_INTERVAL_S", str(normal_interval_s)))),
             "samples": max(1, int(os.getenv("AERO_HOLD_CURRENT_SAMPLES", "1"))),
@@ -450,6 +459,7 @@ class AeroGripper:
             start = float(os.getenv("AERO_FLEX_START", "0"))
             max_cmd = float(os.getenv("AERO_FLEX_MAX", "80"))
             step = float(os.getenv("AERO_FLEX_STEP", "3"))
+            joint2_step = max(0.1, float(os.getenv("AERO_FLEX_JOINT2_STEP", "5")))
             settle = float(os.getenv("AERO_FLEX_SETTLE", "0.05"))
             samples = int(os.getenv("AERO_FLEX_SAMPLES", "1"))
             sample_delay = float(os.getenv("AERO_FLEX_SAMPLE_DELAY", "0"))
@@ -528,9 +538,15 @@ class AeroGripper:
             print(
                 "[Aero] 柔性抓取开始: "
                 f"active={sorted(active_joints)} required={sorted(required_fingers)} "
-                f"max={max_cmd:.0f} step={step:.1f} extra={extra_close:.1f} "
+                f"max={max_cmd:.0f} step={step:.1f} joint2_step={joint2_step:.1f} "
+                f"extra={extra_close:.1f} "
                 f"profile_window=±{profile_window_deg:.1f}°"
             )
+
+            step_by_joint = {
+                idx: joint2_step if idx == 2 else step
+                for idx in active_joints
+            }
 
             for step_idx in range(max_steps):
                 pose = self._pose_from_values(thumb0, values)
@@ -610,7 +626,7 @@ class AeroGripper:
 
                 for idx in active_joints:
                     if idx not in locked:
-                        values[idx] = min(max_cmd, values.get(idx, start) + step)
+                        values[idx] = min(max_cmd, values.get(idx, start) + step_by_joint.get(idx, step))
 
                 for idx in required_fingers:
                     if idx not in locked and values.get(idx, start) >= max_cmd:

@@ -54,6 +54,16 @@ class AeroGripperHoldTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertFalse(weak)
 
+    def test_joint2_uses_larger_hold_tighten_step(self):
+        profile = [(40.0, [100] * 7)]
+        monitor = self.build_monitor(profile=profile, joints={2})
+        pose = [0, 0, 40, 0, 0, 0, 0]
+        low_currents = [0, 0, 150, 0, 0, 0, 0]
+
+        AeroGripper._tighten_hold_pose(pose, low_currents, monitor)
+        AeroGripper._tighten_hold_pose(pose, low_currents, monitor)
+        self.assertEqual(pose[2], 45)
+
     def test_good_contact_resets_low_counter(self):
         profile = [(40.0, [100] * 7)]
         monitor = self.build_monitor(profile=profile)
