@@ -328,6 +328,10 @@ class AeroGripper:
             return None
         min_extra_ma = float(os.getenv("AERO_HOLD_MIN_EXTRA_MA", str(max(60.0, contact_delta_ma * 0.55))))
         normal_step = float(os.getenv("AERO_HOLD_TIGHTEN_STEP", os.getenv("AERO_FLEX_STEP", "3")))
+        joint1_step = max(
+            0.1,
+            float(os.getenv("AERO_HOLD_JOINT1_STEP", os.getenv("AERO_FLEX_JOINT1_STEP", "2"))),
+        )
         joint2_step = max(
             0.1,
             float(os.getenv("AERO_HOLD_JOINT2_STEP", os.getenv("AERO_FLEX_JOINT2_STEP", "5"))),
@@ -345,7 +349,13 @@ class AeroGripper:
             "min_contacts": max(1, min(len(joints), int(min_contacts))),
             "step": max(0.1, float(os.getenv("AERO_HOLD_TIGHTEN_STEP", str(normal_step)))),
             "steps": {
-                idx: joint2_step if idx == 2 else max(0.1, normal_step)
+                idx: (
+                    joint2_step
+                    if idx == 2
+                    else joint1_step
+                    if idx == 1
+                    else max(0.1, normal_step)
+                )
                 for idx in joints
             },
             "consecutive": max(1, int(os.getenv("AERO_HOLD_TIGHTEN_CONSECUTIVE", str(normal_consecutive)))),
@@ -459,6 +469,7 @@ class AeroGripper:
             start = float(os.getenv("AERO_FLEX_START", "0"))
             max_cmd = float(os.getenv("AERO_FLEX_MAX", "80"))
             step = float(os.getenv("AERO_FLEX_STEP", "3"))
+            joint1_step = max(0.1, float(os.getenv("AERO_FLEX_JOINT1_STEP", "2")))
             joint2_step = max(0.1, float(os.getenv("AERO_FLEX_JOINT2_STEP", "5")))
             settle = float(os.getenv("AERO_FLEX_SETTLE", "0.05"))
             samples = int(os.getenv("AERO_FLEX_SAMPLES", "1"))
@@ -538,13 +549,20 @@ class AeroGripper:
             print(
                 "[Aero] 柔性抓取开始: "
                 f"active={sorted(active_joints)} required={sorted(required_fingers)} "
-                f"max={max_cmd:.0f} step={step:.1f} joint2_step={joint2_step:.1f} "
+                f"max={max_cmd:.0f} step={step:.1f} "
+                f"joint1_step={joint1_step:.1f} joint2_step={joint2_step:.1f} "
                 f"extra={extra_close:.1f} "
                 f"profile_window=±{profile_window_deg:.1f}°"
             )
 
             step_by_joint = {
-                idx: joint2_step if idx == 2 else step
+                idx: (
+                    joint2_step
+                    if idx == 2
+                    else joint1_step
+                    if idx == 1
+                    else step
+                )
                 for idx in active_joints
             }
 
