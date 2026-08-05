@@ -1204,5 +1204,144 @@ function updateRobotStatus(status, text) {
     robotStatus.innerHTML = `<span class="status-dot ${dotClass}"></span> ${text}`;
 }
 
+// ========== 语音交互 ==========
+let voiceRecognition = null;
+let isListening = false;
+let voiceFinalText = '';
+let voiceInterimText = '';
+
+// 品类关键词映射：语音词 → 分类名
+const VOICE_CATEGORY_MAP = {
+    '可乐': '碳酸饮料', '雪碧': '碳酸饮料', '芬达': '碳酸饮料', '汽水': '碳酸饮料',
+    '矿泉水': '饮用水', '饮用水': '饮用水', '纯净水': '饮用水', '水': '饮用水',
+    '果汁': '果汁饮料', '橙汁': '果汁饮料',
+    '茶': '茶饮料', '绿茶': '茶饮料', '红茶': '茶饮料', '奶茶': '茶饮料',
+    '咖啡': '咖啡饮料',
+    '功能饮料': '功能饮料', '红牛': '功能饮料',
+    '牛奶': '乳制品', '酸奶': '乳制品',
+    '薯片': '零食', '饼干': '零食',
+    '方便面': '方便食品', '泡面': '方便食品',
+    '面包': '烘焙食品', '蛋糕': '烘焙食品',
+};
+
+// 去掉口语前缀，提取核心关键词
+function extractVoiceKeyword(rawText) {
+    let text = rawText.trim();
+    const prefixes = ['我想要', '我要', '给我来', '给我', '来一瓶', '来一个',
+        '我想买', '帮我拿', '帮我找', '有没有', '请给我', '帮我',
+        '我想喝', '我想吃', '我要买', '我要喝', '我要吃', '我想',
+        '拿一瓶', '拿一个', '拿', '来', '买', '要', '我'];
+    for (const p of prefixes) {
+        if (text.startsWith(p)) { text = text.slice(p.length); break; }
+    }
+    const suffixes = ['吧', '啊', '呀', '呢', '哦', '呗', '嘛', '好', '好了'];
+    for (const s of suffixes) {
+        if (text.endsWith(s) && text.length > 2) text = text.slice(0, -s.length);
+    }
+    return text.trim() || rawText.trim();
+}
+
+// 匹配分类
+function matchCategory(text) {
+    for (let i = 0; i < categories.length; i++) {
+        if (categories[i] && text.includes(categories[i])) return categories[i];
+    }
+    for (const [keyword, category] of Object.entries(VOICE_CATEGORY_MAP)) {
+        if (text.includes(keyword)) return category;
+    }
+    return null;
+}
+
+// 处理语音命令
+function handleVoiceCommand(rawText) {
+    const keyword = extractVoiceKeyword(rawText);
+    if (!keyword) return;
+    console.log(`🎤 语音: "${rawText}" → "${keyword}"`);
+
+    const matchedCategory = matchCategory(keyword);
+    if (matchedCategory) {
+        currentCategory = matchedCategory;
+        searchKeyword = '';
+        const s = document.getElementById('searchInput'); if (s) s.value = '';
+        renderCategories();
+        const t = document.getElementById('currentCategoryTitle');
+        if (t) t.textContent = currentCategory === 'all' ? '全部商品' : currentCategory;
+    }
+    searchKeyword = keyword.toLowerCase();
+    const s2 = document.getElementById('searchInput'); if (s2) s2.value = keyword;
+    renderProducts();
+
+    const ps = document.getElementById('productsSection');
+    if (ps) ps.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// 初始化语音识别
+function initVoice() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+        const b = document.getElementById('btnVoice');
+        if (b) { b.title = '浏览器不支持语音识别'; b.style.opacity = '0.4'; b.style.cursor = 'not-allowed'; }
+        return;
+    }
+    voiceRecognition = new SR();
+    voiceRecognition.lang = 'zh-CN';
+    voiceRecognition.interimResults = true;
+    voiceRecognition.continuous = false;
+    voiceRecognition.maxAlternatives = 1;
+
+    voiceRecognition.onresult = (event) => {
+        voiceInterimText = ''; voiceFinalText = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+            const r = event.results[i];
+            r.isFinal ? (voiceFinalText += r[0].transcript) : (voiceInterimText += r[0].transcript);
+        }
+        const hint = document.getElementById('voiceHintText');
+        if (hint) hint.textContent = (voiceFinalText || voiceInterimText) || '正在聆听...';
+        if (voiceFinalText) {
+            handleVoiceCommand(voiceFinalText);
+            setTimeout(() => { if (isListening) stopVoice(); }, 1500);
+        }
+    };
+
+    voiceRecognition.onerror = (event) => {
+        const hint = document.getElementById('voiceHintText');
+        if (hint) hint.textContent = event.error === 'not-allowed' ? '麦克风权限被拒绝' : '没听清，再试一次';
+        setTimeout(() => { if (isListening && voiceRecognition) { try { voiceRecognition.start(); } catch (e) {} } }, 1000);
+    };
+
+    voiceRecognition.onend = () => {
+        if (isListening) setTimeout(() => { if (isListening && voiceRecognition) { try { voiceRecognition.start(); } catch (e) {} } }, 300);
+    };
+}
+
+function toggleVoice() {
+    if (!voiceRecognition) { alert('请使用 Chrome 或 Edge 浏览器'); return; }
+    isListening ? stopVoice() : startVoice();
+}
+
+function startVoice() {
+    if (!voiceRecognition) return;
+    isListening = true; voiceFinalText = ''; voiceInterimText = '';
+    const b = document.getElementById('btnVoice'); if (b) { b.classList.add('listening'); b.textContent = '🎙️'; }
+    const h = document.getElementById('voiceHint'); if (h) h.style.display = 'flex';
+    const t = document.getElementById('voiceHintText'); if (t) t.textContent = '正在聆听...';
+    const s = document.getElementById('searchInput'); if (s) s.placeholder = '🎤 正在聆听，请说话...';
+    try { voiceRecognition.start(); } catch (e) {}
+}
+
+function stopVoice() {
+    isListening = false;
+    const b = document.getElementById('btnVoice'); if (b) { b.classList.remove('listening'); b.textContent = '🎤'; }
+    const h = document.getElementById('voiceHint');
+    if (h) setTimeout(() => { h.style.display = 'none'; }, 2000);
+    const s = document.getElementById('searchInput'); if (s) s.placeholder = '搜索或点击🎤语音搜索';
+    try { voiceRecognition.abort(); } catch (e) {}
+}
+
+window.addEventListener('beforeunload', () => {
+    if (isListening) try { voiceRecognition.abort(); } catch (e) {}
+});
+
 // ========== 启动 ==========
 init();
+initVoice();

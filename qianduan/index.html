@@ -29,8 +29,13 @@
                 </div>
             </div>
             <div class="header-search">
-                <input type="text" id="searchInput" placeholder="搜索商品名称 / 规格 / 生产商" autocomplete="off">
+                <input type="text" id="searchInput" placeholder="搜索或点击🎤语音搜索" autocomplete="off">
+                <button class="btn-voice" id="btnVoice" title="语音点单" onclick="toggleVoice()">🎤</button>
                 <button class="btn-search" onclick="handleSearch()">🔍</button>
+            </div>
+            <div class="voice-hint" id="voiceHint" style="display:none;">
+                <span class="voice-hint-dot"></span>
+                <span id="voiceHintText">正在聆听...</span>
             </div>
             <div class="header-status">
                 <span class="robot-status" id="robotStatus">
