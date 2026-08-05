@@ -128,6 +128,7 @@ let robotFilterPreviewPromise = null;
 let inventoryScanPromise = null;
 let inventoryScanCancelRequested = false;
 let chassisNavigationPromise = null;
+let chassisDebugNavigationTask = null;
 let chassisRasterCache = null;
 let chassisMapRefreshPromise = null;
 
@@ -432,6 +433,9 @@ function writeProducts(products) {
     writeProductStore({ ...store, products });
 }
 
+const INVENTORY_SHELF_NAMES = ['A', 'B', 'C', 'D'];
+const INVENTORY_MAX_MARKERS_PER_SHELF = 6;
+
 function shelfZoneForNumber(shelfNumber) {
     if (shelfNumber <= 2) return 'A';
     if (shelfNumber <= 4) return 'B';
@@ -440,21 +444,48 @@ function shelfZoneForNumber(shelfNumber) {
 }
 
 function defaultInventoryShelves() {
-    return Array.from({ length: 7 }, (_, index) => ({
-        shelf: index + 1,
-        zone: shelfZoneForNumber(index + 1),
-        marker: ''
-    }));
+    return [{ shelf: 'A', markers: ['', ''] }];
+}
+
+function legacyInventoryShelves(rows) {
+    const grouped = new Map();
+    for (const raw of rows) {
+        const number = Number(raw && raw.shelf);
+        if (!Number.isInteger(number) || number < 1 || number > 7) continue;
+        const shelf = String(raw.zone || shelfZoneForNumber(number)).trim().toUpperCase();
+        if (!INVENTORY_SHELF_NAMES.includes(shelf)) continue;
+        if (!grouped.has(shelf)) grouped.set(shelf, []);
+        grouped.get(shelf).push(String(raw.marker || raw.chassis_marker || '').trim());
+    }
+    return [...grouped].map(([shelf, markers]) => ({ shelf, markers }));
 }
 
 function normalizeInventoryShelves(rawShelves, { requireMarkers = false } = {}) {
-    const rows = Array.isArray(rawShelves) ? rawShelves : [];
-    return defaultInventoryShelves().map((fallback) => {
-        const raw = rows.find((item) => Number(item && item.shelf) === fallback.shelf) || {};
-        const marker = String(raw.marker || raw.chassis_marker || '').trim();
-        if (requireMarkers && !marker) throw new Error(`${fallback.shelf}号货架尚未配置底盘点位`);
-        if (marker) validateChassisMarkerName(marker);
-        return { ...fallback, marker };
+    const input = Array.isArray(rawShelves) ? rawShelves : [];
+    const hasNewSchema = input.some((row) => Array.isArray(row && row.markers)
+        || typeof (row && row.shelf) === 'string');
+    const rows = hasNewSchema ? input : legacyInventoryShelves(input);
+    const source = rows.length ? rows : defaultInventoryShelves();
+    if (source.length > INVENTORY_SHELF_NAMES.length) throw new Error('最多配置 4 个货架（A-D）');
+    const usedShelves = new Set();
+    return source.map((raw, shelfIndex) => {
+        const shelf = String(raw && (raw.shelf || raw.zone) || '').trim().toUpperCase();
+        if (!INVENTORY_SHELF_NAMES.includes(shelf)) throw new Error(`第${shelfIndex + 1}个货架必须选择 A、B、C 或 D`);
+        if (usedShelves.has(shelf)) throw new Error(`${shelf}货架重复配置`);
+        usedShelves.add(shelf);
+        const markerValues = Array.isArray(raw.markers)
+            ? raw.markers
+            : [raw.marker || raw.chassis_marker || ''];
+        if (markerValues.length < 1 || markerValues.length > INVENTORY_MAX_MARKERS_PER_SHELF) {
+            throw new Error(`${shelf}货架点位数量必须为 1..${INVENTORY_MAX_MARKERS_PER_SHELF}`);
+        }
+        const markers = markerValues.map((value, markerIndex) => {
+            const marker = String(value || '').trim();
+            if (requireMarkers && !marker) throw new Error(`${shelf}货架第${markerIndex + 1}个点位尚未选择`);
+            if (marker) validateChassisMarkerName(marker);
+            return marker;
+        });
+        return { shelf, markers };
     });
 }
 
@@ -465,7 +496,7 @@ function readInventoryScanStore() {
         const data = JSON.parse(fs.readFileSync(INVENTORY_SCAN_FILE, 'utf8'));
         return {
             shelves: normalizeInventoryShelves(data.shelves),
-            last_scan: data.last_scan && typeof data.last_scan === 'object' ? data.last_scan : null
+            last_scan: normalizeInventoryScanTask(data.last_scan)
         };
     } catch (error) {
         log(`⚠️ 巡架识别配置读取失败: ${error.message}`);
@@ -478,6 +509,22 @@ function writeInventoryScanStore(store) {
     const tempFile = `${INVENTORY_SCAN_FILE}.${process.pid}.tmp`;
     fs.writeFileSync(tempFile, JSON.stringify(store, null, 2), 'utf8');
     fs.renameSync(tempFile, INVENTORY_SCAN_FILE);
+}
+
+function normalizeInventoryScanTask(task) {
+    if (!task || typeof task !== 'object') return null;
+    const results = Array.isArray(task.results) ? task.results.map((row) => {
+        const numericShelf = Number(row && row.shelf);
+        if (!Number.isInteger(numericShelf) || numericShelf < 1 || numericShelf > 7) return row;
+        const zone = shelfZoneForNumber(numericShelf);
+        const point = zone === 'D' ? 1 : ((numericShelf - 1) % 2) + 1;
+        return { ...row, shelf: zone, zone, point };
+    }) : [];
+    const numericCurrentShelf = Number(task.current_shelf);
+    const currentShelf = Number.isInteger(numericCurrentShelf) && numericCurrentShelf >= 1 && numericCurrentShelf <= 7
+        ? shelfZoneForNumber(numericCurrentShelf)
+        : task.current_shelf || null;
+    return { ...task, current_shelf: currentShelf, current_point: task.current_point || null, results };
 }
 
 function saveInventoryScanState(state) {
@@ -1989,6 +2036,7 @@ const server = http.createServer(async (req, res) => {
                 status: 'running',
                 progress: 0,
                 current_shelf: null,
+                current_point: null,
                 current_layer: null,
                 message: '准备开始巡架识别',
                 started_at: new Date().toISOString(),
@@ -2319,6 +2367,55 @@ const server = http.createServer(async (req, res) => {
             sendJSON(res, { code: 0, data: settings });
         } catch (error) {
             sendJSON(res, { code: 1, message: error.message }, 500);
+        }
+        return;
+    }
+
+    if (pathname === '/api/chassis/navigation-task' && req.method === 'GET') {
+        if (!requireAdmin(req, res)) return;
+        sendJSON(res, { code: 0, data: chassisDebugNavigationTask || { status: 'idle' } });
+        return;
+    }
+
+    if (pathname === '/api/chassis/navigate-marker' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        const body = await parseBody(req);
+        try {
+            const marker = validateChassisMarkerName(body && body.marker);
+            const operation = currentRobotOperation();
+            if (operation) {
+                sendJSON(res, { code: 1, message: `${operation.label}，暂不能调试底盘导航` }, 409);
+                return;
+            }
+            const task = {
+                id: `CHASSIS-DEBUG-${Date.now()}`,
+                marker,
+                status: ROBOT_GRASP_REAL ? 'running' : 'completed',
+                message: ROBOT_GRASP_REAL ? `底盘正在前往 ${marker}` : `模拟模式：已验证点位 ${marker}，未移动真实底盘`,
+                started_at: new Date().toISOString(),
+                completed_at: ROBOT_GRASP_REAL ? null : new Date().toISOString()
+            };
+            chassisDebugNavigationTask = task;
+            if (!ROBOT_GRASP_REAL) {
+                sendJSON(res, { code: 0, message: task.message, data: task });
+                return;
+            }
+            navigateChassisToMarker(marker, { statusMessage: task.message })
+                .then((result) => Object.assign(task, {
+                    status: 'completed',
+                    message: result.skipped ? `底盘已在点位 ${marker}` : `底盘已到达 ${marker}`,
+                    completed_at: new Date().toISOString(),
+                    result
+                }))
+                .catch((error) => Object.assign(task, {
+                    status: 'failed',
+                    message: error.message,
+                    completed_at: new Date().toISOString()
+                }));
+            log(`🚙 管理员调试导航：${marker}`);
+            sendJSON(res, { code: 0, message: task.message, data: task }, 202);
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 400);
         }
         return;
     }
@@ -4308,19 +4405,25 @@ function assertInventoryScanContinues() {
 }
 
 async function runInventoryScan(task, shelves) {
-    const totalSteps = shelves.length * 2;
+    const targets = shelves.flatMap((shelf) => shelf.markers.map((marker, index) => ({
+        shelf: shelf.shelf,
+        point: index + 1,
+        marker
+    })));
+    const totalSteps = targets.length * 2;
     let completedSteps = 0;
-    for (const shelf of shelves) {
+    for (const target of targets) {
         assertInventoryScanContinues();
-        task.current_shelf = shelf.shelf;
+        task.current_shelf = target.shelf;
+        task.current_point = target.point;
         task.current_layer = null;
-        task.message = `正在前往${shelf.shelf}号货架（${shelf.zone}区 / ${shelf.marker}）`;
+        task.message = `正在前往${target.shelf}货架第${target.point}个点位（${target.marker}）`;
         saveInventoryScanState(task);
         broadcastRobotStatus('inventory-scanning', task.message);
         if (ROBOT_GRASP_REAL) {
             await moveRobotToStowPose();
             assertInventoryScanContinues();
-            await navigateChassisToMarker(shelf.marker, { statusMessage: task.message });
+            await navigateChassisToMarker(target.marker, { statusMessage: task.message });
         } else {
             await sleep(Math.max(10, 120 * ROBOT_SIM_DELAY_SCALE));
         }
@@ -4328,36 +4431,39 @@ async function runInventoryScan(task, shelves) {
         for (const layer of [1, 2]) {
             assertInventoryScanContinues();
             task.current_layer = layer;
-            task.message = `正在识别${shelf.shelf}号货架第${layer}层`;
+            task.message = `正在识别${target.shelf}货架第${target.point}个点位第${layer}层`;
             saveInventoryScanState(task);
             broadcastRobotStatus('inventory-scanning', task.message);
             const shelfLayer = loadShelfLayers().layers[String(layer)];
             if (!shelfLayer) throw new Error(`未配置第${layer}层机械臂位姿`);
             await moveRobotToLayer(layer, shelfLayer, shelfLayer.pose);
             assertInventoryScanContinues();
-            const recognition = await recognizeInventoryLayer(shelf.shelf, layer);
+            const recognition = await recognizeInventoryLayer(`${target.shelf}-${target.point}`, layer);
             completedSteps += 1;
             const result = {
-                shelf: shelf.shelf,
-                zone: shelf.zone,
-                marker: shelf.marker,
+                shelf: target.shelf,
+                zone: target.shelf,
+                point: target.point,
+                marker: target.marker,
                 layer,
                 ...recognition,
                 scanned_at: new Date().toISOString()
             };
-            task.results = task.results.filter((item) => !(item.shelf === shelf.shelf && item.layer === layer));
+            task.results = task.results.filter((item) => !(
+                item.shelf === target.shelf && Number(item.point) === target.point && item.layer === layer));
             task.results.push(result);
             task.progress = Math.round(completedSteps / totalSteps * 100);
             task.message = recognition.dominant_name
-                ? `${shelf.shelf}号货架第${layer}层：${recognition.dominant_name}（${recognition.count}件）`
-                : `${shelf.shelf}号货架第${layer}层未识别到商品`;
+                ? `${target.shelf}货架第${target.point}个点位第${layer}层：${recognition.dominant_name}（${recognition.count}件）`
+                : `${target.shelf}货架第${target.point}个点位第${layer}层未识别到商品`;
             saveInventoryScanState(task);
         }
     }
 
     task.current_shelf = null;
+    task.current_point = null;
     task.current_layer = null;
-    task.message = '14 个货架层已识别完成，正在收起机械臂';
+    task.message = `${totalSteps} 个货架层已识别完成，正在收起机械臂`;
     saveInventoryScanState(task);
     if (ROBOT_GRASP_REAL) {
         await moveRobotToStowPose();
@@ -4393,33 +4499,36 @@ function finishInventoryScanWithError(task, error) {
 
 function saveInventoryScanProducts(rawRows) {
     if (!Array.isArray(rawRows)) throw new Error('商品信息必须是数组');
-    if (rawRows.length > 14) throw new Error('一次最多保存 14 条巡架商品信息');
+    if (rawRows.length > 48) throw new Error('一次最多保存 48 条巡架商品信息');
     const rows = rawRows.map((raw, index) => {
         const name = String(raw && raw.name || '').trim();
-        const shelf = Number(raw && raw.shelf);
+        const shelf = String(raw && (raw.shelf || raw.zone) || '').trim().toUpperCase();
+        const point = Number(raw && (raw.point || raw.shelf_number));
         const layer = Number(raw && raw.layer);
         const marker = String(raw && (raw.marker || raw.chassis_marker) || '').trim();
         if (!name) throw new Error(`第${index + 1}行商品名称不能为空`);
-        if (!Number.isInteger(shelf) || shelf < 1 || shelf > 7) throw new Error(`第${index + 1}行货架号必须是 1..7`);
+        if (!INVENTORY_SHELF_NAMES.includes(shelf)) throw new Error(`第${index + 1}行货架必须是 A、B、C 或 D`);
+        if (!Number.isInteger(point) || point < 1 || point > 6) throw new Error(`第${index + 1}行点位序号必须是 1..6`);
         if (![1, 2].includes(layer)) throw new Error(`第${index + 1}行层数只能是 1 或 2`);
         validateChassisMarkerName(marker);
-        const zone = shelfZoneForNumber(shelf);
-        return { name, shelf, layer, marker, zone };
+        return { name, shelf, point, layer, marker };
     });
     const products = readProducts();
     const saved = [];
     for (const row of rows) {
         const index = products.findIndex((product) =>
-            Number(product.shelf_number) === row.shelf && Number(product.shelf_layer) === row.layer);
+            product.shelf_zone === row.shelf
+            && Number(product.shelf_number) === row.point
+            && Number(product.shelf_layer) === row.layer);
         const base = index >= 0 ? products[index] : { id: nextProductId(products), status: 1, stock: 100 };
         const product = normalizeProduct({
             ...base,
             name: row.name,
-            shelf_number: row.shelf,
-            shelf_zone: row.zone,
+            shelf_number: row.point,
+            shelf_zone: row.shelf,
             shelf_layer: row.layer,
             chassis_marker: row.marker,
-            location: `${row.zone}区${row.shelf}号货架第${row.layer}层`
+            location: `${row.shelf}货架第${row.point}点位第${row.layer}层`
         });
         if (index >= 0) products[index] = product;
         else products.push(product);

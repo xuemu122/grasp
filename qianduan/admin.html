@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>商品信息管理</title>
+    <title>机器人零售管理中心</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         :root {
@@ -26,6 +26,24 @@
         .header-links a:hover { background: rgba(255,255,255,0.2); color: white; }
         .container { max-width: 1400px; margin: 24px auto; padding: 0 24px; display: grid; grid-template-columns: 1fr 420px; gap: 24px; align-items: start; }
         @media (max-width: 1000px) { .container { grid-template-columns: 1fr; } }
+        .admin-shell { max-width: 1500px; grid-template-columns: 210px minmax(0, 1fr); gap: 20px; align-items: start; }
+        .admin-sidebar { position: sticky; top: 86px; background: white; border-radius: 10px; padding: 12px; box-shadow: var(--shadow-md); }
+        .admin-nav-title { padding: 8px 12px 12px; color: var(--gray-500); font-size: 0.78rem; font-weight: 700; letter-spacing: 0; }
+        .admin-nav-item { width: 100%; border: 0; background: transparent; color: var(--gray-700); text-align: left; padding: 11px 12px; border-radius: 7px; cursor: pointer; font: inherit; font-size: 0.9rem; }
+        .admin-nav-item:hover { background: var(--gray-100); }
+        .admin-nav-item.active { background: var(--primary-light); color: var(--primary); font-weight: 700; }
+        .admin-content { min-width: 0; display: grid; gap: 20px; }
+        .admin-content > .card { grid-column: auto; }
+        .admin-content[data-page="products"] { grid-template-columns: minmax(0, 1fr) 420px; align-items: start; }
+        .admin-content[data-page="products"] #formCard { min-width: 0; position: sticky; top: 86px; max-height: calc(100vh - 110px); overflow: auto; }
+        [data-admin-page][hidden] { display: none !important; }
+        .dashboard-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+        .dashboard-stat { padding: 14px; border: 1px solid var(--gray-200); border-radius: 8px; background: var(--gray-50); }
+        .dashboard-stat-label { color: var(--gray-500); font-size: 0.78rem; }
+        .dashboard-stat-value { margin-top: 5px; color: var(--gray-900); font-size: 1.35rem; font-weight: 700; }
+        @media (max-width: 1200px) { .admin-content[data-page="products"] { grid-template-columns: minmax(0, 1fr) 360px; } }
+        @media (max-width: 1000px) { .admin-shell { grid-template-columns: 1fr; } .admin-sidebar { position: static; display: flex; align-items: center; overflow-x: auto; gap: 6px; } .admin-nav-title { flex: 0 0 auto; padding: 8px 6px 8px 2px; } .admin-nav-item { width: auto; flex: 0 0 auto; white-space: nowrap; } .admin-content[data-page="products"] { grid-template-columns: 1fr; } .admin-content[data-page="products"] #formCard { position: static; max-height: none; overflow: visible; } }
+        @media (max-width: 640px) { .dashboard-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
         .card { background: white; border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow-md); }
         .card-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid var(--gray-100); display: flex; justify-content: space-between; align-items: center; }
         .card-title .count { font-size: 0.85rem; font-weight: 500; color: var(--gray-400); }
@@ -111,6 +129,13 @@
         .inventory-shelf-number { color: var(--gray-900); font-size: 0.95rem; }
         .inventory-shelf-zone { padding: 2px 8px; border-radius: 10px; background: var(--gray-100); color: var(--gray-600); font-size: 0.75rem; font-weight: 700; }
         .inventory-shelf-card .form-select { width: 100%; min-width: 0; padding: 8px 10px; }
+        .inventory-shelf-card .form-select.inventory-shelf-select { font-weight: 700; }
+        .inventory-point-list { display: grid; gap: 8px; }
+        .inventory-point-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; align-items: center; }
+        .inventory-point-row .btn { padding: 7px 9px; }
+        .inventory-shelf-footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 10px; }
+        .inventory-shelf-footer .btn { padding: 6px 9px; }
+        .inventory-add-shelf { margin-top: 10px; }
         .inventory-scan-actions { position: sticky; bottom: 0; z-index: 2; padding-top: 12px; background: white; }
         .inventory-result-wrapper { margin-top: 16px; }
         .inventory-result-wrapper input { min-width: 150px; }
@@ -128,6 +153,9 @@
         .order-items-summary { max-width: 300px; color: var(--gray-600); white-space: normal; }
         .map-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
         .map-toolbar .map-status { flex: 1; min-width: 220px; color: var(--gray-500); font-size: 0.84rem; }
+        .chassis-debug-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--gray-100); }
+        .chassis-debug-toolbar .select-box { min-width: 220px; }
+        .chassis-debug-status { color: var(--gray-500); font-size: 0.82rem; }
         .toggle-control { display: inline-flex; align-items: center; gap: 8px; color: var(--gray-700); font-size: 0.86rem; font-weight: 600; cursor: pointer; }
         .toggle-control input { position: absolute; opacity: 0; pointer-events: none; }
         .toggle-track { width: 38px; height: 22px; border-radius: 11px; background: var(--gray-300); padding: 3px; transition: background 0.2s; }
@@ -177,16 +205,36 @@
     </div>
 
     <header class="header">
-        <h1>📦 商品信息管理系统</h1>
+        <h1>📦 机器人零售管理中心</h1>
         <div class="header-links">
             <a href="/">🏠 点餐页面</a>
-            <a href="/admin.html">📋 商品管理</a>
+            <a href="/admin.html">📋 管理中心</a>
             <button class="logout-button" type="button" onclick="logoutAdmin()">退出登录</button>
         </div>
     </header>
 
-    <div class="container">
-        <div class="card robot-control-card">
+    <div class="container admin-shell">
+        <aside class="admin-sidebar" id="adminSidebar" aria-label="管理页面导航">
+            <div class="admin-nav-title">管理中心</div>
+            <button class="admin-nav-item active" type="button" data-page="dashboard" onclick="switchAdminPage('dashboard')">仪表盘</button>
+            <button class="admin-nav-item" type="button" data-page="products" onclick="switchAdminPage('products')">商品管理</button>
+            <button class="admin-nav-item" type="button" data-page="orders" onclick="switchAdminPage('orders')">订单管理</button>
+            <button class="admin-nav-item" type="button" data-page="inventory-scan" onclick="switchAdminPage('inventory-scan')">自动巡架</button>
+            <button class="admin-nav-item" type="button" data-page="chassis" onclick="switchAdminPage('chassis')">底盘与地图</button>
+        </aside>
+
+        <main class="admin-content">
+        <section class="card" data-admin-page="dashboard">
+            <div class="card-title"><span>仪表盘</span><span class="count" id="adminRefreshStatus">自动更新中</span></div>
+            <div class="dashboard-summary">
+                <div class="dashboard-stat"><div class="dashboard-stat-label">商品总数</div><div class="dashboard-stat-value" id="dashboardProductCount">-</div></div>
+                <div class="dashboard-stat"><div class="dashboard-stat-label">订单总数</div><div class="dashboard-stat-value" id="dashboardOrderCount">-</div></div>
+                <div class="dashboard-stat"><div class="dashboard-stat-label">缺货商品</div><div class="dashboard-stat-value" id="dashboardStockCount">-</div></div>
+                <div class="dashboard-stat"><div class="dashboard-stat-label">机器人状态</div><div class="dashboard-stat-value" id="dashboardRobotStatus">读取中</div></div>
+            </div>
+        </section>
+
+        <div class="card robot-control-card" data-admin-page="dashboard">
             <div class="card-title">
                 <span>机器人控制</span>
                 <span class="status-badge warn" id="robotControlBadge">正在读取</span>
@@ -199,19 +247,20 @@
             </div>
         </div>
 
-        <div class="card inventory-scan-card">
+        <div class="card inventory-scan-card" data-admin-page="inventory-scan">
             <div class="card-title">
                 <span>自动巡架识别 <span class="count" id="inventoryScanProgress">尚未开始</span></span>
                 <span class="status-badge warn" id="inventoryScanBadge">未运行</span>
             </div>
             <p class="robot-control-status" id="inventoryScanMessage">配置货架底盘点位后，可按货架顺序识别每架第 1、第 2 层（不抓取）。</p>
             <div class="inventory-config-toolbar">
-                <span class="inventory-config-summary" id="inventoryConfigSummary">已配置 0 / 0</span>
-                <span class="inventory-config-hint">指定底盘点位后可开始巡架</span>
+                <span class="inventory-config-summary" id="inventoryConfigSummary">已配置 0 个点位</span>
+                <span class="inventory-config-hint" id="inventoryConfigHint">每个货架可配置 1–6 个点位，新增货架默认 2 个</span>
             </div>
             <div class="inventory-config-scroll">
                 <div class="inventory-shelf-grid" id="inventoryShelfConfigBody"></div>
             </div>
+            <button class="btn btn-primary btn-sm inventory-add-shelf" type="button" id="addInventoryShelfButton" onclick="addInventoryShelf()">+ 增加货架</button>
             <div class="robot-control-row inventory-scan-actions">
                 <button class="btn btn-primary" type="button" id="saveInventoryConfigButton" onclick="saveInventoryShelfConfig()">保存点位关系</button>
                 <button class="btn btn-primary" type="button" id="startInventoryScanButton" onclick="startInventoryScan()">开始自动巡架</button>
@@ -220,14 +269,14 @@
             </div>
             <div class="table-wrapper inventory-result-wrapper">
                 <table>
-                    <thead><tr><th>货架</th><th>分区</th><th>层数</th><th>识别主商品</th><th>数量/总数</th><th>点位</th><th>填写商品名称</th></tr></thead>
+                    <thead><tr><th>货架</th><th>点位序号</th><th>层数</th><th>识别主商品</th><th>数量/总数</th><th>底盘点位</th><th>填写商品名称</th></tr></thead>
                     <tbody id="inventoryScanResultBody"><tr><td colspan="7" class="empty-state">完成巡架后将在这里生成商品信息表单</td></tr></tbody>
                 </table>
             </div>
             <button class="btn btn-primary" type="button" id="saveInventoryProductsButton" onclick="saveInventoryProducts()" disabled>保存扫描商品信息</button>
         </div>
 
-        <div class="card chassis-map-card">
+        <div class="card chassis-map-card" data-admin-page="chassis">
             <div class="card-title">
                 <span>底盘地图与点位 <span class="count" id="chassisMarkerCount">0 个点位</span></span>
                 <button class="btn btn-primary btn-sm" type="button" onclick="loadChassisMap(true)">刷新地图</button>
@@ -255,9 +304,16 @@
                 <span class="map-status" id="chassisMapStatus">尚未读取底盘地图</span>
             </div>
             <div class="chassis-map" id="chassisMap"><div class="map-empty">暂无地图数据</div></div>
+            <div class="chassis-debug-toolbar">
+                <select class="select-box" id="chassisDebugMarker" aria-label="选择调试点位">
+                    <option value="">选择底盘点位</option>
+                </select>
+                <button class="btn btn-primary btn-sm chassis-go-button" type="button" onclick="navigateChassisAdmin(document.getElementById('chassisDebugMarker').value, this)">前往点位</button>
+                <span class="chassis-debug-status" id="chassisDebugStatus">可从地图或下拉框选择点位进行调试</span>
+            </div>
         </div>
 
-        <div class="card order-admin-card">
+        <div class="card order-admin-card" data-admin-page="orders">
             <div class="card-title">
                 <span>订单管理 <span class="count" id="adminOrderCount">0 条</span></span>
                 <button class="btn btn-primary btn-sm" type="button" onclick="loadAdminOrders(1)">刷新订单</button>
@@ -293,7 +349,7 @@
         </div>
 
         <!-- 左侧：商品列表 -->
-        <div class="card">
+        <div class="card" data-admin-page="products">
             <div class="card-title">
                 <span>商品列表 <span class="count" id="totalCount">0 件</span> <span class="count" id="shelfLayerCount">0 层位姿</span></span>
                 <button class="btn btn-primary" onclick="openAddModal()">+ 新增商品</button>
@@ -331,7 +387,7 @@
         </div>
 
         <!-- 右侧：表单 -->
-        <div class="card" id="formCard">
+        <div class="card" id="formCard" data-admin-page="products">
             <div class="card-title" id="formTitle">➕ 新增商品</div>
             <form id="productForm" onsubmit="return saveProduct(event)">
                 <input type="hidden" id="editId" value="">
@@ -462,6 +518,7 @@
                 </div>
             </form>
         </div>
+        </main>
     </div>
 
     <div id="toastContainer"></div>
@@ -479,10 +536,16 @@
         let chassisMapData = { map: {}, markers: [] };
         let chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'fangzhi' };
         let inventoryScanData = { shelves: [], task: { status: 'idle', results: [] }, running: false };
+        let inventoryConfigDraft = [];
+        let inventoryConfigDirty = false;
         let inventoryScanTimer = null;
+        let chassisDebugNavigationTimer = null;
         let adminOrderPage = 1;
         let adminOrderTotalPages = 1;
-        let adminAlertMonitorTimer = null;
+        let adminDataRefreshTimer = null;
+        let adminDataRefreshBusy = false;
+        const ADMIN_PAGES = new Set(['dashboard', 'products', 'orders', 'inventory-scan', 'chassis']);
+        let currentAdminPage = 'dashboard';
 
         // ========== 登录与初始化 ==========
         document.addEventListener('DOMContentLoaded', async () => {
@@ -490,7 +553,10 @@
             document.getElementById('loginForm').addEventListener('submit', loginAdmin);
             window.addEventListener('offline', () => setAdminAlert('connection', '管理端网络已断开', 'error'));
             window.addEventListener('online', () => {
-                if (document.getElementById('loginOverlay').hidden) refreshAdminAlerts();
+                if (document.getElementById('loginOverlay').hidden) refreshAdminData();
+            });
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden && document.getElementById('loginOverlay').hidden) refreshAdminData();
             });
             try {
                 const res = await fetch('/api/admin/session', { credentials: 'same-origin' });
@@ -535,11 +601,16 @@
             document.getElementById('loginOverlay').hidden = true;
             await Promise.all([loadShelfLayers(), loadChassisMap(), loadChassisNavigationConfig(), loadRobotStatus(), loadInventoryScan()]);
             await Promise.all([loadProducts(), loadCategories(), loadAdminOrders(1)]);
-            startAdminAlertMonitor();
+            switchAdminPage(currentAdminPage, { refresh: false });
+            document.getElementById('adminRefreshStatus').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
+            startAdminDataRefresh();
         }
 
         function showLogin(message = '') {
-            stopAdminAlertMonitor();
+            stopAdminDataRefresh();
+            document.getElementById('adminAlertStack').replaceChildren();
+            inventoryConfigDirty = false;
+            inventoryConfigDraft = [];
             document.getElementById('loginOverlay').hidden = false;
             document.getElementById('loginError').textContent = message;
             document.getElementById('loginPassword').value = '';
@@ -552,6 +623,29 @@
             } finally {
                 showLogin();
             }
+        }
+
+        function switchAdminPage(page, { refresh = true } = {}) {
+            const target = ADMIN_PAGES.has(page) ? page : 'dashboard';
+            currentAdminPage = target;
+            document.querySelectorAll('[data-admin-page]').forEach((node) => {
+                node.hidden = node.dataset.adminPage !== target;
+            });
+            document.querySelector('.admin-content')?.setAttribute('data-page', target);
+            document.querySelectorAll('.admin-nav-item').forEach((node) => {
+                node.classList.toggle('active', node.dataset.page === target);
+                node.setAttribute('aria-current', node.dataset.page === target ? 'page' : 'false');
+            });
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            if (refresh && document.getElementById('loginOverlay').hidden) refreshAdminPage(target);
+        }
+
+        function refreshAdminPage(page) {
+            if (page === 'products') return Promise.allSettled([loadProducts({ silent: true }), loadCategories(), loadShelfLayers()]);
+            if (page === 'orders') return loadAdminOrders(adminOrderPage, { silent: true });
+            if (page === 'inventory-scan') return loadInventoryScan();
+            if (page === 'chassis') return Promise.allSettled([loadChassisMap(), loadChassisNavigationConfig()]);
+            return Promise.allSettled([loadRobotStatus(), loadProducts({ silent: true }), loadAdminOrders(adminOrderPage, { silent: true })]);
         }
 
         async function adminFetch(url, options = {}) {
@@ -592,6 +686,7 @@
                 : '忙碌';
             badge.className = `status-badge ${state === 'ready' || state === 'simulated' ? 'on' : state === 'powered-off' ? 'off' : 'warn'}`;
             status.textContent = data.label || '机器人状态未知';
+            document.getElementById('dashboardRobotStatus').textContent = badge.textContent;
             stowButton.disabled = unavailable;
             shutdownButton.disabled = unavailable || data.emergency_stopped;
             emergencyButton.disabled = Boolean(data.emergency_stopped);
@@ -760,6 +855,27 @@
             select.value = selected || 'fangzhi';
         }
 
+        function updateChassisDebugMarkerOptions(selected = '') {
+            const select = document.getElementById('chassisDebugMarker');
+            if (!select) return;
+            const markers = [...(chassisMapData.markers || [])].sort((a, b) =>
+                a.floor - b.floor || a.name.localeCompare(b.name, 'zh-CN'));
+            select.innerHTML = '<option value="">选择底盘点位</option>';
+            for (const marker of markers) {
+                const option = document.createElement('option');
+                option.value = marker.name;
+                option.textContent = `${marker.name} (${marker.x.toFixed(2)}, ${marker.y.toFixed(2)})`;
+                select.appendChild(option);
+            }
+            if (selected && !markers.some((marker) => marker.name === selected)) {
+                const option = document.createElement('option');
+                option.value = selected;
+                option.textContent = `${selected}（底盘当前未返回）`;
+                select.appendChild(option);
+            }
+            select.value = selected;
+        }
+
         async function loadChassisMap(forceRefresh = false) {
             const status = document.getElementById('chassisMapStatus');
             status.textContent = forceRefresh ? '正在从底盘更新地图...' : '正在读取本地地图...';
@@ -787,6 +903,8 @@
                 if (floors.includes(Number(map.floor))) floorSelect.value = String(map.floor);
                 updateChassisMarkerOptions(document.getElementById('formChassisMarker').value);
                 updateChassisPlaceMarkerOptions();
+                updateChassisDebugMarkerOptions(document.getElementById('chassisDebugMarker')?.value || '');
+                loadChassisNavigationTask({ silent: true });
                 renderInventoryShelfConfig();
                 renderInventoryScanResults();
                 renderChassisMap();
@@ -797,6 +915,8 @@
                 document.getElementById('chassisMap').innerHTML = '<div class="map-empty">底盘地图暂不可用</div>';
                 updateChassisMarkerOptions(document.getElementById('formChassisMarker').value);
                 updateChassisPlaceMarkerOptions();
+                updateChassisDebugMarkerOptions();
+                loadChassisNavigationTask({ silent: true });
             }
         }
 
@@ -826,6 +946,62 @@
             } finally {
                 toggle.disabled = false;
                 autoReturnToggle.disabled = false;
+            }
+        }
+
+        function chassisNavigationTaskLabel(task) {
+            if (!task || task.status === 'idle') return '可从地图或下拉框选择点位进行调试';
+            if (task.status === 'running') return task.message || `底盘正在前往 ${task.marker}`;
+            return task.message || (task.status === 'completed' ? '底盘已到达目标点位' : '底盘导航失败');
+        }
+
+        function setChassisDebugButtonsDisabled(disabled) {
+            document.querySelectorAll('.chassis-go-button').forEach((button) => {
+                button.disabled = disabled;
+            });
+        }
+
+        async function loadChassisNavigationTask({ silent = false } = {}) {
+            try {
+                const res = await adminFetch('/api/chassis/navigation-task', { cache: 'no-store', preserveSession: true });
+                const json = await readAdminJson(res, '底盘调试导航接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '读取底盘调试导航状态失败');
+                const task = json.data || { status: 'idle' };
+                document.getElementById('chassisDebugStatus').textContent = chassisNavigationTaskLabel(task);
+                setChassisDebugButtonsDisabled(task.status === 'running');
+                if (chassisDebugNavigationTimer) clearTimeout(chassisDebugNavigationTimer);
+                chassisDebugNavigationTimer = task.status === 'running'
+                    ? setTimeout(() => loadChassisNavigationTask({ silent: true }), 1500)
+                    : null;
+            } catch (error) {
+                if (!silent) document.getElementById('chassisDebugStatus').textContent = error.message;
+            }
+        }
+
+        async function navigateChassisAdmin(markerName, button = null) {
+            const marker = String(markerName || '').trim();
+            if (!marker) {
+                showToast('请先选择底盘点位', 'warning');
+                return;
+            }
+            if (!window.confirm(`确认让底盘前往点位“${marker}”吗？`)) return;
+            setChassisDebugButtonsDisabled(true);
+            if (button) button.disabled = true;
+            document.getElementById('chassisDebugStatus').textContent = `正在下发前往 ${marker} 的调试任务...`;
+            try {
+                const res = await adminFetch('/api/chassis/navigate-marker', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ marker })
+                });
+                const json = await readAdminJson(res, '底盘导航接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '底盘导航下发失败');
+                showToast(json.message || `已下发前往 ${marker}`, 'success');
+                await loadChassisNavigationTask({ silent: true });
+            } catch (error) {
+                setChassisDebugButtonsDisabled(false);
+                document.getElementById('chassisDebugStatus').textContent = error.message;
+                showToast(error.message, 'error');
             }
         }
 
@@ -868,6 +1044,8 @@
             }
         }
 
+        const INVENTORY_SHELF_NAMES = ['A', 'B', 'C', 'D'];
+
         function inventoryMarkerOptions(selected = '') {
             const markers = [...(chassisMapData.markers || [])].sort((a, b) =>
                 a.floor - b.floor || a.name.localeCompare(b.name, 'zh-CN'));
@@ -881,49 +1059,131 @@
             return options;
         }
 
+        function cloneInventoryShelves(rows) {
+            const source = Array.isArray(rows) ? rows : [];
+            return source.map((row) => ({
+                shelf: String(row.shelf || row.zone || '').trim().toUpperCase(),
+                markers: Array.isArray(row.markers)
+                    ? row.markers.map((marker) => String(marker || '').trim())
+                    : [String(row.marker || '').trim()]
+            })).filter((row) => row.shelf);
+        }
+
+        function inventoryShelvesFromDom() {
+            return [...document.querySelectorAll('.inventory-shelf-card')].map((card) => ({
+                shelf: card.querySelector('[data-field="shelf"]')?.value || '',
+                markers: [...card.querySelectorAll('[data-field="marker"]')].map((select) => select.value || '')
+            }));
+        }
+
+        function inventoryShelfOptions(selected) {
+            return INVENTORY_SHELF_NAMES.map((shelf) =>
+                `<option value="${shelf}"${shelf === selected ? ' selected' : ''}>${shelf}货架</option>`).join('');
+        }
+
         function renderInventoryShelfConfig() {
             const body = document.getElementById('inventoryShelfConfigBody');
             if (!body) return;
-            const shelves = inventoryScanData.shelves || [];
-            const configured = shelves.filter((row) => String(row.marker || '').trim()).length;
-            document.getElementById('inventoryConfigSummary').textContent = `已配置 ${configured} / ${shelves.length}`;
-            body.innerHTML = shelves.map((row) => {
-                const zone = String(row.zone || '').toLowerCase();
-                return `<div class="inventory-shelf-card zone-${esc(zone)}">
+            const shelves = inventoryConfigDraft.length ? inventoryConfigDraft : cloneInventoryShelves(inventoryScanData.shelves);
+            inventoryConfigDraft = shelves;
+            body.innerHTML = shelves.map((row, shelfIndex) => {
+                const shelf = INVENTORY_SHELF_NAMES.includes(row.shelf) ? row.shelf : 'A';
+                const markers = Array.isArray(row.markers) && row.markers.length ? row.markers : [''];
+                return `<div class="inventory-shelf-card zone-${shelf.toLowerCase()}" data-inventory-shelf-index="${shelfIndex}">
                     <div class="inventory-shelf-head">
-                        <strong class="inventory-shelf-number">${row.shelf}号货架</strong>
-                        <span class="inventory-shelf-zone">${esc(row.zone)}区</span>
+                        <select class="form-select inventory-shelf-select" data-field="shelf" aria-label="选择货架" onchange="markInventoryConfigDirty()">${inventoryShelfOptions(shelf)}</select>
+                        <span class="inventory-shelf-zone">${shelf}货架</span>
                     </div>
-                    <select class="form-select" aria-label="${row.shelf}号货架底盘点位" id="inventoryMarker-${row.shelf}" onchange="updateInventoryConfigSummary()">${inventoryMarkerOptions(row.marker)}</select>
+                    <div class="inventory-point-list">
+                        ${markers.map((marker, pointIndex) => `<div class="inventory-point-row" data-inventory-point-index="${pointIndex}">
+                            <select class="form-select" data-field="marker" aria-label="${shelf}货架第${pointIndex + 1}个点位" onchange="markInventoryConfigDirty()">${inventoryMarkerOptions(marker)}</select>
+                            <button class="btn btn-primary btn-sm chassis-go-button" type="button" title="前往此点位" onclick="navigateInventoryPoint(this)">前往</button>
+                            <button class="btn btn-danger btn-sm" type="button" title="移除此点位" onclick="removeInventoryPoint(${shelfIndex}, ${pointIndex})"${markers.length <= 1 ? ' disabled' : ''}>−</button>
+                        </div>`).join('')}
+                    </div>
+                    <div class="inventory-shelf-footer">
+                        <button class="btn btn-primary btn-sm" type="button" onclick="addInventoryPoint(${shelfIndex})"${markers.length >= 6 ? ' disabled' : ''}>+ 点位</button>
+                        <button class="btn btn-danger btn-sm" type="button" onclick="removeInventoryShelf(${shelfIndex})"${shelves.length <= 1 ? ' disabled' : ''}>删除货架</button>
+                    </div>
                 </div>`;
             }).join('');
+            updateInventoryConfigSummary();
+        }
+
+        function markInventoryConfigDirty() {
+            inventoryConfigDraft = inventoryShelvesFromDom();
+            inventoryConfigDirty = true;
+            updateInventoryConfigSummary();
         }
 
         function updateInventoryConfigSummary() {
-            const selects = [...document.querySelectorAll('[id^="inventoryMarker-"]')];
-            const configured = selects.filter((select) => String(select.value || '').trim()).length;
+            if (document.querySelector('.inventory-shelf-card')) inventoryConfigDraft = inventoryShelvesFromDom();
+            const configured = inventoryConfigDraft.reduce((sum, shelf) =>
+                sum + shelf.markers.filter((marker) => String(marker || '').trim()).length, 0);
             const summary = document.getElementById('inventoryConfigSummary');
-            if (summary) summary.textContent = `已配置 ${configured} / ${selects.length}`;
+            if (summary) summary.textContent = `${inventoryConfigDraft.length} 个货架，已配置 ${configured} 个点位`;
+            const hint = document.getElementById('inventoryConfigHint');
+            if (hint) hint.textContent = inventoryConfigDirty ? '有未保存的点位配置' : '每个货架可配置 1–6 个点位，新增货架默认 2 个';
+            const addButton = document.getElementById('addInventoryShelfButton');
+            if (addButton) addButton.disabled = inventoryConfigDraft.length >= INVENTORY_SHELF_NAMES.length;
+        }
+
+        function addInventoryShelf() {
+            inventoryConfigDraft = inventoryShelvesFromDom();
+            const shelf = INVENTORY_SHELF_NAMES.find((name) => !inventoryConfigDraft.some((row) => row.shelf === name));
+            if (!shelf) return showToast('最多增加 A-D 四个货架', 'warning');
+            inventoryConfigDraft.push({ shelf, markers: ['', ''] });
+            inventoryConfigDirty = true;
+            renderInventoryShelfConfig();
+        }
+
+        function removeInventoryShelf(index) {
+            inventoryConfigDraft = inventoryShelvesFromDom();
+            if (inventoryConfigDraft.length <= 1) return showToast('至少保留一个货架', 'warning');
+            inventoryConfigDraft.splice(index, 1);
+            inventoryConfigDirty = true;
+            renderInventoryShelfConfig();
+        }
+
+        function addInventoryPoint(shelfIndex) {
+            inventoryConfigDraft = inventoryShelvesFromDom();
+            const row = inventoryConfigDraft[shelfIndex];
+            if (!row || row.markers.length >= 6) return showToast('每个货架最多 6 个点位', 'warning');
+            row.markers.push('');
+            inventoryConfigDirty = true;
+            renderInventoryShelfConfig();
+        }
+
+        function removeInventoryPoint(shelfIndex, pointIndex) {
+            inventoryConfigDraft = inventoryShelvesFromDom();
+            const row = inventoryConfigDraft[shelfIndex];
+            if (!row || row.markers.length <= 1) return showToast('每个货架至少保留一个点位', 'warning');
+            row.markers.splice(pointIndex, 1);
+            inventoryConfigDirty = true;
+            renderInventoryShelfConfig();
+        }
+
+        function navigateInventoryPoint(button) {
+            const marker = button.closest('.inventory-point-row')?.querySelector('[data-field="marker"]')?.value || '';
+            navigateChassisAdmin(marker, button);
         }
 
         function renderInventoryScanResults() {
             const body = document.getElementById('inventoryScanResultBody');
             if (!body) return;
-            const results = [...(inventoryScanData.task?.results || [])].sort((a, b) => a.shelf - b.shelf || a.layer - b.layer);
+            const results = [...(inventoryScanData.task?.results || [])].sort((a, b) =>
+                String(a.shelf).localeCompare(String(b.shelf), 'zh-CN') || Number(a.point || 0) - Number(b.point || 0) || a.layer - b.layer);
             if (!results.length) {
                 body.innerHTML = '<tr><td colspan="7" class="empty-state">暂无识别结果</td></tr>';
                 document.getElementById('saveInventoryProductsButton').disabled = true;
                 return;
             }
-            const shelfOptions = (selected) => Array.from({ length: 7 }, (_, index) => {
-                const shelf = index + 1;
-                return `<option value="${shelf}"${shelf === Number(selected) ? ' selected' : ''}>${shelf}号</option>`;
-            }).join('');
+            const shelfOptions = (selected) => inventoryShelfOptions(String(selected || '').toUpperCase());
             body.innerHTML = results.map((row, index) => {
                 const candidates = (row.candidates || []).map((item) => `${item.name} ${item.count}件`).join('、');
                 return `<tr class="inventory-result-row" data-index="${index}">
                     <td><select class="form-select" data-field="shelf" onchange="updateInventoryResultZone(this)">${shelfOptions(row.shelf)}</select></td>
-                    <td data-field="zone">${esc(row.zone)}区</td>
+                    <td><select class="form-select" data-field="point"><option value="1"${Number(row.point || 1) === 1 ? ' selected' : ''}>点位1</option><option value="2"${Number(row.point || 1) === 2 ? ' selected' : ''}>点位2</option><option value="3"${Number(row.point || 1) === 3 ? ' selected' : ''}>点位3</option><option value="4"${Number(row.point || 1) === 4 ? ' selected' : ''}>点位4</option><option value="5"${Number(row.point || 1) === 5 ? ' selected' : ''}>点位5</option><option value="6"${Number(row.point || 1) === 6 ? ' selected' : ''}>点位6</option></select></td>
                     <td><select class="form-select" data-field="layer"><option value="1"${row.layer === 1 ? ' selected' : ''}>第1层</option><option value="2"${row.layer === 2 ? ' selected' : ''}>第2层</option></select></td>
                     <td title="${esc(candidates)}"><strong>${esc(row.dominant_name) || '未识别'}</strong></td>
                     <td>${Number(row.count) || 0} / ${Number(row.total) || 0}</td>
@@ -935,9 +1195,7 @@
         }
 
         function updateInventoryResultZone(select) {
-            const shelf = Number(select.value);
-            const zone = shelf <= 2 ? 'A' : shelf <= 4 ? 'B' : shelf <= 6 ? 'C' : 'D';
-            select.closest('tr').querySelector('[data-field="zone"]').textContent = `${zone}区`;
+            select.closest('tr').querySelector('[data-field="shelf"]')?.setAttribute('aria-label', `${select.value}货架`);
         }
 
         function updateInventoryScanControls() {
@@ -955,6 +1213,7 @@
             document.getElementById('startInventoryScanButton').disabled = running;
             document.getElementById('stopInventoryScanButton').disabled = !running;
             document.getElementById('saveInventoryConfigButton').disabled = running;
+            document.getElementById('addInventoryShelfButton').disabled = running || inventoryConfigDraft.length >= INVENTORY_SHELF_NAMES.length;
             if (inventoryScanTimer) clearTimeout(inventoryScanTimer);
             inventoryScanTimer = running ? setTimeout(() => loadInventoryScan(), 1500) : null;
         }
@@ -964,8 +1223,14 @@
                 const res = await adminFetch('/api/admin/inventory-scan', { cache: 'no-store', preserveSession: true });
                 const json = await readAdminJson(res, '巡架识别接口返回了无效数据');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '巡架识别状态读取失败');
-                inventoryScanData = json.data;
-                renderInventoryShelfConfig();
+                const serverShelves = cloneInventoryShelves(json.data?.shelves);
+                inventoryScanData = { ...json.data, shelves: serverShelves };
+                if (!inventoryConfigDirty) {
+                    inventoryConfigDraft = serverShelves;
+                    renderInventoryShelfConfig();
+                } else {
+                    updateInventoryConfigSummary();
+                }
                 renderInventoryScanResults();
                 updateInventoryScanControls();
                 if (showResultToast) showToast('巡架识别状态已刷新', 'success');
@@ -977,14 +1242,20 @@
         }
 
         async function saveInventoryShelfConfig({ quiet = false } = {}) {
-            const shelves = Array.from({ length: 7 }, (_, index) => {
-                const shelf = index + 1;
-                return {
-                    shelf,
-                    zone: shelf <= 2 ? 'A' : shelf <= 4 ? 'B' : shelf <= 6 ? 'C' : 'D',
-                    marker: document.getElementById(`inventoryMarker-${shelf}`)?.value || ''
-                };
-            });
+            inventoryConfigDraft = inventoryShelvesFromDom();
+            if (!inventoryConfigDraft.length) {
+                showToast('至少保留一个货架', 'error');
+                return false;
+            }
+            const shelves = inventoryConfigDraft.map((row) => ({
+                shelf: String(row.shelf || '').toUpperCase(),
+                markers: row.markers.slice(0, 6)
+            }));
+            const names = shelves.map((row) => row.shelf);
+            if (names.some((name) => !INVENTORY_SHELF_NAMES.includes(name)) || new Set(names).size !== names.length) {
+                showToast('货架必须从 A-D 中选择且不能重复', 'error');
+                return false;
+            }
             try {
                 const res = await adminFetch('/api/admin/inventory-scan/config', {
                     method: 'PUT',
@@ -993,7 +1264,10 @@
                 });
                 const json = await readAdminJson(res, '巡架点位保存接口返回了无效数据');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '点位关系保存失败');
-                inventoryScanData.shelves = json.data;
+                inventoryScanData.shelves = cloneInventoryShelves(json.data);
+                inventoryConfigDraft = cloneInventoryShelves(json.data);
+                inventoryConfigDirty = false;
+                renderInventoryShelfConfig();
                 if (!quiet) showToast('货架点位对应关系已保存', 'success');
                 return true;
             } catch (error) {
@@ -1030,7 +1304,8 @@
 
         async function saveInventoryProducts() {
             const rows = [...document.querySelectorAll('.inventory-result-row')].map((row) => ({
-                shelf: Number(row.querySelector('[data-field="shelf"]').value),
+                shelf: row.querySelector('[data-field="shelf"]').value,
+                point: Number(row.querySelector('[data-field="point"]').value),
                 layer: Number(row.querySelector('[data-field="layer"]').value),
                 marker: row.querySelector('[data-field="marker"]').value,
                 name: row.querySelector('[data-field="name"]').value.trim()
@@ -1073,7 +1348,7 @@
             return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false });
         }
 
-        async function loadAdminOrders(page = 1) {
+        async function loadAdminOrders(page = 1, { silent = false } = {}) {
             const body = document.getElementById('adminOrderTableBody');
             if (!body) return;
             const params = new URLSearchParams({ page: String(Math.max(1, page)), pageSize: '10' });
@@ -1081,7 +1356,7 @@
             const search = document.getElementById('adminOrderSearch').value.trim();
             if (status) params.set('status', status);
             if (search) params.set('search', search);
-            body.innerHTML = '<tr><td colspan="7" class="loading">加载中...</td></tr>';
+            if (!silent) body.innerHTML = '<tr><td colspan="7" class="loading">加载中...</td></tr>';
             try {
                 const res = await adminFetch(`/api/admin/orders?${params.toString()}`);
                 const json = await readAdminJson(res, '订单接口返回了无效数据');
@@ -1089,6 +1364,7 @@
                 adminOrderPage = json.page;
                 adminOrderTotalPages = json.totalPages;
                 document.getElementById('adminOrderCount').textContent = `${json.total} 条`;
+                if (!status && !search) document.getElementById('dashboardOrderCount').textContent = String(json.total);
                 document.getElementById('adminOrderPageInfo').textContent = `第 ${adminOrderPage} / ${adminOrderTotalPages} 页`;
                 document.getElementById('adminOrderPrev').disabled = adminOrderPage <= 1;
                 document.getElementById('adminOrderNext').disabled = adminOrderPage >= adminOrderTotalPages;
@@ -1120,7 +1396,7 @@
                     </tr>`;
                 }).join('');
             } catch (error) {
-                body.innerHTML = `<tr><td colspan="7" class="empty-state">${esc(error.message)}</td></tr>`;
+                if (!silent) body.innerHTML = `<tr><td colspan="7" class="empty-state">${esc(error.message)}</td></tr>`;
             }
         }
 
@@ -1221,6 +1497,8 @@
             container.querySelectorAll('.map-marker').forEach(node => {
                 node.addEventListener('click', () => {
                     document.getElementById('formChassisMarker').value = node.dataset.marker;
+                    const debugMarker = document.getElementById('chassisDebugMarker');
+                    if (debugMarker) debugMarker.value = node.dataset.marker;
                     renderChassisMap();
                 });
             });
@@ -1250,7 +1528,7 @@
         }
 
         // ========== 加载商品列表 ==========
-        async function loadProducts() {
+        async function loadProducts({ silent = false } = {}) {
             const search = document.getElementById('searchInput').value.trim();
             const category = document.getElementById('categoryFilter').value;
             const params = new URLSearchParams();
@@ -1261,9 +1539,15 @@
             try {
                 const res = await adminFetch(`/api/products?${params.toString()}`);
                 const json = await res.json();
-                if (json.code !== 0) { showToast('加载失败: ' + json.message, 'error'); return; }
+                if (!res.ok || json.code !== 0) {
+                    if (!silent) showToast('加载失败: ' + json.message, 'error');
+                    return;
+                }
 
-                if (!search && !category) updateStockAlert(json.data);
+                if (!search && !category) {
+                    updateStockAlert(json.data);
+                    document.getElementById('dashboardProductCount').textContent = String(json.total);
+                }
 
                 document.getElementById('totalCount').textContent = json.total + ' 件';
                 const tbody = document.getElementById('productTableBody');
@@ -1297,7 +1581,7 @@
                 `).join('');
 
             } catch (e) {
-                showToast('网络错误: ' + e.message, 'error');
+                if (!silent) showToast('网络错误: ' + e.message, 'error');
             }
         }
 
@@ -1317,6 +1601,7 @@
 
         // ========== 新增/编辑 ==========
         function openAddModal() {
+            switchAdminPage('products', { refresh: false });
             resetForm();
             document.getElementById('formTitle').textContent = '➕ 新增商品';
             document.getElementById('btnSubmit').textContent = '💾 保存商品';
@@ -1404,6 +1689,7 @@
 
         async function editProduct(id) {
             try {
+                switchAdminPage('products', { refresh: false });
                 const res = await adminFetch(`/api/products/${id}`);
                 const json = await res.json();
                 if (json.code !== 0) { showToast('获取失败', 'error'); return; }
@@ -1558,6 +1844,7 @@
         function updateStockAlert(products) {
             const outOfStock = (products || []).filter((product) =>
                 Number(product.status) === 1 && Number(product.stock) <= 0);
+            document.getElementById('dashboardStockCount').textContent = String(outOfStock.length);
             if (!outOfStock.length) {
                 clearAdminAlert('stock');
                 return;
@@ -1580,19 +1867,38 @@
             }
         }
 
-        async function refreshAdminAlerts() {
-            await Promise.all([loadRobotStatus(), checkStockAlert()]);
+        async function refreshAdminData() {
+            if (adminDataRefreshBusy || document.hidden || !navigator.onLine
+                || !document.getElementById('loginOverlay').hidden) return;
+            adminDataRefreshBusy = true;
+            try {
+                const tasks = [
+                    loadRobotStatus(),
+                    loadProducts({ silent: true }),
+                    loadAdminOrders(adminOrderPage, { silent: true })
+                ];
+                const productFilterActive = Boolean(
+                    document.getElementById('searchInput').value.trim()
+                    || document.getElementById('categoryFilter').value
+                );
+                if (productFilterActive) tasks.push(checkStockAlert());
+                if (currentAdminPage === 'inventory-scan' && !inventoryScanData.running) tasks.push(loadInventoryScan());
+                await Promise.allSettled(tasks);
+                document.getElementById('adminRefreshStatus').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
+            } finally {
+                adminDataRefreshBusy = false;
+            }
         }
 
-        function startAdminAlertMonitor() {
-            stopAdminAlertMonitor(false);
-            adminAlertMonitorTimer = setInterval(refreshAdminAlerts, 15000);
+        function startAdminDataRefresh() {
+            stopAdminDataRefresh();
+            adminDataRefreshTimer = setInterval(refreshAdminData, 15000);
         }
 
-        function stopAdminAlertMonitor(clearAlerts = true) {
-            if (adminAlertMonitorTimer) clearInterval(adminAlertMonitorTimer);
-            adminAlertMonitorTimer = null;
-            if (clearAlerts) document.getElementById('adminAlertStack').replaceChildren();
+        function stopAdminDataRefresh() {
+            if (adminDataRefreshTimer) clearInterval(adminDataRefreshTimer);
+            adminDataRefreshTimer = null;
+            adminDataRefreshBusy = false;
         }
 
         function showToast(msg, type) {

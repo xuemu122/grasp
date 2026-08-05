@@ -29,7 +29,7 @@ async function requestJson(url, { method = 'GET', cookie = '', body } = {}) {
     return { response, json: await response.json() };
 }
 
-test('admin inventory scan visits shelves 1..7 and layers 1 then 2', async (t) => {
+test('admin inventory scan visits configured A-D shelves and each point at layers 1 then 2', async (t) => {
     const port = await getFreePort();
     const wsPort = await getFreePort();
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grasp-inventory-scan-'));
@@ -47,14 +47,16 @@ test('admin inventory scan visits shelves 1..7 and layers 1 then 2', async (t) =
     t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
     const simulatedResults = {};
-    for (let shelf = 1; shelf <= 7; shelf += 1) {
+    for (const [shelf, points] of [['A', 2], ['C', 1], ['D', 2]]) {
+        for (let point = 1; point <= points; point += 1) {
         for (const layer of [1, 2]) {
-            simulatedResults[`${shelf}-${layer}`] = {
-                dominant_name: `商品${shelf}-${layer}`,
-                count: shelf + layer,
-                total: shelf + layer + 1,
-                candidates: [{ name: `商品${shelf}-${layer}`, count: shelf + layer }]
+            simulatedResults[`${shelf}-${point}-${layer}`] = {
+                dominant_name: `商品${shelf}${point}-${layer}`,
+                count: point + layer,
+                total: point + layer + 1,
+                candidates: [{ name: `商品${shelf}${point}-${layer}`, count: point + layer }]
             };
+        }
         }
     }
 
@@ -110,15 +112,26 @@ test('admin inventory scan visits shelves 1..7 and layers 1 then 2', async (t) =
     });
     assert.equal(login.response.status, 200);
     const cookie = login.response.headers.get('set-cookie').split(';', 1)[0];
-    const shelves = Array.from({ length: 7 }, (_, index) => ({
-        shelf: index + 1,
-        marker: `shelf-${index + 1}`
-    }));
+    const debugNavigation = await requestJson(`${baseUrl}/api/chassis/navigate-marker`, {
+        method: 'POST', cookie, body: { marker: 'shelf-a-1' }
+    });
+    assert.equal(debugNavigation.response.status, 200);
+    assert.equal(debugNavigation.json.data.status, 'completed');
+    const invalidConfig = await requestJson(`${baseUrl}/api/admin/inventory-scan/config`, {
+        method: 'PUT', cookie, body: { shelves: [{ shelf: 'A', markers: [] }] }
+    });
+    assert.equal(invalidConfig.response.status, 400);
+    const shelves = [
+        { shelf: 'A', markers: ['shelf-a-1', 'shelf-a-2'] },
+        { shelf: 'C', markers: ['shelf-c-1'] },
+        { shelf: 'D', markers: ['shelf-d-1', 'shelf-d-2'] }
+    ];
     const config = await requestJson(`${baseUrl}/api/admin/inventory-scan/config`, {
         method: 'PUT', cookie, body: { shelves }
     });
     assert.equal(config.response.status, 200);
-    assert.deepEqual(config.json.data.map((row) => row.zone), ['A', 'A', 'B', 'B', 'C', 'C', 'D']);
+    assert.deepEqual(config.json.data.map((row) => row.shelf), ['A', 'C', 'D']);
+    assert.deepEqual(config.json.data.map((row) => row.markers.length), [2, 1, 2]);
 
     const started = await requestJson(`${baseUrl}/api/admin/inventory-scan/start`, { method: 'POST', cookie });
     assert.equal(started.response.status, 202);
@@ -131,20 +144,20 @@ test('admin inventory scan visits shelves 1..7 and layers 1 then 2', async (t) =
     }
     assert.equal(snapshot.task.status, 'completed');
     assert.equal(snapshot.task.progress, 100);
-    assert.equal(snapshot.task.results.length, 14);
+    assert.equal(snapshot.task.results.length, 10);
     assert.deepEqual(
-        snapshot.task.results.map((row) => `${row.shelf}-${row.layer}`),
-        Array.from({ length: 7 }, (_, index) => [`${index + 1}-1`, `${index + 1}-2`]).flat()
+        snapshot.task.results.map((row) => `${row.shelf}-${row.point}-${row.layer}`),
+        ['A-1-1', 'A-1-2', 'A-2-1', 'A-2-2', 'C-1-1', 'C-1-2', 'D-1-1', 'D-1-2', 'D-2-1', 'D-2-2']
     );
-    assert.equal(snapshot.task.results[0].dominant_name, '商品1-1');
+    assert.equal(snapshot.task.results[0].dominant_name, '商品A1-1');
 
     const saved = await requestJson(`${baseUrl}/api/admin/inventory-scan/products`, {
         method: 'POST',
         cookie,
         body: {
             rows: [
-                { shelf: 1, layer: 1, marker: 'shelf-1', name: '商品1-1' },
-                { shelf: 7, layer: 2, marker: 'shelf-7', name: '商品7-2' }
+                { shelf: 'A', point: 1, layer: 1, marker: 'shelf-a-1', name: '商品A1-1' },
+                { shelf: 'D', point: 2, layer: 2, marker: 'shelf-d-2', name: '商品D2-2' }
             ]
         }
     });
@@ -152,12 +165,12 @@ test('admin inventory scan visits shelves 1..7 and layers 1 then 2', async (t) =
     assert.equal(saved.json.data.length, 2);
     assert.deepEqual(
         saved.json.data.map((product) => [product.shelf_number, product.shelf_zone, product.shelf_layer]),
-        [[1, 'A', 1], [7, 'D', 2]]
+        [[1, 'A', 1], [2, 'D', 2]]
     );
 
     const products = await requestJson(`${baseUrl}/api/products`);
     assert.deepEqual(products.json.data.map((product) => product.location).sort(), [
-        'A区1号货架第1层',
-        'D区7号货架第2层'
+        'A货架第1点位第1层',
+        'D货架第2点位第2层'
     ].sort());
 });
