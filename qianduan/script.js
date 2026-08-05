@@ -23,6 +23,9 @@ let wsConnected = false;
 let robotAcceptingOrders = false;
 let catalogRefreshPromise = null;
 let robotConnectionProbe = null;
+let wsReconnectTimer = null;
+let wsHeartbeatTimer = null;
+let wsGeneration = 0;
 
 function settleRobotConnectionProbe(connected) {
     if (!robotConnectionProbe) return;
@@ -55,6 +58,44 @@ function verifyRobotConnection(timeoutMs = 1500) {
     return promise;
 }
 
+function scheduleWebSocketReconnect(delayMs = 3000) {
+    if (wsReconnectTimer) return;
+    wsReconnectTimer = setTimeout(() => {
+        wsReconnectTimer = null;
+        connectWebSocket();
+    }, delayMs);
+}
+
+function stopWebSocketHeartbeat() {
+    if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
+    wsHeartbeatTimer = null;
+}
+
+function startWebSocketHeartbeat(socket, generation) {
+    stopWebSocketHeartbeat();
+    wsHeartbeatTimer = setInterval(() => {
+        if (ws !== socket || wsGeneration !== generation || socket.readyState !== WebSocket.OPEN) {
+            stopWebSocketHeartbeat();
+            return;
+        }
+        verifyRobotConnection(2500).then((connected) => {
+            if (!connected && ws === socket && wsGeneration === generation) socket.close();
+        });
+    }, 20000);
+}
+
+function ensureWebSocketConnection() {
+    if (!ws || [WebSocket.CLOSING, WebSocket.CLOSED].includes(ws.readyState)) {
+        scheduleWebSocketReconnect(0);
+        return;
+    }
+    if (ws.readyState === WebSocket.OPEN) {
+        verifyRobotConnection(2500).then((connected) => {
+            if (!connected) scheduleWebSocketReconnect(0);
+        });
+    }
+}
+
 function syncOrderButton() {
     const btnSubmit = document.getElementById('btnSubmit');
     if (!btnSubmit) return;
@@ -66,33 +107,55 @@ function syncOrderButton() {
 }
 
 function connectWebSocket() {
+    if (ws && [WebSocket.OPEN, WebSocket.CONNECTING].includes(ws.readyState)) return;
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/`);
+    const socket = new WebSocket(`${wsProtocol}//${window.location.host}/ws/`);
+    const generation = ++wsGeneration;
+    const connectTimeout = setTimeout(() => {
+        if (ws === socket && wsGeneration === generation && socket.readyState === WebSocket.CONNECTING) {
+            socket.close();
+        }
+    }, 8000);
+    ws = socket;
 
-    ws.onopen = () => {
+    socket.onopen = () => {
+        if (ws !== socket || wsGeneration !== generation) return;
+        clearTimeout(connectTimeout);
         wsConnected = true;
         logWS('✅ 已连接到盒子后端');
         updateConnectionStatus('backend');
+        startWebSocketHeartbeat(socket, generation);
     };
 
-    ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
-        handleWSMessage(msg);
+    socket.onmessage = (event) => {
+        if (ws !== socket || wsGeneration !== generation) return;
+        try {
+            handleWSMessage(JSON.parse(event.data));
+        } catch (error) {
+            console.error('WebSocket 消息解析失败:', error);
+        }
     };
 
-    ws.onclose = () => {
+    socket.onclose = () => {
+        if (ws !== socket || wsGeneration !== generation) return;
+        clearTimeout(connectTimeout);
         settleRobotConnectionProbe(false);
+        stopWebSocketHeartbeat();
         wsConnected = false;
         logWS('❌ 与后端断开连接，3秒后重连...');
         updateConnectionStatus('disconnected');
-        setTimeout(connectWebSocket, 3000);
+        ws = null;
+        scheduleWebSocketReconnect(3000);
     };
 
-    ws.onerror = () => {
+    socket.onerror = () => {
+        if (ws !== socket || wsGeneration !== generation) return;
+        clearTimeout(connectTimeout);
         settleRobotConnectionProbe(false);
         wsConnected = false;
         updateConnectionStatus('disconnected');
         logWS('⚠️ WebSocket 连接错误');
+        socket.close();
     };
 }
 
@@ -225,9 +288,17 @@ async function init() {
     connectWebSocket();
     await refreshCatalog();
     bindSearch();
-    window.addEventListener('focus', refreshCatalog);
+    window.addEventListener('focus', () => {
+        ensureWebSocketConnection();
+        refreshCatalog();
+    });
+    window.addEventListener('pageshow', ensureWebSocketConnection);
+    window.addEventListener('online', ensureWebSocketConnection);
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) refreshCatalog();
+        if (!document.hidden) {
+            ensureWebSocketConnection();
+            refreshCatalog();
+        }
     });
     setInterval(() => {
         if (!document.hidden) refreshCatalog();
