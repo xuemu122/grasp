@@ -132,6 +132,16 @@ test('admin inventory scan visits configured A-D shelves and each point at layer
     assert.equal(config.response.status, 200);
     assert.deepEqual(config.json.data.map((row) => row.shelf), ['A', 'C', 'D']);
     assert.deepEqual(config.json.data.map((row) => row.markers.length), [2, 1, 2]);
+    const savedShelf = await requestJson(`${baseUrl}/api/admin/inventory-scan/config/B`, {
+        method: 'PUT', cookie, body: { markers: ['shelf-b-1'] }
+    });
+    assert.equal(savedShelf.response.status, 200);
+    assert.deepEqual(savedShelf.json.data, { shelf: 'B', markers: ['shelf-b-1'] });
+    const deletedShelf = await requestJson(`${baseUrl}/api/admin/inventory-scan/config/B`, {
+        method: 'DELETE', cookie
+    });
+    assert.equal(deletedShelf.response.status, 200);
+    assert.deepEqual(deletedShelf.json.data.map((row) => row.shelf), ['A', 'C', 'D']);
 
     const started = await requestJson(`${baseUrl}/api/admin/inventory-scan/start`, { method: 'POST', cookie });
     assert.equal(started.response.status, 202);

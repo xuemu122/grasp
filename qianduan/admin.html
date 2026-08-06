@@ -119,7 +119,7 @@
         .inventory-config-summary { color: var(--gray-700); font-weight: 700; }
         .inventory-config-hint { white-space: nowrap; }
         .inventory-config-scroll { max-height: min(42vh, 420px); overflow: auto; border: 1px solid var(--gray-200); border-radius: 8px; padding: 10px; background: var(--gray-50); }
-        .inventory-shelf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; }
+        .inventory-shelf-grid { display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 12px; }
         .inventory-shelf-card { min-width: 0; padding: 12px; border: 1px solid var(--gray-200); border-left: 4px solid var(--gray-300); border-radius: 8px; background: white; }
         .inventory-shelf-card.zone-a { border-left-color: #60A5FA; }
         .inventory-shelf-card.zone-b { border-left-color: #A78BFA; }
@@ -133,9 +133,12 @@
         .inventory-point-list { display: grid; gap: 8px; }
         .inventory-point-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; align-items: center; }
         .inventory-point-row .btn { padding: 7px 9px; }
-        .inventory-shelf-footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 10px; }
+        .inventory-shelf-footer { display: flex; justify-content: flex-end; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+        .inventory-shelf-footer .inventory-config-hint { margin-right: auto; }
         .inventory-shelf-footer .btn { padding: 6px 9px; }
-        .inventory-add-shelf { margin-top: 10px; }
+        .inventory-add-shelf { min-height: 150px; border: 2px dashed var(--gray-300); border-radius: 8px; background: transparent; color: var(--gray-500); cursor: pointer; font: inherit; font-weight: 700; display: grid; place-content: center; gap: 6px; }
+        .inventory-add-shelf:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
+        .inventory-add-shelf .add-icon { font-size: 2rem; line-height: 1; }
         .inventory-scan-actions { position: sticky; bottom: 0; z-index: 2; padding-top: 12px; background: white; }
         .inventory-result-wrapper { margin-top: 16px; }
         .inventory-result-wrapper input { min-width: 150px; }
@@ -260,9 +263,7 @@
             <div class="inventory-config-scroll">
                 <div class="inventory-shelf-grid" id="inventoryShelfConfigBody"></div>
             </div>
-            <button class="btn btn-primary btn-sm inventory-add-shelf" type="button" id="addInventoryShelfButton" onclick="addInventoryShelf()">+ 增加货架</button>
             <div class="robot-control-row inventory-scan-actions">
-                <button class="btn btn-primary" type="button" id="saveInventoryConfigButton" onclick="saveInventoryShelfConfig()">保存点位关系</button>
                 <button class="btn btn-primary" type="button" id="startInventoryScanButton" onclick="startInventoryScan()">开始自动巡架</button>
                 <button class="btn btn-danger" type="button" id="stopInventoryScanButton" onclick="stopInventoryScan()" disabled>停止巡架</button>
                 <button class="btn btn-primary" type="button" onclick="loadInventoryScan(true)">刷新识别结果</button>
@@ -538,6 +539,7 @@
         let inventoryScanData = { shelves: [], task: { status: 'idle', results: [] }, running: false };
         let inventoryConfigDraft = [];
         let inventoryConfigDirty = false;
+        let inventoryConfigDirtyShelves = new Set();
         let inventoryScanTimer = null;
         let chassisDebugNavigationTimer = null;
         let adminOrderPage = 1;
@@ -611,6 +613,7 @@
             document.getElementById('adminAlertStack').replaceChildren();
             inventoryConfigDirty = false;
             inventoryConfigDraft = [];
+            inventoryConfigDirtyShelves = new Set();
             document.getElementById('loginOverlay').hidden = false;
             document.getElementById('loginError').textContent = message;
             document.getElementById('loginPassword').value = '';
@@ -1063,6 +1066,7 @@
             const source = Array.isArray(rows) ? rows : [];
             return source.map((row) => ({
                 shelf: String(row.shelf || row.zone || '').trim().toUpperCase(),
+                originalShelf: String(row.shelf || row.zone || '').trim().toUpperCase(),
                 markers: Array.isArray(row.markers)
                     ? row.markers.map((marker) => String(marker || '').trim())
                     : [String(row.marker || '').trim()]
@@ -1072,6 +1076,7 @@
         function inventoryShelvesFromDom() {
             return [...document.querySelectorAll('.inventory-shelf-card')].map((card) => ({
                 shelf: card.querySelector('[data-field="shelf"]')?.value || '',
+                originalShelf: card.dataset.originalShelf || card.querySelector('[data-field="shelf"]')?.value || '',
                 markers: [...card.querySelectorAll('[data-field="marker"]')].map((select) => select.value || '')
             }));
         }
@@ -1086,34 +1091,80 @@
             if (!body) return;
             const shelves = inventoryConfigDraft.length ? inventoryConfigDraft : cloneInventoryShelves(inventoryScanData.shelves);
             inventoryConfigDraft = shelves;
-            body.innerHTML = shelves.map((row, shelfIndex) => {
+            const shelfCards = shelves.map((row, shelfIndex) => {
                 const shelf = INVENTORY_SHELF_NAMES.includes(row.shelf) ? row.shelf : 'A';
                 const markers = Array.isArray(row.markers) && row.markers.length ? row.markers : [''];
-                return `<div class="inventory-shelf-card zone-${shelf.toLowerCase()}" data-inventory-shelf-index="${shelfIndex}">
+                const originalShelf = row.originalShelf || '';
+                const dirty = inventoryConfigDirtyShelves.has(shelfIndex);
+                return `<div class="inventory-shelf-card zone-${shelf.toLowerCase()}" data-inventory-shelf-index="${shelfIndex}" data-original-shelf="${esc(originalShelf)}">
                     <div class="inventory-shelf-head">
-                        <select class="form-select inventory-shelf-select" data-field="shelf" aria-label="选择货架" onchange="markInventoryConfigDirty()">${inventoryShelfOptions(shelf)}</select>
+                        <select class="form-select inventory-shelf-select" data-field="shelf" aria-label="选择货架" onchange="markInventoryConfigDirty(this)">${inventoryShelfOptions(shelf)}</select>
                         <span class="inventory-shelf-zone">${shelf}货架</span>
                     </div>
                     <div class="inventory-point-list">
                         ${markers.map((marker, pointIndex) => `<div class="inventory-point-row" data-inventory-point-index="${pointIndex}">
-                            <select class="form-select" data-field="marker" aria-label="${shelf}货架第${pointIndex + 1}个点位" onchange="markInventoryConfigDirty()">${inventoryMarkerOptions(marker)}</select>
+                            <select class="form-select" data-field="marker" aria-label="${shelf}货架第${pointIndex + 1}个点位" onchange="markInventoryConfigDirty(this)">${inventoryMarkerOptions(marker)}</select>
                             <button class="btn btn-primary btn-sm chassis-go-button" type="button" title="前往此点位" onclick="navigateInventoryPoint(this)">前往</button>
                             <button class="btn btn-danger btn-sm" type="button" title="移除此点位" onclick="removeInventoryPoint(${shelfIndex}, ${pointIndex})"${markers.length <= 1 ? ' disabled' : ''}>−</button>
                         </div>`).join('')}
                     </div>
                     <div class="inventory-shelf-footer">
                         <button class="btn btn-primary btn-sm" type="button" onclick="addInventoryPoint(${shelfIndex})"${markers.length >= 6 ? ' disabled' : ''}>+ 点位</button>
-                        <button class="btn btn-danger btn-sm" type="button" onclick="removeInventoryShelf(${shelfIndex})"${shelves.length <= 1 ? ' disabled' : ''}>删除货架</button>
+                        <span class="inventory-config-hint">${dirty ? '未保存' : (originalShelf ? '已保存' : '新货架')}</span>
+                        <button class="btn btn-primary btn-sm" type="button" onclick="saveInventoryShelf(${shelfIndex})">保存</button>
+                        <button class="btn btn-danger btn-sm" type="button" onclick="removeInventoryShelf(${shelfIndex})"${shelves.length <= 1 ? ' disabled' : ''}>删除</button>
                     </div>
                 </div>`;
             }).join('');
+            const addShelfCard = shelves.length < INVENTORY_SHELF_NAMES.length
+                ? '<button class="inventory-add-shelf" type="button" id="addInventoryShelfButton" onclick="addInventoryShelf()"><span class="add-icon">+</span><span>增加货架</span></button>'
+                : '';
+            body.innerHTML = shelfCards + addShelfCard;
             updateInventoryConfigSummary();
         }
 
-        function markInventoryConfigDirty() {
+        function markInventoryConfigDirty(control) {
             inventoryConfigDraft = inventoryShelvesFromDom();
             inventoryConfigDirty = true;
-            updateInventoryConfigSummary();
+            const card = control?.closest?.('.inventory-shelf-card');
+            if (card) inventoryConfigDirtyShelves.add(Number(card.dataset.inventoryShelfIndex));
+            renderInventoryShelfConfig();
+        }
+
+        async function saveInventoryShelf(index) {
+            inventoryConfigDraft = inventoryShelvesFromDom();
+            const row = inventoryConfigDraft[index];
+            if (!row) return;
+            const shelf = String(row.shelf || '').toUpperCase();
+            if (!INVENTORY_SHELF_NAMES.includes(shelf)) return showToast('请选择 A-D 货架', 'error');
+            if (inventoryConfigDraft.some((item, itemIndex) => itemIndex !== index && item.shelf === shelf)) {
+                return showToast(`${shelf}货架已经存在`, 'error');
+            }
+            if (row.markers.length < 1 || row.markers.length > 6) return showToast('每个货架只能配置 1-6 个点位', 'error');
+            const card = document.querySelector(`.inventory-shelf-card[data-inventory-shelf-index="${index}"]`);
+            card?.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+            try {
+                const res = await adminFetch(`/api/admin/inventory-scan/config/${encodeURIComponent(shelf)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ markers: row.markers, previous_shelf: row.originalShelf || '' })
+                });
+                const json = await readAdminJson(res, '货架保存接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '货架保存失败');
+                inventoryConfigDraft[index] = { ...cloneInventoryShelves([json.data])[0], originalShelf: shelf };
+                inventoryScanData.shelves = [
+                    ...cloneInventoryShelves(inventoryScanData.shelves).filter((item) =>
+                        item.shelf !== shelf && item.shelf !== row.originalShelf),
+                    inventoryConfigDraft[index]
+                ];
+                inventoryConfigDirtyShelves.delete(index);
+                inventoryConfigDirty = inventoryConfigDirtyShelves.size > 0;
+                renderInventoryShelfConfig();
+                showToast(`${shelf}货架已保存`, 'success');
+            } catch (error) {
+                showToast(error.message, 'error');
+                renderInventoryShelfConfig();
+            }
         }
 
         function updateInventoryConfigSummary() {
@@ -1132,16 +1183,31 @@
             inventoryConfigDraft = inventoryShelvesFromDom();
             const shelf = INVENTORY_SHELF_NAMES.find((name) => !inventoryConfigDraft.some((row) => row.shelf === name));
             if (!shelf) return showToast('最多增加 A-D 四个货架', 'warning');
-            inventoryConfigDraft.push({ shelf, markers: ['', ''] });
+            inventoryConfigDraft.push({ shelf, originalShelf: '', markers: ['', ''] });
             inventoryConfigDirty = true;
+            inventoryConfigDirtyShelves.add(inventoryConfigDraft.length - 1);
             renderInventoryShelfConfig();
         }
 
-        function removeInventoryShelf(index) {
+        async function removeInventoryShelf(index) {
             inventoryConfigDraft = inventoryShelvesFromDom();
             if (inventoryConfigDraft.length <= 1) return showToast('至少保留一个货架', 'warning');
+            const row = inventoryConfigDraft[index];
+            if (row?.originalShelf) {
+                if (!window.confirm(`确认删除 ${row.originalShelf} 货架吗？`)) return;
+                try {
+                    const res = await adminFetch(`/api/admin/inventory-scan/config/${encodeURIComponent(row.originalShelf)}`, { method: 'DELETE' });
+                    const json = await readAdminJson(res, '删除货架接口返回了无效数据');
+                    if (!res.ok || json.code !== 0) throw new Error(json.message || '货架删除失败');
+                    inventoryScanData.shelves = cloneInventoryShelves(json.data);
+                } catch (error) {
+                    showToast(error.message, 'error');
+                    return;
+                }
+            }
             inventoryConfigDraft.splice(index, 1);
-            inventoryConfigDirty = true;
+            inventoryConfigDirtyShelves = new Set([...inventoryConfigDirtyShelves].filter((item) => item !== index).map((item) => item > index ? item - 1 : item));
+            inventoryConfigDirty = inventoryConfigDirtyShelves.size > 0;
             renderInventoryShelfConfig();
         }
 
@@ -1151,6 +1217,7 @@
             if (!row || row.markers.length >= 6) return showToast('每个货架最多 6 个点位', 'warning');
             row.markers.push('');
             inventoryConfigDirty = true;
+            inventoryConfigDirtyShelves.add(shelfIndex);
             renderInventoryShelfConfig();
         }
 
@@ -1160,6 +1227,7 @@
             if (!row || row.markers.length <= 1) return showToast('每个货架至少保留一个点位', 'warning');
             row.markers.splice(pointIndex, 1);
             inventoryConfigDirty = true;
+            inventoryConfigDirtyShelves.add(shelfIndex);
             renderInventoryShelfConfig();
         }
 
@@ -1212,8 +1280,9 @@
             document.getElementById('inventoryScanMessage').textContent = task.message || '尚未开始巡架识别';
             document.getElementById('startInventoryScanButton').disabled = running;
             document.getElementById('stopInventoryScanButton').disabled = !running;
-            document.getElementById('saveInventoryConfigButton').disabled = running;
-            document.getElementById('addInventoryShelfButton').disabled = running || inventoryConfigDraft.length >= INVENTORY_SHELF_NAMES.length;
+            const addShelfButton = document.getElementById('addInventoryShelfButton');
+            if (addShelfButton) addShelfButton.disabled = running || inventoryConfigDraft.length >= INVENTORY_SHELF_NAMES.length;
+            document.querySelectorAll('.inventory-shelf-card button').forEach((button) => { button.disabled = running || button.disabled; });
             if (inventoryScanTimer) clearTimeout(inventoryScanTimer);
             inventoryScanTimer = running ? setTimeout(() => loadInventoryScan(), 1500) : null;
         }
@@ -1227,6 +1296,7 @@
                 inventoryScanData = { ...json.data, shelves: serverShelves };
                 if (!inventoryConfigDirty) {
                     inventoryConfigDraft = serverShelves;
+                    inventoryConfigDirtyShelves = new Set();
                     renderInventoryShelfConfig();
                 } else {
                     updateInventoryConfigSummary();
@@ -1241,43 +1311,17 @@
             }
         }
 
-        async function saveInventoryShelfConfig({ quiet = false } = {}) {
-            inventoryConfigDraft = inventoryShelvesFromDom();
-            if (!inventoryConfigDraft.length) {
-                showToast('至少保留一个货架', 'error');
-                return false;
-            }
-            const shelves = inventoryConfigDraft.map((row) => ({
-                shelf: String(row.shelf || '').toUpperCase(),
-                markers: row.markers.slice(0, 6)
-            }));
-            const names = shelves.map((row) => row.shelf);
-            if (names.some((name) => !INVENTORY_SHELF_NAMES.includes(name)) || new Set(names).size !== names.length) {
-                showToast('货架必须从 A-D 中选择且不能重复', 'error');
-                return false;
-            }
-            try {
-                const res = await adminFetch('/api/admin/inventory-scan/config', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ shelves })
-                });
-                const json = await readAdminJson(res, '巡架点位保存接口返回了无效数据');
-                if (!res.ok || json.code !== 0) throw new Error(json.message || '点位关系保存失败');
-                inventoryScanData.shelves = cloneInventoryShelves(json.data);
-                inventoryConfigDraft = cloneInventoryShelves(json.data);
-                inventoryConfigDirty = false;
-                renderInventoryShelfConfig();
-                if (!quiet) showToast('货架点位对应关系已保存', 'success');
-                return true;
-            } catch (error) {
-                showToast(error.message, 'error');
-                return false;
-            }
-        }
-
         async function startInventoryScan() {
-            if (!(await saveInventoryShelfConfig({ quiet: true }))) return;
+            inventoryConfigDraft = inventoryShelvesFromDom();
+            if (inventoryConfigDirtyShelves.size) {
+                showToast('请先保存标记为“未保存”的货架', 'warning');
+                return;
+            }
+            const incomplete = inventoryConfigDraft.find((row) => row.markers.some((marker) => !String(marker || '').trim()));
+            if (incomplete) {
+                showToast(`${incomplete.shelf}货架还有点位未选择`, 'warning');
+                return;
+            }
             try {
                 const res = await adminFetch('/api/admin/inventory-scan/start', { method: 'POST' });
                 const json = await readAdminJson(res, '巡架启动接口返回了无效数据');

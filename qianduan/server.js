@@ -486,7 +486,7 @@ function normalizeInventoryShelves(rawShelves, { requireMarkers = false } = {}) 
             return marker;
         });
         return { shelf, markers };
-    });
+    }).sort((a, b) => INVENTORY_SHELF_NAMES.indexOf(a.shelf) - INVENTORY_SHELF_NAMES.indexOf(b.shelf));
 }
 
 function readInventoryScanStore() {
@@ -1997,6 +1997,40 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/admin/inventory-scan' && req.method === 'GET') {
         if (!requireAdmin(req, res)) return;
         sendJSON(res, { code: 0, data: inventoryScanSnapshot() });
+        return;
+    }
+
+    const inventoryShelfConfigMatch = pathname.match(/^\/api\/admin\/inventory-scan\/config\/([A-Da-d])$/);
+    if (inventoryShelfConfigMatch && ['PUT', 'DELETE'].includes(req.method)) {
+        if (!requireAdmin(req, res)) return;
+        if (inventoryScanPromise) {
+            sendJSON(res, { code: 1, message: '巡架识别进行中，暂不能修改点位配置' }, 409);
+            return;
+        }
+        const shelf = inventoryShelfConfigMatch[1].toUpperCase();
+        try {
+            const store = readInventoryScanStore();
+            if (req.method === 'DELETE') {
+                if (store.shelves.length <= 1) throw new Error('至少保留一个货架');
+                const shelves = store.shelves.filter((row) => row.shelf !== shelf);
+                if (shelves.length === store.shelves.length) throw new Error(`${shelf}货架不存在`);
+                writeInventoryScanStore({ ...store, shelves });
+                sendJSON(res, { code: 0, message: `${shelf}货架已删除`, data: shelves });
+                return;
+            }
+            const body = await parseBody(req);
+            const markers = Array.isArray(body && body.markers) ? body.markers : [];
+            const previousShelf = String(body && body.previous_shelf || '').trim().toUpperCase();
+            if (previousShelf && !INVENTORY_SHELF_NAMES.includes(previousShelf)) throw new Error('原货架编号无效');
+            const shelves = normalizeInventoryShelves([
+                ...store.shelves.filter((row) => row.shelf !== shelf && row.shelf !== previousShelf),
+                { shelf, markers }
+            ]);
+            writeInventoryScanStore({ ...store, shelves });
+            sendJSON(res, { code: 0, message: `${shelf}货架点位已保存`, data: shelves.find((row) => row.shelf === shelf) });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 400);
+        }
         return;
     }
 
