@@ -26,12 +26,19 @@ let robotConnectionProbe = null;
 let wsReconnectTimer = null;
 let wsHeartbeatTimer = null;
 let wsGeneration = 0;
+let wsConnectedAt = 0;
+let wsLastPongAt = 0;
+
+const WS_CONNECT_TIMEOUT_MS = 8000;
+const WS_HEARTBEAT_INTERVAL_MS = 15000;
+const WS_STALE_TIMEOUT_MS = 45000;
 
 function settleRobotConnectionProbe(connected) {
     if (!robotConnectionProbe) return;
     const probe = robotConnectionProbe;
     robotConnectionProbe = null;
     clearTimeout(probe.timeout);
+    if (connected && probe.socket === ws) wsLastPongAt = Date.now();
     probe.resolve(connected);
 }
 
@@ -40,12 +47,13 @@ function verifyRobotConnection(timeoutMs = 1500) {
     if (robotConnectionProbe && robotConnectionProbe.socket === ws) return robotConnectionProbe.promise;
 
     const socket = ws;
+    const generation = wsGeneration;
     let resolveProbe;
     const promise = new Promise((resolve) => { resolveProbe = resolve; });
     const timeout = setTimeout(() => {
         if (robotConnectionProbe && robotConnectionProbe.socket === socket) {
             settleRobotConnectionProbe(false);
-            socket.close();
+            resetWebSocketConnection(socket, generation, 0);
         }
     }, timeoutMs);
     robotConnectionProbe = { socket, promise, resolve: resolveProbe, timeout };
@@ -54,12 +62,17 @@ function verifyRobotConnection(timeoutMs = 1500) {
     } catch (error) {
         console.error('机器人连接探测发送失败:', error);
         settleRobotConnectionProbe(false);
+        resetWebSocketConnection(socket, generation, 0);
     }
     return promise;
 }
 
 function scheduleWebSocketReconnect(delayMs = 3000) {
-    if (wsReconnectTimer) return;
+    if (wsReconnectTimer) {
+        if (delayMs > 0) return;
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+    }
     wsReconnectTimer = setTimeout(() => {
         wsReconnectTimer = null;
         connectWebSocket();
@@ -71,6 +84,25 @@ function stopWebSocketHeartbeat() {
     wsHeartbeatTimer = null;
 }
 
+function resetWebSocketConnection(socket, generation, delayMs = 0) {
+    if (ws !== socket || wsGeneration !== generation) return;
+    settleRobotConnectionProbe(false);
+    stopWebSocketHeartbeat();
+    wsConnected = false;
+    wsConnectedAt = 0;
+    wsLastPongAt = 0;
+    ws = null;
+    if ([WebSocket.CONNECTING, WebSocket.OPEN].includes(socket.readyState)) {
+        try {
+            socket.close();
+        } catch (error) {
+            console.error('关闭失效 WebSocket 失败:', error);
+        }
+    }
+    updateConnectionStatus('disconnected');
+    scheduleWebSocketReconnect(delayMs);
+}
+
 function startWebSocketHeartbeat(socket, generation) {
     stopWebSocketHeartbeat();
     wsHeartbeatTimer = setInterval(() => {
@@ -79,9 +111,9 @@ function startWebSocketHeartbeat(socket, generation) {
             return;
         }
         verifyRobotConnection(2500).then((connected) => {
-            if (!connected && ws === socket && wsGeneration === generation) socket.close();
+            if (!connected) resetWebSocketConnection(socket, generation, 0);
         });
-    }, 20000);
+    }, WS_HEARTBEAT_INTERVAL_MS);
 }
 
 function ensureWebSocketConnection() {
@@ -89,9 +121,24 @@ function ensureWebSocketConnection() {
         scheduleWebSocketReconnect(0);
         return;
     }
+    const now = Date.now();
+    if (ws.readyState === WebSocket.CONNECTING) {
+        if (wsConnectedAt && now - wsConnectedAt > WS_CONNECT_TIMEOUT_MS) {
+            resetWebSocketConnection(ws, wsGeneration, 0);
+        }
+        return;
+    }
     if (ws.readyState === WebSocket.OPEN) {
+        const socket = ws;
+        if (wsLastPongAt && now - wsLastPongAt > WS_STALE_TIMEOUT_MS) {
+            logWS('⚠️ WebSocket 长时间无响应，正在重建连接');
+            resetWebSocketConnection(socket, wsGeneration, 0);
+            return;
+        }
         verifyRobotConnection(2500).then((connected) => {
-            if (!connected) scheduleWebSocketReconnect(0);
+            if (!connected && ws === socket) {
+                resetWebSocketConnection(socket, wsGeneration, 0);
+            }
         });
     }
 }
@@ -111,17 +158,21 @@ function connectWebSocket() {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(`${wsProtocol}//${window.location.host}/ws/`);
     const generation = ++wsGeneration;
+    wsConnectedAt = Date.now();
     const connectTimeout = setTimeout(() => {
         if (ws === socket && wsGeneration === generation && socket.readyState === WebSocket.CONNECTING) {
-            socket.close();
+            logWS('⚠️ WebSocket 握手超时，正在重试');
+            resetWebSocketConnection(socket, generation, 0);
         }
-    }, 8000);
+    }, WS_CONNECT_TIMEOUT_MS);
     ws = socket;
 
     socket.onopen = () => {
         if (ws !== socket || wsGeneration !== generation) return;
         clearTimeout(connectTimeout);
         wsConnected = true;
+        wsConnectedAt = Date.now();
+        wsLastPongAt = wsConnectedAt;
         logWS('✅ 已连接到盒子后端');
         updateConnectionStatus('backend');
         startWebSocketHeartbeat(socket, generation);
@@ -139,23 +190,15 @@ function connectWebSocket() {
     socket.onclose = () => {
         if (ws !== socket || wsGeneration !== generation) return;
         clearTimeout(connectTimeout);
-        settleRobotConnectionProbe(false);
-        stopWebSocketHeartbeat();
-        wsConnected = false;
         logWS('❌ 与后端断开连接，3秒后重连...');
-        updateConnectionStatus('disconnected');
-        ws = null;
-        scheduleWebSocketReconnect(3000);
+        resetWebSocketConnection(socket, generation, 3000);
     };
 
     socket.onerror = () => {
         if (ws !== socket || wsGeneration !== generation) return;
         clearTimeout(connectTimeout);
-        settleRobotConnectionProbe(false);
-        wsConnected = false;
-        updateConnectionStatus('disconnected');
         logWS('⚠️ WebSocket 连接错误');
-        socket.close();
+        resetWebSocketConnection(socket, generation, 1000);
     };
 }
 
@@ -553,6 +596,14 @@ function addToCart(productId, event) {
 function changeQty(productId, delta, event) {
     if (event) event.stopPropagation();
     if (!cart[productId]) return;
+    if (delta > 0) {
+        const product = products.find((item) => String(item.id) === String(productId));
+        const stock = Number(product?.stock);
+        if (!product || !Number.isFinite(stock) || cart[productId] >= stock) {
+            alert('该商品库存不足');
+            return;
+        }
+    }
     cart[productId] += delta;
     if (cart[productId] <= 0) delete cart[productId];
     updateCartUI();

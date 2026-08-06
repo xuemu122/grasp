@@ -107,6 +107,9 @@ location ^~ /ws/ {
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
+    proxy_buffering off;
+    proxy_cache_bypass $http_upgrade;
+    proxy_connect_timeout 10s;
     proxy_read_timeout 86400s;
     proxy_send_timeout 86400s;
 }
@@ -166,6 +169,8 @@ Cookie 使用 `HttpOnly`、`Secure` 和 `SameSite=Strict`，默认有效期为 8
 - “急停”会直接通过 DOBOT 29999 控制端口发送 `EmergencyStop()`/`Stop()`，同时取消底盘导航并终止 worker。急停后服务端保持锁定，必须人工确认机械臂和底盘安全后重启后端服务。
 
 管理页“自动巡架”配置使用 A-D 货架卡片。每张卡片独立保存或删除，每个货架可以配置 1-6 个底盘 marker，新货架默认生成 2 个点位；巡架顺序为货架、点位、第 1/2 层。旧版 1-7 号货架配置会在读取时按 A/B/C/D 自动迁移。管理页的每个点位和地图页都提供“前往点位”调试按钮，该操作以异步任务执行，真实模式下会拒绝正在执行订单、巡架或急停等操作。
+
+巡架结果状态从盒子读取，但“保存扫描商品信息”使用云端 `/api/admin/inventory-products` 接口写入正式商品库。保存时优先按货架槽位匹配，其次按商品名称更新已有记录，避免盒子商品库与云端管理页数据分离或重复创建商品。
 
 ## 盒子部署
 
@@ -304,7 +309,7 @@ sudo systemctl status frpc --no-pager
 }
 ```
 
-约束：`orderId` 必填，`items` 不得为空，商品 `name` 必填，`qty` 必须是整数。`shelf_layer` 可选，提供时必须是 `1..10` 的整数。`chassis_marker` 可选，对应底盘当前地图中的 marker 名称。默认单项最多 `20` 件，整单最多 `50` 件。
+约束：`orderId` 必填，`items` 不得为空，商品 `name` 必填，`qty` 必须是正整数。`shelf_layer` 可选，提供时必须是 `1..10` 的整数。`chassis_marker` 可选，对应底盘当前地图中的 marker 名称。商品数量不设固定上限，只按云端商品实时库存校验。
 
 云端订单准备接口会根据商品 `location` 返回规范化的 `shelf_layer`。盒子真实模式优先使用订单中的层号，在抓取前发送 `__layer_N__` 并等待 worker 确认真正到层，随后才发送商品名。盒子仍兼容未携带层号的旧客户端，并在本地商品库存在时回退到本地映射。
 
@@ -431,8 +436,8 @@ __filter_preview__\n
 | `CHASSIS_NAVIGATION_POLL_MS` | `1000` | 导航状态轮询间隔 |
 | `GRASP_SCRIPT` | `../dipan/shelf_grasp.py` | 抓取脚本路径 |
 | `PRODUCTS_DB_FILE` | `data/products.json` | 商品 JSON 路径 |
-| `ROBOT_MAX_ITEM_QTY` | `20` | 单项最大数量 |
-| `ROBOT_MAX_ORDER_UNITS` | `50` | 整单最大数量 |
+| `ROBOT_MAX_ITEM_QTY` | 已移除 | 商品数量只受商品库存限制 |
+| `ROBOT_MAX_ORDER_UNITS` | 已移除 | 整单数量只受各商品库存之和限制 |
 | `ROBOT_WORKER_READY_TIMEOUT_MS` | `90000` | worker 启动超时 |
 | `ROBOT_GRAB_TIMEOUT_MS` | `120000` | 单件抓取超时 |
 | `ROBOT_STOW_TIMEOUT_MS` | `120000` | 收起超时 |

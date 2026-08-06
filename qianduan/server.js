@@ -86,8 +86,7 @@ const ROBOT_STOW_TIMEOUT_MS = Number(process.env.ROBOT_STOW_TIMEOUT_MS || 120000
 const ORDER_READY_CLOSE_DELAY_MS = Number(process.env.ORDER_READY_CLOSE_DELAY_MS || 3000);
 const ROBOT_FILTER_PREVIEW_TIMEOUT_MS = Number(process.env.ROBOT_FILTER_PREVIEW_TIMEOUT_MS || 30000);
 const ROBOT_INVENTORY_SCAN_TIMEOUT_MS = Number(process.env.ROBOT_INVENTORY_SCAN_TIMEOUT_MS || 60000);
-const ROBOT_MAX_ITEM_QTY = Number(process.env.ROBOT_MAX_ITEM_QTY || 20);
-const ROBOT_MAX_ORDER_UNITS = Number(process.env.ROBOT_MAX_ORDER_UNITS || 50);
+const WS_HEARTBEAT_INTERVAL_MS = Number(process.env.WS_HEARTBEAT_INTERVAL_MS || 30000);
 const ROBOT_SIM_DELAY_SCALE = Math.max(0, Number(process.env.ROBOT_SIM_DELAY_SCALE || 1));
 const ROBOT_BROADCAST_LOGS = /^(1|true|yes|on)$/i.test(process.env.ROBOT_BROADCAST_LOGS || '');
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
@@ -1433,8 +1432,8 @@ function normalizeOrderItems(items) {
         }
 
         const qty = Number(item.qty ?? 1);
-        if (!Number.isInteger(qty) || qty < 1 || qty > ROBOT_MAX_ITEM_QTY) {
-            throw new Error(`商品 ${name} 的 qty 必须是 1..${ROBOT_MAX_ITEM_QTY} 的整数`);
+        if (!Number.isSafeInteger(qty) || qty < 1) {
+            throw new Error(`商品 ${name} 的 qty 必须是正整数`);
         }
         const rawShelfLayer = item.shelf_layer ?? item.shelfLayer;
         const shelfLayer = rawShelfLayer === undefined || rawShelfLayer === null || rawShelfLayer === ''
@@ -1449,9 +1448,7 @@ function normalizeOrderItems(items) {
     });
 
     const totalUnits = normalized.reduce((sum, item) => sum + item.qty, 0);
-    if (totalUnits > ROBOT_MAX_ORDER_UNITS) {
-        throw new Error(`订单商品总数不能超过 ${ROBOT_MAX_ORDER_UNITS}`);
-    }
+    if (!Number.isSafeInteger(totalUnits)) throw new Error('订单商品总数超出安全范围');
     return { items: normalized, totalUnits };
 }
 
@@ -1462,18 +1459,17 @@ function normalizeInventoryItems(items) {
         const id = Number(item && item.id);
         const qty = Number(item && item.qty);
         if (!Number.isInteger(id) || id < 1) throw new Error(`第 ${index + 1} 个商品 id 无效`);
-        if (!Number.isInteger(qty) || qty < 1 || qty > ROBOT_MAX_ITEM_QTY) {
-            throw new Error(`第 ${index + 1} 个商品数量必须是 1..${ROBOT_MAX_ITEM_QTY} 的整数`);
+        if (!Number.isSafeInteger(qty) || qty < 1) {
+            throw new Error(`第 ${index + 1} 个商品数量必须是正整数`);
         }
         const existing = combined.get(id) || { id, qty: 0, name: String(item.name || '').trim() };
         existing.qty += qty;
-        if (existing.qty > ROBOT_MAX_ITEM_QTY) throw new Error(`商品 ${id} 合计数量不能超过 ${ROBOT_MAX_ITEM_QTY}`);
+        if (!Number.isSafeInteger(existing.qty)) throw new Error(`商品 ${id} 合计数量超出安全范围`);
         combined.set(id, existing);
     });
     const normalized = [...combined.values()];
-    if (normalized.reduce((sum, item) => sum + item.qty, 0) > ROBOT_MAX_ORDER_UNITS) {
-        throw new Error(`订单商品总数不能超过 ${ROBOT_MAX_ORDER_UNITS}`);
-    }
+    const totalUnits = normalized.reduce((sum, item) => sum + item.qty, 0);
+    if (!Number.isSafeInteger(totalUnits)) throw new Error('订单商品总数超出安全范围');
     return normalized;
 }
 
@@ -2111,7 +2107,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    if (pathname === '/api/admin/inventory-scan/products' && req.method === 'POST') {
+    if (['/api/admin/inventory-scan/products', '/api/admin/inventory-products'].includes(pathname) && req.method === 'POST') {
         if (!requireAdmin(req, res)) return;
         const body = await parseBody(req);
         try {
@@ -2641,6 +2637,25 @@ server.listen(PORT, HOST, () => {
 // ========== WebSocket 服务 ==========
 const wss = new WebSocketServer({ port: WS_PORT, host: WS_HOST, maxPayload: 64 * 1024 });
 
+// WebSocket 协议级心跳可保持 Nginx/FRP 的升级连接活跃，并清理已经失联的浏览器。
+const wsHeartbeatTimer = setInterval(() => {
+    for (const client of wss.clients) {
+        if (client.isAlive === false) {
+            client.terminate();
+            continue;
+        }
+        client.isAlive = false;
+        try {
+            client.ping();
+        } catch (error) {
+            log(`⚠️ WebSocket 心跳发送失败: ${error.message}`);
+            client.terminate();
+        }
+    }
+}, Math.max(5000, WS_HEARTBEAT_INTERVAL_MS));
+wsHeartbeatTimer.unref?.();
+wss.on('close', () => clearInterval(wsHeartbeatTimer));
+
 wss.on('listening', () => {
     log(`WebSocket 服务已启动: ws://${WS_HOST}:${WS_PORT}`);
 });
@@ -2719,6 +2734,8 @@ async function rejectOrderWithRefund(ws, msg, reason) {
 
 wss.on('connection', (ws) => {
     log('✅ 前端已连接');
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
 
     ws.on('message', async (raw) => {
         let msg;
@@ -4550,10 +4567,12 @@ function saveInventoryScanProducts(rawRows) {
     const products = readProducts();
     const saved = [];
     for (const row of rows) {
-        const index = products.findIndex((product) =>
+        const slotIndex = products.findIndex((product) =>
             product.shelf_zone === row.shelf
             && Number(product.shelf_number) === row.point
             && Number(product.shelf_layer) === row.layer);
+        const nameIndex = products.findIndex((product) => String(product.name || '').trim() === row.name);
+        const index = slotIndex >= 0 ? slotIndex : nameIndex;
         const base = index >= 0 ? products[index] : { id: nextProductId(products), status: 1, stock: 100 };
         const product = normalizeProduct({
             ...base,

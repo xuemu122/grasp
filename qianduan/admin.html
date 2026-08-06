@@ -35,7 +35,7 @@
         .admin-content { min-width: 0; display: grid; gap: 20px; }
         .admin-content > .card { grid-column: auto; }
         .admin-content[data-page="products"] { grid-template-columns: minmax(0, 1fr) 420px; align-items: start; }
-        .admin-content[data-page="products"] #formCard { min-width: 0; position: sticky; top: 86px; max-height: calc(100vh - 110px); overflow: auto; }
+        .admin-content[data-page="products"] #formCard { min-width: 0; position: static; max-height: none; overflow: visible; }
         [data-admin-page][hidden] { display: none !important; }
         .dashboard-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
         .dashboard-stat { padding: 14px; border: 1px solid var(--gray-200); border-radius: 8px; background: var(--gray-50); }
@@ -84,6 +84,16 @@
         .emoji-opt:hover { background: var(--gray-100); }
         .emoji-opt.selected { border-color: var(--primary); background: var(--primary-light); }
         .product-thumb { width: 42px; height: 42px; object-fit: contain; display: block; border-radius: 6px; background: var(--gray-50); }
+        .product-table-wrapper { overflow: visible; }
+        .product-table { table-layout: fixed; }
+        .product-table th, .product-table td { overflow-wrap: anywhere; }
+        .product-table .product-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+        .product-table .product-main { min-width: 0; }
+        .product-table .product-main strong { display: block; }
+        .product-table .product-meta { display: block; margin-top: 3px; color: var(--gray-500); font-size: 0.75rem; line-height: 1.35; }
+        .product-table .product-shelf { line-height: 1.45; }
+        .product-table .actions { flex-wrap: nowrap; }
+        .product-table .actions .btn { width: 36px; height: 34px; padding: 0; justify-content: center; }
         .image-upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
         .image-upload { min-width: 0; }
         .image-preview { aspect-ratio: 4 / 3; width: 100%; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 2px dashed var(--gray-200); border-radius: 8px; background: var(--gray-50); color: var(--gray-400); font-size: 0.82rem; }
@@ -361,27 +371,21 @@
                     <option value="">全部分类</option>
                 </select>
             </div>
-            <div class="table-wrapper">
-                <table>
+            <div class="table-wrapper product-table-wrapper">
+                <table class="product-table">
+                    <colgroup><col style="width:25%"><col style="width:14%"><col style="width:27%"><col style="width:12%"><col style="width:10%"><col style="width:12%"></colgroup>
                     <thead>
                         <tr>
-                            <th>图标</th>
-                            <th>商品名称</th>
-                            <th>规格</th>
-                            <th>包装</th>
+                            <th>商品</th>
                             <th>品类</th>
-                            <th>生产商</th>
-                            <th>位置</th>
-                            <th>货架层</th>
-                            <th>底盘点位</th>
-                            <th>坐标</th>
-                            <th>价格</th>
+                            <th>货架配置</th>
+                            <th>价格 / 库存</th>
                             <th>状态</th>
                             <th>操作</th>
                         </tr>
                     </thead>
                     <tbody id="productTableBody">
-                        <tr><td colspan="13" class="loading">加载中...</td></tr>
+                        <tr><td colspan="6" class="loading">加载中...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -1131,6 +1135,50 @@
             renderInventoryShelfConfig();
         }
 
+        function inventoryShelvesForApi(rows) {
+            return cloneInventoryShelves(rows).map((row) => ({ shelf: row.shelf, markers: row.markers }));
+        }
+
+        async function saveInventoryShelfViaLegacyApi(row, shelf) {
+            const shelves = [
+                ...inventoryShelvesForApi(inventoryScanData.shelves).filter((item) =>
+                    item.shelf !== shelf && item.shelf !== row.originalShelf),
+                { shelf, markers: row.markers }
+            ].sort((a, b) => INVENTORY_SHELF_NAMES.indexOf(a.shelf) - INVENTORY_SHELF_NAMES.indexOf(b.shelf));
+            const res = await adminFetch('/api/admin/inventory-scan/config', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ shelves })
+            });
+            const json = await readAdminJson(res, '兼容货架保存接口返回了无效数据');
+            if (!res.ok || json.code !== 0) throw new Error(json.message || '货架保存失败');
+            const serverShelves = cloneInventoryShelves(json.data);
+            return { savedShelf: serverShelves.find((item) => item.shelf === shelf), serverShelves };
+        }
+
+        async function saveInventoryShelfViaCompatibleApi(row, shelf) {
+            try {
+                const res = await adminFetch(`/api/admin/inventory-scan/config/${encodeURIComponent(shelf)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ markers: row.markers, previous_shelf: row.originalShelf || '' })
+                });
+                if ([404, 405].includes(res.status)) return saveInventoryShelfViaLegacyApi(row, shelf);
+                const json = await readAdminJson(res, '货架保存接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '货架保存失败');
+                const savedShelf = cloneInventoryShelves([json.data])[0];
+                const serverShelves = [
+                    ...cloneInventoryShelves(inventoryScanData.shelves).filter((item) =>
+                        item.shelf !== shelf && item.shelf !== row.originalShelf),
+                    savedShelf
+                ];
+                return { savedShelf, serverShelves };
+            } catch (error) {
+                if (!/返回了无效数据|返回了网页/.test(error.message)) throw error;
+                return saveInventoryShelfViaLegacyApi(row, shelf);
+            }
+        }
+
         async function saveInventoryShelf(index) {
             inventoryConfigDraft = inventoryShelvesFromDom();
             const row = inventoryConfigDraft[index];
@@ -1144,19 +1192,10 @@
             const card = document.querySelector(`.inventory-shelf-card[data-inventory-shelf-index="${index}"]`);
             card?.querySelectorAll('button').forEach((button) => { button.disabled = true; });
             try {
-                const res = await adminFetch(`/api/admin/inventory-scan/config/${encodeURIComponent(shelf)}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ markers: row.markers, previous_shelf: row.originalShelf || '' })
-                });
-                const json = await readAdminJson(res, '货架保存接口返回了无效数据');
-                if (!res.ok || json.code !== 0) throw new Error(json.message || '货架保存失败');
-                inventoryConfigDraft[index] = { ...cloneInventoryShelves([json.data])[0], originalShelf: shelf };
-                inventoryScanData.shelves = [
-                    ...cloneInventoryShelves(inventoryScanData.shelves).filter((item) =>
-                        item.shelf !== shelf && item.shelf !== row.originalShelf),
-                    inventoryConfigDraft[index]
-                ];
+                const { savedShelf, serverShelves } = await saveInventoryShelfViaCompatibleApi(row, shelf);
+                if (!savedShelf) throw new Error('保存结果中缺少当前货架');
+                inventoryConfigDraft[index] = { ...savedShelf, originalShelf: shelf };
+                inventoryScanData.shelves = serverShelves;
                 inventoryConfigDirtyShelves.delete(index);
                 inventoryConfigDirty = inventoryConfigDirtyShelves.size > 0;
                 renderInventoryShelfConfig();
@@ -1189,6 +1228,31 @@
             renderInventoryShelfConfig();
         }
 
+        async function deleteInventoryShelfViaLegacyApi(shelf) {
+            const shelves = inventoryShelvesForApi(inventoryScanData.shelves).filter((row) => row.shelf !== shelf);
+            const res = await adminFetch('/api/admin/inventory-scan/config', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ shelves })
+            });
+            const json = await readAdminJson(res, '兼容货架删除接口返回了无效数据');
+            if (!res.ok || json.code !== 0) throw new Error(json.message || '货架删除失败');
+            return cloneInventoryShelves(json.data);
+        }
+
+        async function deleteInventoryShelfViaCompatibleApi(shelf) {
+            try {
+                const res = await adminFetch(`/api/admin/inventory-scan/config/${encodeURIComponent(shelf)}`, { method: 'DELETE' });
+                if ([404, 405].includes(res.status)) return deleteInventoryShelfViaLegacyApi(shelf);
+                const json = await readAdminJson(res, '删除货架接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '货架删除失败');
+                return cloneInventoryShelves(json.data);
+            } catch (error) {
+                if (!/返回了无效数据|返回了网页/.test(error.message)) throw error;
+                return deleteInventoryShelfViaLegacyApi(shelf);
+            }
+        }
+
         async function removeInventoryShelf(index) {
             inventoryConfigDraft = inventoryShelvesFromDom();
             if (inventoryConfigDraft.length <= 1) return showToast('至少保留一个货架', 'warning');
@@ -1196,10 +1260,7 @@
             if (row?.originalShelf) {
                 if (!window.confirm(`确认删除 ${row.originalShelf} 货架吗？`)) return;
                 try {
-                    const res = await adminFetch(`/api/admin/inventory-scan/config/${encodeURIComponent(row.originalShelf)}`, { method: 'DELETE' });
-                    const json = await readAdminJson(res, '删除货架接口返回了无效数据');
-                    if (!res.ok || json.code !== 0) throw new Error(json.message || '货架删除失败');
-                    inventoryScanData.shelves = cloneInventoryShelves(json.data);
+                    inventoryScanData.shelves = await deleteInventoryShelfViaCompatibleApi(row.originalShelf);
                 } catch (error) {
                     showToast(error.message, 'error');
                     return;
@@ -1359,7 +1420,7 @@
                 return;
             }
             try {
-                const res = await adminFetch('/api/admin/inventory-scan/products', {
+                const res = await adminFetch('/api/admin/inventory-products', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ rows })
@@ -1597,23 +1658,19 @@
                 const tbody = document.getElementById('productTableBody');
 
                 if (json.data.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="13"><div class="empty-state"><span class="icon">📭</span><p>暂无商品数据</p></div></td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="6"><div class="empty-state"><span class="icon">📭</span><p>暂无商品数据</p></div></td></tr>';
                     return;
                 }
 
                 tbody.innerHTML = json.data.map(p => `
                     <tr>
-                        <td>${p.photo_front ? `<img class="product-thumb" src="${esc(p.photo_front)}" alt="${esc(p.name)}">` : `<span style="font-size:1.4rem;">${p.emoji || '📦'}</span>`}</td>
-                        <td><strong>${esc(p.name)}</strong></td>
-                        <td>${esc(p.spec) || '-'}</td>
-                        <td>${esc(p.packaging) || '-'}</td>
-                        <td>${esc(p.category) || '-'}</td>
-                        <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(p.manufacturer)}">${esc(p.manufacturer) || '-'}</td>
-                        <td>${esc(p.location) || '-'}</td>
-                        <td><span class="status-badge ${shelfLayerClass(p.location)}">${esc(shelfLayerLabel(p.location))}</span></td>
-                        <td>${esc(p.chassis_marker) || '-'}</td>
-                        <td style="font-size:0.8rem;color:var(--gray-500);">(${p.shelf_x}, ${p.shelf_y}, ${p.shelf_z})</td>
-                        <td style="color:var(--primary);font-weight:700;">¥${p.price}</td>
+                        <td><div class="product-cell">
+                            ${p.photo_front ? `<img class="product-thumb" src="${esc(p.photo_front)}" alt="${esc(p.name)}">` : `<span style="font-size:1.4rem;">${p.emoji || '📦'}</span>`}
+                            <div class="product-main"><strong>${esc(p.name)}</strong><span class="product-meta">${esc(p.spec) || '无规格'} · ${esc(p.manufacturer) || '无生产商'}</span></div>
+                        </div></td>
+                        <td>${esc(p.category) || '-'}<span class="product-meta">${esc(p.packaging) || '未设置包装'}</span></td>
+                        <td class="product-shelf">${esc(p.location) || '未设置位置'}<span class="product-meta"><span class="status-badge ${shelfLayerClass(p.location)}">${esc(shelfLayerLabel(p.location))}</span> · ${esc(p.chassis_marker) || '无底盘点位'} · (${p.shelf_x}, ${p.shelf_y}, ${p.shelf_z})</span></td>
+                        <td style="color:var(--primary);font-weight:700;">¥${p.price}<span class="product-meta">库存 ${Number(p.stock) || 0}</span></td>
                         <td><span class="status-badge ${p.status==1?'on':'off'}">${p.status==1?'在售':'下架'}</span></td>
                         <td>
                             <div class="actions">

@@ -35,7 +35,8 @@ test('free payment order is persisted, completed and refundable', async (t) => {
     const productsFile = path.join(tempDir, 'products.json');
     const ordersFile = path.join(tempDir, 'orders.json');
     fs.writeFileSync(productsFile, JSON.stringify({ products: [
-        { id: 1, name: '测试咖啡', spec: '250ml', price: 8, stock: 5, status: 1, location: '测试区A货架第1层' }
+        { id: 1, name: '测试咖啡', spec: '250ml', price: 8, stock: 5, status: 1, location: '测试区A货架第1层' },
+        { id: 2, name: '重复测试饮料', spec: '500ml', price: 6, stock: 5, status: 1, location: '测试区A货架第1层' }
     ] }));
     t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
@@ -74,6 +75,18 @@ test('free payment order is persisted, completed and refundable', async (t) => {
     assert.equal(prepared.json.paymentRequired, false);
     assert.equal(prepared.json.totalAmount, 16);
 
+    const repeatedPrepared = await postJson(`${base}/api/orders/prepare`, {
+        items: [{ id: 2, qty: 5 }]
+    });
+    assert.equal(repeatedPrepared.response.status, 200);
+    assert.equal(repeatedPrepared.json.items[0].qty, 5);
+
+    const overStock = await postJson(`${base}/api/orders/prepare`, {
+        items: [{ id: 2, qty: 6 }]
+    });
+    assert.equal(overStock.response.status, 400);
+    assert.match(overStock.json.message, /库存不足/);
+
     const payment = await fetch(`${base}/api/orders/${prepared.json.orderId}/payment`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ completionToken: prepared.json.completionToken })
@@ -87,7 +100,7 @@ test('free payment order is persisted, completed and refundable', async (t) => {
     const cookie = login.headers.get('set-cookie').split(';', 1)[0];
     const list = await fetch(`${base}/api/admin/orders?page=1&pageSize=10`, { headers: { Cookie: cookie } });
     const listJson = await list.json();
-    assert.equal(listJson.total, 1);
+    assert.equal(listJson.total, 2);
     assert.equal(listJson.data[0].status, 'PAID');
 
     const completedTimestamp = String(Date.now());
@@ -132,7 +145,7 @@ test('free payment order is persisted, completed and refundable', async (t) => {
     assert.equal(normalizedOrder.status, 'REFUNDED');
     assert.equal(normalizedOrder.paymentStatus, 'REFUNDED');
     const products = await (await fetch(`${base}/api/products`)).json();
-    assert.equal(products.data[0].stock, 5);
+    assert.equal(products.data.find((product) => product.id === 1).stock, 5);
 
     const failedPrepared = await postJson(`${base}/api/orders/prepare`, { items: [{ id: 1, qty: 1 }] });
     const startedTimestamp = String(Date.now());
@@ -172,7 +185,7 @@ test('free payment order is persisted, completed and refundable', async (t) => {
     assert.equal(duplicateFailure.response.status, 200);
     assert.equal(duplicateFailure.json.data.refundId, failure.json.data.refundId);
     const productsAfterFailure = await (await fetch(`${base}/api/products`)).json();
-    assert.equal(productsAfterFailure.data[0].stock, 5);
+    assert.equal(productsAfterFailure.data.find((product) => product.id === 1).stock, 5);
 
     const partialPrepared = await postJson(`${base}/api/orders/prepare`, { items: [{ id: 1, qty: 2 }] });
     const partialStartedAt = String(Date.now());
@@ -208,7 +221,7 @@ test('free payment order is persisted, completed and refundable', async (t) => {
     assert.equal(partialFailure.json.data.refundAmount, 8);
     assert.deepEqual(partialFailure.json.data.deliveredItems.map(({ id, qty }) => ({ id, qty })), [{ id: 1, qty: 1 }]);
     const productsAfterPartialFailure = await (await fetch(`${base}/api/products`)).json();
-    assert.equal(productsAfterPartialFailure.data[0].stock, 4);
+    assert.equal(productsAfterPartialFailure.data.find((product) => product.id === 1).stock, 4);
 
     const duplicatePartialFailure = await postJson(
         `${base}/api/orders/${partialPrepared.json.orderId}/failure`,
@@ -222,5 +235,5 @@ test('free payment order is persisted, completed and refundable', async (t) => {
     assert.equal(duplicatePartialFailure.response.status, 200);
     assert.equal(duplicatePartialFailure.json.data.refundId, partialFailure.json.data.refundId);
     const productsAfterDuplicatePartialFailure = await (await fetch(`${base}/api/products`)).json();
-    assert.equal(productsAfterDuplicatePartialFailure.data[0].stock, 4);
+    assert.equal(productsAfterDuplicatePartialFailure.data.find((product) => product.id === 1).stock, 4);
 });

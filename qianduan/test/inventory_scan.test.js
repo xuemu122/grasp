@@ -36,7 +36,9 @@ test('admin inventory scan visits configured A-D shelves and each point at layer
     const productsFile = path.join(tempDir, 'products.json');
     const scanFile = path.join(tempDir, 'inventory_scan.json');
     const shelfLayersFile = path.join(tempDir, 'shelf_layers.json');
-    fs.writeFileSync(productsFile, JSON.stringify({ products: [] }));
+    fs.writeFileSync(productsFile, JSON.stringify({
+        products: [{ id: 10, name: '商品A1-1', price: 9, stock: 8, status: 1, category: '饮料' }]
+    }));
     fs.writeFileSync(shelfLayersFile, JSON.stringify({
         layers: {
             1: { name: '第1层', pose: [1, 2, 3, 4, 5, 6] },
@@ -161,7 +163,7 @@ test('admin inventory scan visits configured A-D shelves and each point at layer
     );
     assert.equal(snapshot.task.results[0].dominant_name, '商品A1-1');
 
-    const saved = await requestJson(`${baseUrl}/api/admin/inventory-scan/products`, {
+    const saved = await requestJson(`${baseUrl}/api/admin/inventory-products`, {
         method: 'POST',
         cookie,
         body: {
@@ -179,6 +181,8 @@ test('admin inventory scan visits configured A-D shelves and each point at layer
     );
 
     const products = await requestJson(`${baseUrl}/api/products`);
+    assert.equal(products.json.data.length, 2);
+    assert.equal(products.json.data.find((product) => product.name === '商品A1-1').price, 9);
     assert.deepEqual(products.json.data.map((product) => product.location).sort(), [
         'A货架第1点位第1层',
         'D货架第2点位第2层'
