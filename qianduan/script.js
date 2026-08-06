@@ -251,10 +251,54 @@ function handleWSMessage(msg) {
     if (!splash) return;
 
     let awake = false;
+    let idleTimer = null;
+    const IDLE_TIMEOUT = 10000; // 10秒无操作返回待机页
+
+    function goToSleep() {
+        awake = false;
+        splash.classList.remove('hidden');
+        // 停止语音播报
+        if ('speechSynthesis' in window) {
+            window.speechSynthesis.cancel();
+        }
+        if (idleTimer) {
+            clearTimeout(idleTimer);
+            idleTimer = null;
+        }
+        removeIdleListeners();
+    }
+
+    function resetIdleTimer() {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(goToSleep, IDLE_TIMEOUT);
+    }
+
+    function onUserActivity() {
+        if (awake) resetIdleTimer();
+    }
+
+    function addIdleListeners() {
+        document.addEventListener('mousedown', onUserActivity);
+        document.addEventListener('touchstart', onUserActivity, { passive: true });
+        document.addEventListener('keydown', onUserActivity);
+        document.addEventListener('scroll', onUserActivity, { passive: true });
+    }
+
+    function removeIdleListeners() {
+        document.removeEventListener('mousedown', onUserActivity);
+        document.removeEventListener('touchstart', onUserActivity);
+        document.removeEventListener('keydown', onUserActivity);
+        document.removeEventListener('scroll', onUserActivity);
+    }
+
     function wakeUp() {
         if (awake) return;
         awake = true;
         splash.classList.add('hidden');
+
+        // 启动空闲计时器
+        resetIdleTimer();
+        addIdleListeners();
 
         if ('speechSynthesis' in window) {
             setTimeout(() => {
