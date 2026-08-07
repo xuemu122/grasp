@@ -343,16 +343,7 @@ function handleWSMessage(msg) {
         resetIdleTimer();
         addIdleListeners();
 
-        if ('speechSynthesis' in window) {
-            setTimeout(() => {
-                const utter = new SpeechSynthesisUtterance('你好，请点单');
-                utter.lang = 'zh-CN';
-                utter.rate = 0.9;
-                utter.pitch = 1.1;
-                utter.volume = 1;
-                window.speechSynthesis.speak(utter);
-            }, 500);
-        }
+        speakText('欢迎光临，请点单!');
     }
 
     splash.addEventListener('click', wakeUp);
@@ -927,6 +918,7 @@ function showPaymentModal(orderId, payment, totalAmount) {
         showPaymentStatus('二维码加载失败，请检查大屏网络后重新下单');
     };
     document.getElementById('cancelPayment').onclick = () => { paymentCancelled = true; overlay.style.display = 'none'; };
+    speakText('请扫码支付。');
 }
 
 function scheduleOrderRetry(reason) {
@@ -974,6 +966,7 @@ async function waitForPayment(orderId, completionToken, payment, totalAmount) {
             const data = await res.json();
             if (data.code === 0 && data.paid) {
                 document.getElementById('modalOverlay').style.display = 'none';
+                speakText('请等待机器人取货。');
                 return true;
             }
             const terminalStatus = ['REFUNDED', 'REFUNDING', 'CLOSED', 'FAILED', 'PAYMENT_FAILED'].includes(data.paymentStatus)
@@ -1214,6 +1207,7 @@ function onOrderReady(msg) {
     updateCartUI();
     renderProducts();
     syncOrderButton();
+    speakText('出货完成，请核对商品是否已经全部取出，欢迎下次光临！');
 }
 
 // ========== 抓取失败 ==========
@@ -1234,6 +1228,7 @@ async function onGrabFailed(reason = '机器人未能完成抓取和放置', req
     orderRetryTimer = null;
 
     syncOrderButton();
+    speakText('机器人取货失败，费用已原路退还。');
 }
 
 // ========== 显示抓取弹窗 ==========
@@ -1436,6 +1431,22 @@ function stopVoice() {
 window.addEventListener('beforeunload', () => {
     if (isListening) try { voiceRecognition.abort(); } catch (e) {}
 });
+
+// ========== 通用语音播报 ==========
+function speakText(text) {
+    if (!('speechSynthesis' in window)) return;
+    // 取消当前正在播放的语音，避免重叠
+    window.speechSynthesis.cancel();
+    // 等待一小段时间让 cancel 生效
+    setTimeout(() => {
+        const utter = new SpeechSynthesisUtterance(text);
+        utter.lang = 'zh-CN';
+        utter.rate = 0.9;
+        utter.pitch = 1.1;
+        utter.volume = 1;
+        window.speechSynthesis.speak(utter);
+    }, 100);
+}
 
 // ========== 启动 ==========
 init();
