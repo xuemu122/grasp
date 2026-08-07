@@ -33,6 +33,7 @@ const CHASSIS_PORT = Number(process.env.CHASSIS_PORT || process.env.MOVE_ROBOT_P
 const CHASSIS_MAP_HTTP_PROTOCOL = String(process.env.CHASSIS_MAP_HTTP_PROTOCOL || 'http').replace(/:$/, '');
 const CHASSIS_MAP_HTTP_HOST = process.env.CHASSIS_MAP_HTTP_HOST || CHASSIS_HOST;
 const CHASSIS_MAP_HTTP_PORT = Number(process.env.CHASSIS_MAP_HTTP_PORT || 9001);
+const CHASSIS_MAP_REFRESH_INTERVAL_MS = Number(process.env.CHASSIS_MAP_REFRESH_INTERVAL_MS || 15000);
 const CHASSIS_PLACE_MARKER_DEFAULT = process.env.CHASSIS_PLACE_MARKER || 'fangzhi';
 const CHASSIS_CHARGE_MARKER = process.env.CHASSIS_CHARGE_MARKER || 'charge_point_1F_35744';
 const CHASSIS_NAVIGATION_DEFAULT_ENABLE = /^(1|true|yes|on)$/i.test(process.env.CHASSIS_NAVIGATION_ENABLE || '');
@@ -432,7 +433,19 @@ function writeProducts(products) {
     writeProductStore({ ...store, products });
 }
 
-const INVENTORY_SHELF_NAMES = ['A', 'B', 'C', 'D'];
+function inventoryShelfNameForIndex(index) {
+    let value = Number(index) + 1;
+    let name = '';
+    while (value > 0) {
+        value -= 1;
+        name = String.fromCharCode(65 + (value % 26)) + name;
+        value = Math.floor(value / 26);
+    }
+    return name;
+}
+
+const INVENTORY_MAX_SHELVES = 99;
+const INVENTORY_SHELF_NAMES = Array.from({ length: INVENTORY_MAX_SHELVES }, (_, index) => inventoryShelfNameForIndex(index));
 const INVENTORY_MAX_MARKERS_PER_SHELF = 6;
 
 function shelfZoneForNumber(shelfNumber) {
@@ -465,11 +478,11 @@ function normalizeInventoryShelves(rawShelves, { requireMarkers = false } = {}) 
         || typeof (row && row.shelf) === 'string');
     const rows = hasNewSchema ? input : legacyInventoryShelves(input);
     const source = rows.length ? rows : defaultInventoryShelves();
-    if (source.length > INVENTORY_SHELF_NAMES.length) throw new Error('最多配置 4 个货架（A-D）');
+    if (source.length > INVENTORY_SHELF_NAMES.length) throw new Error(`最多配置 ${INVENTORY_SHELF_NAMES.length} 个货架`);
     const usedShelves = new Set();
     return source.map((raw, shelfIndex) => {
         const shelf = String(raw && (raw.shelf || raw.zone) || '').trim().toUpperCase();
-        if (!INVENTORY_SHELF_NAMES.includes(shelf)) throw new Error(`第${shelfIndex + 1}个货架必须选择 A、B、C 或 D`);
+        if (!INVENTORY_SHELF_NAMES.includes(shelf)) throw new Error(`第${shelfIndex + 1}个货架编号无效，请使用 A、B、C…或 AA、AB…`);
         if (usedShelves.has(shelf)) throw new Error(`${shelf}货架重复配置`);
         usedShelves.add(shelf);
         const markerValues = Array.isArray(raw.markers)
@@ -1996,7 +2009,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    const inventoryShelfConfigMatch = pathname.match(/^\/api\/admin\/inventory-scan\/config\/([A-Da-d])$/);
+    const inventoryShelfConfigMatch = pathname.match(/^\/api\/admin\/inventory-scan\/config\/([A-Za-z][A-Za-z0-9_-]{0,15})$/);
     if (inventoryShelfConfigMatch && ['PUT', 'DELETE'].includes(req.method)) {
         if (!requireAdmin(req, res)) return;
         if (inventoryScanPromise) {
@@ -2632,6 +2645,12 @@ server.listen(PORT, HOST, () => {
                 log(`⚠️ 底盘地图启动更新失败且没有本地快照: ${error.message}`);
             }
         });
+    const chassisMapRefreshTimer = setInterval(() => {
+        refreshChassisMapSnapshot()
+            .then((snapshot) => log(`底盘地图定时更新完成: ${snapshot.map.map_name || snapshot.map.hotel_id}/${snapshot.map.floor}`))
+            .catch((error) => log(`⚠️ 底盘地图定时更新失败: ${error.message}`));
+    }, Math.max(5000, CHASSIS_MAP_REFRESH_INTERVAL_MS));
+    chassisMapRefreshTimer.unref?.();
 });
 
 // ========== WebSocket 服务 ==========
@@ -4558,7 +4577,7 @@ function saveInventoryScanProducts(rawRows) {
         const layer = Number(raw && raw.layer);
         const marker = String(raw && (raw.marker || raw.chassis_marker) || '').trim();
         if (!name) throw new Error(`第${index + 1}行商品名称不能为空`);
-        if (!INVENTORY_SHELF_NAMES.includes(shelf)) throw new Error(`第${index + 1}行货架必须是 A、B、C 或 D`);
+        if (!INVENTORY_SHELF_NAMES.includes(shelf)) throw new Error(`第${index + 1}行货架编号无效`);
         if (!Number.isInteger(point) || point < 1 || point > 6) throw new Error(`第${index + 1}行点位序号必须是 1..6`);
         if (![1, 2].includes(layer)) throw new Error(`第${index + 1}行层数只能是 1 或 2`);
         validateChassisMarkerName(marker);

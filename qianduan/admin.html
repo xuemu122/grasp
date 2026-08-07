@@ -1051,7 +1051,19 @@
             }
         }
 
-        const INVENTORY_SHELF_NAMES = ['A', 'B', 'C', 'D'];
+        function inventoryShelfNameForIndex(index) {
+            let value = Number(index) + 1;
+            let name = '';
+            while (value > 0) {
+                value -= 1;
+                name = String.fromCharCode(65 + (value % 26)) + name;
+                value = Math.floor(value / 26);
+            }
+            return name;
+        }
+
+        const INVENTORY_MAX_SHELVES = 99;
+        const INVENTORY_SHELF_NAMES = Array.from({ length: INVENTORY_MAX_SHELVES }, (_, index) => inventoryShelfNameForIndex(index));
 
         function inventoryMarkerOptions(selected = '') {
             const markers = [...(chassisMapData.markers || [])].sort((a, b) =>
@@ -1086,7 +1098,10 @@
         }
 
         function inventoryShelfOptions(selected) {
-            return INVENTORY_SHELF_NAMES.map((shelf) =>
+            const names = selected && !INVENTORY_SHELF_NAMES.includes(selected)
+                ? [selected, ...INVENTORY_SHELF_NAMES]
+                : INVENTORY_SHELF_NAMES;
+            return names.map((shelf) =>
                 `<option value="${shelf}"${shelf === selected ? ' selected' : ''}>${shelf}货架</option>`).join('');
         }
 
@@ -1096,7 +1111,7 @@
             const shelves = inventoryConfigDraft.length ? inventoryConfigDraft : cloneInventoryShelves(inventoryScanData.shelves);
             inventoryConfigDraft = shelves;
             const shelfCards = shelves.map((row, shelfIndex) => {
-                const shelf = INVENTORY_SHELF_NAMES.includes(row.shelf) ? row.shelf : 'A';
+                const shelf = INVENTORY_SHELF_NAMES.includes(row.shelf) ? row.shelf : (row.shelf || 'A');
                 const markers = Array.isArray(row.markers) && row.markers.length ? row.markers : [''];
                 const originalShelf = row.originalShelf || '';
                 const dirty = inventoryConfigDirtyShelves.has(shelfIndex);
@@ -1184,7 +1199,7 @@
             const row = inventoryConfigDraft[index];
             if (!row) return;
             const shelf = String(row.shelf || '').toUpperCase();
-            if (!INVENTORY_SHELF_NAMES.includes(shelf)) return showToast('请选择 A-D 货架', 'error');
+            if (!INVENTORY_SHELF_NAMES.includes(shelf)) return showToast('请选择有效货架编号', 'error');
             if (inventoryConfigDraft.some((item, itemIndex) => itemIndex !== index && item.shelf === shelf)) {
                 return showToast(`${shelf}货架已经存在`, 'error');
             }
@@ -1221,7 +1236,7 @@
         function addInventoryShelf() {
             inventoryConfigDraft = inventoryShelvesFromDom();
             const shelf = INVENTORY_SHELF_NAMES.find((name) => !inventoryConfigDraft.some((row) => row.shelf === name));
-            if (!shelf) return showToast('最多增加 A-D 四个货架', 'warning');
+            if (!shelf) return showToast('已达到货架数量上限', 'warning');
             inventoryConfigDraft.push({ shelf, originalShelf: '', markers: ['', ''] });
             inventoryConfigDirty = true;
             inventoryConfigDirtyShelves.add(inventoryConfigDraft.length - 1);
