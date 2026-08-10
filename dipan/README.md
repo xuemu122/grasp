@@ -11,6 +11,7 @@
 | `aero_gripper.py` | Aero Hand 控制：张开、普通抓、上端抓、瓶子抓 |
 | `lhandpro_gripper.py` | LHandPro RS485 控制：张开、固定位置抓取、空载曲线和逐轴电流柔性抓取 |
 | `test_lhandpro_flexible_grasp.py` | 新灵巧手独立测试：通信状态、回零张开、录空载曲线、单次柔性抓取 |
+| `LHANDPRO_RS485_安装标定与测试说明.md` | 新灵巧手现场说明：接线、空载曲线、柔性测试、负载和碰撞箱更新 |
 | `hand_eye.py` | 手眼坐标转换：像素/深度到机器人基座坐标，含远距透视补偿 |
 | `grasp_planner.py` | 抓取目标选择和抓取点规划：动态层板过滤、深度分层、右侧优先、侧抓/上抓判定 |
 | `target_selection.py` | 检测结果融合、目标关键词匹配、类别列表显示、目标深度重采样 |

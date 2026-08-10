@@ -13,8 +13,10 @@ from tool_geometry import tool_size_label_mm
 
 DOBOT_IP = os.getenv("DOBOT_IP", "192.168.5.1")
 DOBOT_PORT = 29999
-HAND_WEIGHT = 0.6
-HAND_COG_Z = 0.12
+HAND_WEIGHT = float(os.getenv("HAND_WEIGHT_KG", "0.6"))
+HAND_COG_X = float(os.getenv("HAND_COG_X_M", "0.0"))
+HAND_COG_Y = float(os.getenv("HAND_COG_Y_M", "0.0"))
+HAND_COG_Z = float(os.getenv("HAND_COG_Z_M", "0.12"))
 HOME_JOINTS_DEG = [-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]
 ROBOT_POLL_S = float(os.getenv("ROBOT_POLL_S", "0.2"))
 SELF_COLLISION_ENABLE = os.getenv("SELF_COLLISION_ENABLE", "1").lower() in ("1", "true", "yes", "on")
@@ -80,7 +82,10 @@ class DobotArm:
         print(f"[DOBOT] PowerOn: {resp}  (等待 10 秒上电...)")
         time.sleep(10)
 
-        resp = self.send(f"SetPayload({HAND_WEIGHT}, 0, 0, {HAND_COG_Z*1000:.0f})")
+        resp = self.send(
+            f"SetPayload({HAND_WEIGHT}, {HAND_COG_X*1000:.0f}, "
+            f"{HAND_COG_Y*1000:.0f}, {HAND_COG_Z*1000:.0f})"
+        )
         print(f"[DOBOT] SetPayload: {resp}")
 
         resp = self.send("EnableRobot()")
@@ -128,7 +133,10 @@ class DobotArm:
                 time.sleep(10)
             else:
                 print(f"[DOBOT] RobotMode={mode}, 跳过完整上电等待")
-            self.send(f"SetPayload({HAND_WEIGHT}, 0, 0, {HAND_COG_Z*1000:.0f})")
+            self.send(
+                f"SetPayload({HAND_WEIGHT}, {HAND_COG_X*1000:.0f}, "
+                f"{HAND_COG_Y*1000:.0f}, {HAND_COG_Z*1000:.0f})"
+            )
             resp = self.send("EnableRobot()")
             print(f"[DOBOT] EnableRobot: {resp}")
             time.sleep(0.5)
