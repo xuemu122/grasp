@@ -23,7 +23,6 @@ if VISION_DIR not in sys.path:
 from orbbec_detect import MedicineLocatorSystem, RealSenseCamera
 from orbbec_detect import _assess_lighting
 
-from aero_gripper import AeroGripper
 from dobot_arm import DobotArm, _clamp_cp
 from grasp_planner import (
     FORCE_SIDE_GRASP,
@@ -78,7 +77,7 @@ def _parse_float_list_env(name, default):
 HAND_LENGTH = HAND_LENGTH_Z_M      # 法兰 → 指尖 (米)
 HAND_PALM_LENGTH_M = HAND_PALM_LENGTH_Z_M  # 法兰 → 掌心前端 (米)
 HAND_FINGER_THICKNESS_M = float(os.getenv("HAND_FINGER_THICKNESS_M", "0.03"))  # 手指厚度 (米)
-HAND_WEIGHT = 0.6       # 末端重量 (kg), Aero Hand
+HAND_WEIGHT = float(os.getenv("HAND_WEIGHT_KG", "0.6"))
 HAND_W_Y = HAND_PALM_WIDTH_Y_M     # 手 Y 方向宽度 (米)
 HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 
@@ -116,6 +115,7 @@ WATER_CONF_THRESHOLD = float(os.getenv("WATER_CONF_THRESHOLD", "0.52"))
 DRINK_CLASS_IDS = set(range(70, 78)) | set(range(80, 87))
 # 当前默认使用电流反馈柔性抓取；原侧抓/上抓固定手势仍可通过 HAND_GRASP_MODE=bottle/auto 保留。
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "flex").lower()
+HAND_BACKEND = os.getenv("HAND_BACKEND", "aero").strip().lower()
 DETECTION_STABILITY_IOU = float(os.getenv("DETECTION_STABILITY_IOU", "0.35"))
 DETECTION_CAPTURE_FRAMES = max(1, int(os.getenv("DETECTION_CAPTURE_FRAMES", "10")))
 DETECTION_WARMUP_FRAMES = max(0, int(os.getenv("DETECTION_WARMUP_FRAMES", "2")))
@@ -1067,7 +1067,7 @@ def move_chassis_to_place(marker):
     return True
 
 
-def finish_pick_cycle(arm: "DobotArm", hand: Optional["AeroGripper"], current_layer_idx: Optional[int]):
+def finish_pick_cycle(arm: "DobotArm", hand: Optional[object], current_layer_idx: Optional[int]):
     """抓取后放置并停在放置点, 下一单按目标层/货架继续移动。"""
     hand_ok = hand is not None and not SKIP_HAND
 
@@ -1680,6 +1680,16 @@ def _connect_and_open_hand(hand):
     return hand.open()
 
 
+def _create_hand():
+    if HAND_BACKEND == "aero":
+        from aero_gripper import AeroGripper
+        return AeroGripper()
+    if HAND_BACKEND in ("lhand", "lhandpro", "rs485"):
+        from lhandpro_gripper import LHandProGripper
+        return LHandProGripper()
+    raise ValueError(f"不支持的 HAND_BACKEND={HAND_BACKEND!r}, 可选 aero/lhandpro")
+
+
 def _clear_failure_diagnostic():
     try:
         os.remove(FAILURE_DIAGNOSTIC_PATH)
@@ -1705,7 +1715,7 @@ def main():
         f"Z={DEPTH_GUARD_CAMERA_BOX_MIN_M[2]*1000:.0f}..{DEPTH_GUARD_CAMERA_BOX_MAX_M[2]*1000:.0f}mm, "
         f"{'启用' if DEPTH_GUARD_CAMERA_ENABLE else '关闭'}"
     )
-    print(f"  手势模式: {HAND_GRASP_MODE}")
+    print(f"  灵巧手后端: {HAND_BACKEND}, 手势模式: {HAND_GRASP_MODE}")
     print(f"  抓取策略: {'临时强制全部侧抓' if FORCE_SIDE_GRASP else '按物体尺寸自动选择'}")
     print(f"  目标商品: {TARGET_PRODUCT_QUERY or '未指定'}")
     if SHELF_GRASP_WORKER:
@@ -1761,8 +1771,8 @@ def main():
         print("\n[3/4] 灵巧手 已屏蔽 (SKIP_HAND=True)")
         hand = None
     else:
-        print("\n[3/4] 连接 Aero Hand 灵巧手 ...")
-        hand = AeroGripper()
+        print(f"\n[3/4] 连接 {HAND_BACKEND} 灵巧手 ...")
+        hand = _create_hand()
         _connect_and_open_hand(hand)
 
     if _current_layer_idx == STARTUP_LAYER_IDX:

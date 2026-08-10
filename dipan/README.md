@@ -1,6 +1,6 @@
 # dipan — 机械臂抓取、手眼标定与底盘控制
 
-本目录包含 DOBOT Nova5 货架抓取主程序、Aero Hand 控制、手眼标定、底盘 TCP 移动控制和调试工具。
+本目录包含 DOBOT Nova5 货架抓取主程序、Aero/LHandPro 灵巧手控制、手眼标定、底盘 TCP 移动控制和调试工具。
 
 ## 文件
 
@@ -9,6 +9,8 @@
 | `shelf_grasp.py` | 统一入口和流程编排：菜单、识别、抓取、放置、底盘调用 |
 | `dobot_arm.py` | DOBOT Nova5 TCP 控制：连接、使能、MovL/MovJ、报警恢复、关节安全过渡 |
 | `aero_gripper.py` | Aero Hand 控制：张开、普通抓、上端抓、瓶子抓 |
+| `lhandpro_gripper.py` | LHandPro RS485 控制：张开、固定位置抓取、空载曲线和逐轴电流柔性抓取 |
+| `test_lhandpro_flexible_grasp.py` | 新灵巧手独立测试：通信状态、回零张开、录空载曲线、单次柔性抓取 |
 | `hand_eye.py` | 手眼坐标转换：像素/深度到机器人基座坐标，含远距透视补偿 |
 | `grasp_planner.py` | 抓取目标选择和抓取点规划：动态层板过滤、深度分层、右侧优先、侧抓/上抓判定 |
 | `target_selection.py` | 检测结果融合、目标关键词匹配、类别列表显示、目标深度重采样 |
@@ -65,6 +67,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `MOTION_SETTLE_S`：普通运动完成后的短缓冲，默认 `0.2` 秒。
 - `GRASP_SETTLE_S`：抓取前进、闭手前、后退后的缓冲，默认 `0.4` 秒。
 - `HAND_CLOSE_WAIT_S`：灵巧手闭合后等待物体稳定的时间，默认 `3.0` 秒。
+- `HAND_BACKEND`：灵巧手后端，默认 `aero`；新 RS485 灵巧手设为 `lhandpro`。默认值不变，旧硬件不受影响。
 - `HAND_GRASP_MODE`：灵巧手抓取模式，默认 `flex`，使用电流反馈柔性抓取；可设 `bottle` 使用旧瓶子固定手势，或设 `auto` 使用普通/上抓固定手势。
 - `FORCE_SIDE_GRASP`：是否临时强制所有目标按侧面抓取点规划，默认 `0`，即宽盒/矮盒会自动上抓；设为 `1` 可临时全侧抓。
 - `AERO_FLEX_PROFILE`：柔性抓取空载曲线 CSV，默认 `/home/nvidia/grasp/dipan/runtime/aero_empty.csv`；建议先用 `test_aero_current_grasp.py --disable-trigger` 录制。
@@ -369,6 +372,59 @@ python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 80 --step 2
 
 这会把“正常弯曲/预紧造成的电流”从判断里扣掉，只在比空载曲线额外高出阈值时才停止。
 `--per-finger` 会让 active-joints 里的 3-6 号手指分开判断；某根手指触发后会再闭合 `--extra-close` 度并锁住，直到这些手指都抓紧/到上限才退出。`--thumb-follow` 让 1/2 号拇指继续随步进闭合，但不作为“四指都抓紧”的退出条件。需要强制指定等待哪些手指时可加 `--required-fingers 3,4`。
+
+## LHandPro RS485 柔性抓取
+
+新后端默认使用 `500000 baud`、`8N1`、`NodeID=1`，SDK 路径为
+`/home/nvidia/grasp/LHandProLib-API-Linux`。电流反馈单位是额定电流的千分比（‰），
+不能复用 Aero 的 mA 空载曲线。Python 串口依赖为 `pyserial`。
+
+先确认通信，不使能、不回零：
+
+```bash
+cd /home/nvidia/grasp/dipan
+python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 info
+```
+
+空手录制新曲线。命令会要求输入 `RECORD`，随后回零并让 6 个主动轴从 `0` 扫到
+`9000`；任何轴空载电流达到 `750‰` 会中止且不覆盖旧曲线：
+
+```bash
+python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 record
+python3 test_lhandpro_flexible_grasp.py check-profile
+```
+
+曲线默认保存到 `runtime/lhandpro_empty.csv`。若 `9000` 接近机械限位，应先保守录到
+`7000`，确认方向和行程后再逐步增加；柔性闭合上限会自动截断到已录曲线的最大位置：
+
+```bash
+python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 record --max 7000 --step 250
+```
+
+录制成功后，将软质测试物放在掌心，独立测试一次柔性闭合。该脚本不会移动机械臂：
+
+```bash
+python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 flex
+```
+
+3～6 号轴默认作为四根手指独立判断；至少两根手指相对同位置空载包络增加 `80‰`
+才判定抓取成功。曲线缺失时默认拒绝柔性抓取。常用参数为
+`LHAND_FLEX_PROFILE_DELTA`、`LHAND_FLEX_STEP`、`LHAND_FLEX_EXTRA_CLOSE`、
+`LHAND_FLEX_REQUIRED_AXES` 和 `LHAND_FLEX_MIN_CONTACTS`。
+
+独立测试通过并重新实测末端几何参数后，才启动完整货架流程：
+
+```bash
+HAND_BACKEND=lhandpro HAND_GRASP_MODE=flex \
+LHAND_RS485_PORT=/dev/ttyUSB0 DOBOT_IP=192.168.5.1 \
+python3 shelf_grasp.py
+```
+
+机械臂末端 485 若只提供 Modbus RTU 而不提供原始字节透传，不能直接承载 SDK 的
+RS485 回调帧；此时先用 Jetson 的 USB-RS485 测试，不要把 `ModbusRTUCreate` 当作
+SDK 串口。更换手和安装座后，还必须重新实测并设置 `TOOL_HAND_LENGTH_Z_M`、
+`HAND_PALM_LENGTH_M`、`TOOL_HAND_BODY_DEPTH_X_M`、`TOOL_HAND_PALM_WIDTH_Y_M`、
+`TOOL_HAND_OPEN_WIDTH_Y_M` 和 `HAND_WEIGHT_KG`，再允许运行机械臂抓取路径。
 
 ## Aero 接触状态识别 demo
 

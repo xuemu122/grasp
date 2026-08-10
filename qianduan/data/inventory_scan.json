@@ -1,0 +1,313 @@
+{
+  "shelves": [
+    {
+      "shelf": "A",
+      "markers": [
+        "huojia1",
+        "huojia2"
+      ]
+    },
+    {
+      "shelf": "B",
+      "markers": [
+        "huojia3",
+        "huojia4"
+      ]
+    },
+    {
+      "shelf": "C",
+      "markers": [
+        "huojia5",
+        "huojia6"
+      ]
+    },
+    {
+      "shelf": "D",
+      "markers": [
+        "huojia7"
+      ]
+    }
+  ],
+  "last_scan": {
+    "id": "SCAN-1785983263018",
+    "status": "completed",
+    "progress": 100,
+    "current_shelf": null,
+    "current_point": null,
+    "current_layer": null,
+    "message": "巡架识别完成，请核对并填写商品信息",
+    "started_at": "2026-08-06T02:27:43.018Z",
+    "completed_at": "2026-08-06T02:29:52.441Z",
+    "results": [
+      {
+        "shelf": "A",
+        "zone": "A",
+        "point": 1,
+        "marker": "huojia1",
+        "layer": 1,
+        "dominant_name": "冰红茶",
+        "count": 4,
+        "total": 4,
+        "candidates": [
+          {
+            "name": "冰红茶",
+            "count": 4
+          }
+        ],
+        "scanned_at": "2026-08-06T02:27:54.423Z"
+      },
+      {
+        "shelf": "A",
+        "zone": "A",
+        "point": 1,
+        "marker": "huojia1",
+        "layer": 2,
+        "dominant_name": "AD钙",
+        "count": 4,
+        "total": 4,
+        "candidates": [
+          {
+            "name": "AD钙",
+            "count": 4
+          }
+        ],
+        "scanned_at": "2026-08-06T02:27:57.799Z"
+      },
+      {
+        "shelf": "A",
+        "zone": "A",
+        "point": 2,
+        "marker": "huojia2",
+        "layer": 1,
+        "dominant_name": "东方树叶茉莉花茶味",
+        "count": 1,
+        "total": 2,
+        "candidates": [
+          {
+            "name": "东方树叶茉莉花茶味",
+            "count": 1
+          },
+          {
+            "name": "农夫山泉",
+            "count": 1
+          }
+        ],
+        "scanned_at": "2026-08-06T02:28:13.086Z"
+      },
+      {
+        "shelf": "A",
+        "zone": "A",
+        "point": 2,
+        "marker": "huojia2",
+        "layer": 2,
+        "dominant_name": "哇哈哈矿泉水",
+        "count": 2,
+        "total": 2,
+        "candidates": [
+          {
+            "name": "哇哈哈矿泉水",
+            "count": 2
+          }
+        ],
+        "scanned_at": "2026-08-06T02:28:16.457Z"
+      },
+      {
+        "shelf": "B",
+        "zone": "B",
+        "point": 1,
+        "marker": "huojia3",
+        "layer": 1,
+        "dominant_name": "",
+        "count": 0,
+        "total": 0,
+        "candidates": [],
+        "scanned_at": "2026-08-06T02:28:29.712Z"
+      },
+      {
+        "shelf": "B",
+        "zone": "B",
+        "point": 1,
+        "marker": "huojia3",
+        "layer": 2,
+        "dominant_name": "脉动（青柠口味）",
+        "count": 3,
+        "total": 3,
+        "candidates": [
+          {
+            "name": "脉动（青柠口味）",
+            "count": 3
+          }
+        ],
+        "scanned_at": "2026-08-06T02:28:33.119Z"
+      },
+      {
+        "shelf": "B",
+        "zone": "B",
+        "point": 2,
+        "marker": "huojia4",
+        "layer": 1,
+        "dominant_name": "雪碧",
+        "count": 4,
+        "total": 4,
+        "candidates": [
+          {
+            "name": "雪碧",
+            "count": 4
+          }
+        ],
+        "scanned_at": "2026-08-06T02:28:46.305Z"
+      },
+      {
+        "shelf": "B",
+        "zone": "B",
+        "point": 2,
+        "marker": "huojia4",
+        "layer": 2,
+        "dominant_name": "畅极多",
+        "count": 4,
+        "total": 4,
+        "candidates": [
+          {
+            "name": "畅极多",
+            "count": 4
+          }
+        ],
+        "scanned_at": "2026-08-06T02:28:49.749Z"
+      },
+      {
+        "shelf": "C",
+        "zone": "C",
+        "point": 1,
+        "marker": "huojia5",
+        "layer": 1,
+        "dominant_name": "可口可乐",
+        "count": 2,
+        "total": 5,
+        "candidates": [
+          {
+            "name": "可口可乐",
+            "count": 2
+          },
+          {
+            "name": "雪碧",
+            "count": 2
+          },
+          {
+            "name": "康师傅绿茶",
+            "count": 1
+          }
+        ],
+        "scanned_at": "2026-08-06T02:29:02.975Z"
+      },
+      {
+        "shelf": "C",
+        "zone": "C",
+        "point": 1,
+        "marker": "huojia5",
+        "layer": 2,
+        "dominant_name": "百事可乐",
+        "count": 4,
+        "total": 5,
+        "candidates": [
+          {
+            "name": "百事可乐",
+            "count": 4
+          },
+          {
+            "name": "水溶C（柠檬味）",
+            "count": 1
+          }
+        ],
+        "scanned_at": "2026-08-06T02:29:06.360Z"
+      },
+      {
+        "shelf": "C",
+        "zone": "C",
+        "point": 2,
+        "marker": "huojia6",
+        "layer": 1,
+        "dominant_name": "康师傅绿茶",
+        "count": 4,
+        "total": 7,
+        "candidates": [
+          {
+            "name": "康师傅绿茶",
+            "count": 4
+          },
+          {
+            "name": "可口可乐（无糖）",
+            "count": 2
+          },
+          {
+            "name": "可口可乐",
+            "count": 1
+          }
+        ],
+        "scanned_at": "2026-08-06T02:29:19.553Z"
+      },
+      {
+        "shelf": "C",
+        "zone": "C",
+        "point": 2,
+        "marker": "huojia6",
+        "layer": 2,
+        "dominant_name": "水溶C（柠檬味）",
+        "count": 4,
+        "total": 7,
+        "candidates": [
+          {
+            "name": "水溶C（柠檬味）",
+            "count": 4
+          },
+          {
+            "name": "百事可乐",
+            "count": 3
+          }
+        ],
+        "scanned_at": "2026-08-06T02:29:22.929Z"
+      },
+      {
+        "shelf": "D",
+        "zone": "D",
+        "point": 1,
+        "marker": "huojia7",
+        "layer": 1,
+        "dominant_name": "外星人电解质水（椰子口味）",
+        "count": 4,
+        "total": 5,
+        "candidates": [
+          {
+            "name": "外星人电解质水（椰子口味）",
+            "count": 4
+          },
+          {
+            "name": "康师傅绿茶",
+            "count": 1
+          }
+        ],
+        "scanned_at": "2026-08-06T02:29:36.072Z"
+      },
+      {
+        "shelf": "D",
+        "zone": "D",
+        "point": 1,
+        "marker": "huojia7",
+        "layer": 2,
+        "dominant_name": "茶π（蜜桃乌龙味）",
+        "count": 5,
+        "total": 6,
+        "candidates": [
+          {
+            "name": "茶π（蜜桃乌龙味）",
+            "count": 5
+          },
+          {
+            "name": "水溶C（柠檬味）",
+            "count": 1
+          }
+        ],
+        "scanned_at": "2026-08-06T02:29:39.449Z"
+      }
+    ]
+  }
+}
