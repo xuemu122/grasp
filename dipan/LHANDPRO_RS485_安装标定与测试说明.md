@@ -315,6 +315,44 @@ Nova V4.6.2 的 `ModbusRTUCreate` 会拒绝 `500000`，但末端透传资料确�
 RS485 发送回调和数据解码接口。这样可以继续使用灵巧手原来的 `500000`，不需要拆线
 或修改手端波特率。
 
+### 9.2 Nova 透传长帧分片
+
+LHandPro SDK 的状态和 SDO 请求只有 6/12 字节，而使能、回零和运动控制帧为
+68 字节。若调试日志出现下面的状态 `02`，表示手端报告 CRC 错误，不是
+机械臂未使能：
+
+```text
+[LHandPro/TCP485][协议错误] 手端报告CRC错误: type=0x81
+```
+
+程序默认将 68 字节帧按 `60+8` 字节分段送入 Nova 60000 透传端口，短帧不分段。
+首次回零使用 `--hex-debug` 确认日志出现：
+
+```text
+[LHandPro/TCP485] 长帧分 2 段发送: bytes=68 chunk=60 gap=0.0010s
+```
+
+如果现场仍返回 CRC 错误，可以只调整透传分片，不改 SDK 的原始帧内容：
+
+```bash
+LHAND_TCP_TX_CHUNK_BYTES=32 LHAND_TCP_TX_CHUNK_DELAY_S=0.001 \
+PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \
+  --transport dobot --robot-ip 192.168.5.1 \
+  --baud 500000 --node 1 --hex-debug --home-timeout 90 home
+```
+
+### 9.3 末端供电限制（必须确认）
+
+只有当日志不再报 CRC/指令错误，但六轴仍全部 `en=0` 时，才继续检查供电。
+机械臂关节未使能不等于手端电机不能使能；但 Leadshine DH116 类 11 DoF/6 主动轴手的
+规格约为 `12~48V、2.5A`；Nova 末端 IO 规格为 `24V、总最大 2A、单通道最大 0.5A`。
+因此逻辑板可以正常回 RS485 帧，但六个电机仍可能拒绝使能。
+
+在继续回零前，用万用表在灵巧手 VDC/GND 处测量：空闲和执行使能命令瞬间都应满足
+手册的电压要求，不能只测机械臂端口空载电压。若电压下陷，需要按灵巧手手册接入
+独立、限流合适的 24V 电源，同时保留 RS485 A/B 和通信地；不能把外部 24V 与 Nova
+24V 直接并联，除非设备厂商明确提供电源 OR-ing 方案。
+
 ```bash
 # 第一次只做回零，现场有人按急停监护
 PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \

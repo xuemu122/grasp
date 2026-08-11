@@ -17,6 +17,58 @@ from lhandpro_gripper import DEFAULT_SDK_ROOT, LHandProGripper
 
 
 DEFAULT_TRANSPARENT_PORT = 60000
+DEFAULT_TX_CHUNK_BYTES = 60
+DEFAULT_TX_CHUNK_DELAY_S = 0.001
+
+
+def _crc16_modbus(data):
+    value = 0xFFFF
+    for byte in data:
+        value ^= byte
+        for _ in range(8):
+            value = (value >> 1) ^ 0xA001 if value & 1 else value >> 1
+    return value
+
+
+def _send_tcp_rs485(sock, payload, chunk_bytes, chunk_delay_s):
+    """Send one RS485 frame without exceeding Nova's TCP forwarding block."""
+    chunk_bytes = max(1, int(chunk_bytes))
+    chunks = [payload[offset:offset + chunk_bytes]
+              for offset in range(0, len(payload), chunk_bytes)]
+    for index, chunk in enumerate(chunks):
+        sock.sendall(chunk)
+        if index + 1 < len(chunks) and chunk_delay_s > 0:
+            time.sleep(float(chunk_delay_s))
+    return len(chunks)
+
+
+def _extract_rs485_frames(buffer):
+    """Extract complete SDK response frames from an arbitrary TCP byte stream."""
+    data = bytearray(buffer)
+    frames = []
+    while data:
+        start = next((index for index, byte in enumerate(data) if byte in (0x48, 0x58)), None)
+        if start is None:
+            return frames, bytearray()
+        if start:
+            del data[:start]
+        if data[0] == 0x58:
+            frame_length = 12
+        else:
+            if len(data) < 4:
+                break
+            frame_length = 6 + data[3]
+        if len(data) < frame_length:
+            break
+        frame = bytes(data[:frame_length])
+        expected_crc = _crc16_modbus(frame[:-2])
+        received_crc = frame[-2] | (frame[-1] << 8)
+        if expected_crc != received_crc:
+            del data[0]
+            continue
+        frames.append(frame)
+        del data[:frame_length]
+    return frames, data
 
 
 def _dashboard_call(dashboard, command):
@@ -42,6 +94,22 @@ def _build_tcp_controller(host, port, debug=False):
             self._tcp_reader = None
             self._tcp_send_lock = threading.Lock()
             self._tcp_debug = bool(debug)
+            self._tcp_rx_buffer = bytearray()
+            self._tcp_response = threading.Event()
+            self._tcp_expected = None
+            self._tcp_response_timeout = max(
+                0.05, float(os.getenv("LHAND_TCP_RESPONSE_TIMEOUT_S", "0.3"))
+            )
+            self._tcp_tx_chunk_bytes = max(
+                1,
+                int(os.getenv("LHAND_TCP_TX_CHUNK_BYTES", str(DEFAULT_TX_CHUNK_BYTES))),
+            )
+            self._tcp_tx_chunk_delay_s = max(
+                0.0,
+                float(os.getenv(
+                    "LHAND_TCP_TX_CHUNK_DELAY_S", str(DEFAULT_TX_CHUNK_DELAY_S)
+                )),
+            )
 
         def _rs485_send_callback(self, data):
             sock = self.tcp_socket
@@ -52,7 +120,27 @@ def _build_tcp_controller(host, port, debug=False):
                 if self._tcp_debug:
                     print(f"[LHandPro/TCP485][TX] {payload.hex(' ')}")
                 with self._tcp_send_lock:
-                    sock.sendall(payload)
+                    self._tcp_response.clear()
+                    self._tcp_expected = (
+                        (0x58, None) if payload[0] == 0x60
+                        else (0x48, payload[2] if len(payload) > 2 else None)
+                    )
+                    chunk_count = _send_tcp_rs485(
+                        sock,
+                        payload,
+                        self._tcp_tx_chunk_bytes,
+                        self._tcp_tx_chunk_delay_s,
+                    )
+                    if self._tcp_debug and chunk_count > 1:
+                        print(
+                            f"[LHandPro/TCP485] 长帧分 {chunk_count} 段发送: "
+                            f"bytes={len(payload)} chunk={self._tcp_tx_chunk_bytes} "
+                            f"gap={self._tcp_tx_chunk_delay_s:.4f}s"
+                        )
+                    if not self._tcp_response.wait(self._tcp_response_timeout):
+                        if self._tcp_debug:
+                            print("[LHandPro/TCP485] 等待对应响应超时")
+                    self._tcp_expected = None
                 return True
             except OSError as exc:
                 print(f"[LHandPro/TCP485] 发送失败: {exc}")
@@ -73,9 +161,25 @@ def _build_tcp_controller(host, port, debug=False):
                     break
                 if self._tcp_debug:
                     print(f"[LHandPro/TCP485][RX] {data.hex(' ')}")
-                if self.sdk_handle and self.is_connected:
+                self._tcp_rx_buffer.extend(data)
+                frames, self._tcp_rx_buffer = _extract_rs485_frames(self._tcp_rx_buffer)
+                for frame in frames:
+                    expected = self._tcp_expected
+                    if expected and frame[0] == expected[0] and (
+                        expected[1] is None or frame[2] == expected[1]
+                    ):
+                        # Signal before SDK decode so a synchronous SDK command
+                        # cannot deadlock with its receive-side decoder.
+                        self._tcp_response.set()
+                    if frame[0] == 0x48 and frame[3] == 1 and frame[4] == 2:
+                        print(
+                            f"[LHandPro/TCP485][协议错误] 手端报告CRC错误: "
+                            f"type=0x{frame[2]:02x}"
+                        )
+                    if not self.sdk_handle or not self.is_connected:
+                        continue
                     try:
-                        self.sdk_handle.set_rs485_data_decode(data)
+                        self.sdk_handle.set_rs485_data_decode(frame)
                     except Exception as exc:
                         print(f"[LHandPro/TCP485] SDK 解码失败: {exc}")
 
@@ -98,6 +202,7 @@ def _build_tcp_controller(host, port, debug=False):
             self.tcp_socket = socket.create_connection(
                 (self.tcp_host, self.tcp_port), timeout=3.0
             )
+            self.tcp_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.tcp_socket.settimeout(0.25)
             self.is_connected = True
             self.sdk_handle.set_send_rs485_callback(self._rs485_send_callback)

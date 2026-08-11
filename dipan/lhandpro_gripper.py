@@ -254,10 +254,21 @@ class LHandProGripper:
                     time.sleep(0.05)
                     sdk.set_enable(axis, True)
                 retried_per_axis = True
+        if str(self.port or "").startswith("tcp://"):
+            power_hint = (
+                "当前是机械臂末端透传：通信已正常，但请重点核对手端 VDC/GND 和电机电源。"
+                "Nova 末端 IO 额定 24V、总最大约 2A（单通道约 0.5A），DH116 类灵巧手"
+                "规格约需 12~48V、2.5A；若电压在使能瞬间下陷，需要按手册增加独立电源，"
+                "不能把两路 24V 直接并联。"
+            )
+        else:
+            power_hint = (
+                "请检查转接盒 DC 主电源、手端 VDC/GND、急停/使能开关和电源电流能力；"
+                "USB-RS485 本身通常只保证通信。"
+            )
         raise TimeoutError(
             f"等待六轴使能超时 {timeout_s:.1f}s: {self._snapshot_label(last_snapshot)}。"
-            "通信配置可读但驱动未使能，请检查转接盒 DC 主电源、手端 VDC/GND、"
-            "急停/使能开关和电源电流能力；USB-RS485 本身通常只保证通信。"
+            "通信配置可读但驱动未使能。" + power_hint
         )
 
     def home(self, timeout_s=None):
