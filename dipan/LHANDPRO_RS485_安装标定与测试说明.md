@@ -80,6 +80,8 @@ python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 info
 超时或数据格式错误，按以下顺序检查：
 
 1. A/B 极性、GND、供电和急停状态。
+   特别确认转接盒的 DC 主电源已经接入；USB-RS485 能读到 DOF 不代表电机母线已有电。
+   应按手册在手端 VDC/GND 实测电压，并确认电源具备要求的持续电流能力。
 2. 串口是否被其他进程占用。
 3. 波特率和 NodeID 是否与手内参数一致。
 4. `alarm` 是否非零。
@@ -88,10 +90,13 @@ python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 info
 通信正常后，在手指周围完全无障碍的情况下执行：
 
 ```bash
+python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 --debug home
 python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 open
 ```
 
-该命令会使能、回零，然后运动到默认张开位置。若实际运动方向相反，不继续录曲线，
+`home` 只清报警、使能和回零，不发送位置命令；`--debug` 每秒打印六轴状态。`open`
+会在回零后运动到默认张开位置。默认回零超时为 45 秒，可用
+`--home-timeout 90` 临时延长。若实际运动方向相反，不继续录曲线，
 先确认型号、固件、回零方向和轴映射。
 
 ## 5. 录制新手空载曲线
@@ -282,6 +287,65 @@ tool=hand=...mm/palm=...mm/open=...mm, camera=...mm
 
 ## 9. 接入货架主程序
 
+### 9.1 通过机械臂末端 RS485 通信（当前接法）
+
+如果灵巧手直接插在 Nova 机械臂末端的 RS485/航插上，Linux 上通常不会出现
+`/dev/ttyUSB0`。不要再用 USB 串口命令；机械臂 Dashboard 会把末端 485 转成
+Modbus RTU 主站调用。代码保留原来的 `serial` 后端，同时新增 `dobot` 后端，
+不会影响旧 USB 接法。
+
+先在机械臂已经上电、急停可用、手指周围无障碍的情况下执行只读检查：
+
+```bash
+cd /home/nvidia/grasp/dipan
+PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \
+  --transport dobot \
+  --robot-ip 192.168.5.1 \
+  --baud 115200 --node 1 \
+  info
+```
+
+这个命令只会设置末端供电/485格式、创建 Modbus 主站，然后读取六轴的位置、
+状态、电流和报警，不会使能、回零或发送位置命令。输出正常后再执行：
+
+Nova V4.6.2 实机对 `500000` 返回 `-40002`（第二个必选参数范围错误），因此机械臂
+模式默认使用 `115200`。如果主站能创建但读取寄存器超时，说明灵巧手本体当前不是
+`115200`；需要临时接回 USB-RS485 转接盒，把手端波特率设置为 `115200` 后再接回
+机械臂。机械臂和灵巧手两端必须完全一致，代码无法只在一端自动转换波特率。
+
+```bash
+# 第一次只做回零，现场有人按急停监护
+PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \
+  --transport dobot --robot-ip 192.168.5.1 \
+  --baud 115200 --node 1 --debug --home-timeout 90 home
+
+# 回零确认无误后张开
+PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \
+  --transport dobot --robot-ip 192.168.5.1 \
+  --baud 115200 --node 1 open
+```
+
+回零失败时先回到 `info`，记录 `alarm/status/position/current`，不要连续重复
+`home`。确认方向和限位后，按原流程在空手状态录制曲线：
+
+```bash
+PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \
+  --transport dobot --robot-ip 192.168.5.1 \
+  --baud 115200 --node 1 --home-timeout 90 \
+  record --start 0 --max 9000 --step 250 --yes
+```
+
+货架主程序使用同一条机械臂 Dashboard 连接，设置：
+
+```bash
+HAND_BACKEND=lhandpro_dobot HAND_GRASP_MODE=flex \
+LHAND_DOBOT_BAUD=115200 LHAND_RS485_NODE_ID=1 \
+python3 shelf_grasp.py
+```
+
+不要同时运行两个程序创建 Modbus 主站；测试脚本退出后再启动货架程序。
+`LHAND_RS485_PORT` 只属于旧的 USB `serial` 后端，在机械臂接法下不需要设置。
+
 只有以下项目全部通过后才能运行机械臂抓取：
 
 - 只读通信正常，无报警
@@ -293,7 +357,7 @@ tool=hand=...mm/palm=...mm/open=...mm, camera=...mm
 - 新手/转接板没有改变相机外参；若改变，已重新完成手眼标定
 - 旧 Aero 抓取偏移已经重新做低速对齐验证
 
-启动模板：
+USB-RS485 直连的旧启动模板：
 
 ```bash
 cd /home/nvidia/grasp/dipan
@@ -301,6 +365,26 @@ cd /home/nvidia/grasp/dipan
 HAND_BACKEND=lhandpro \
 HAND_GRASP_MODE=flex \
 LHAND_RS485_PORT=/dev/ttyUSB0 \
+HAND_WEIGHT_KG=0.xxx \
+HAND_COG_X_M=0.xxx HAND_COG_Y_M=0.xxx HAND_COG_Z_M=0.xxx \
+TOOL_HAND_LENGTH_Z_M=0.xxx \
+HAND_PALM_LENGTH_M=0.xxx \
+TOOL_HAND_BODY_DEPTH_X_M=0.xxx \
+TOOL_HAND_PALM_WIDTH_Y_M=0.xxx \
+TOOL_HAND_OPEN_WIDTH_Y_M=0.xxx \
+TOOL_HAND_MOUNT_EXCLUSION_Z_M=0.000 \
+HAND_FINGER_THICKNESS_M=0.xxx \
+DOBOT_IP=192.168.5.1 \
+python3 shelf_grasp.py
+```
+
+机械臂末端 RS485 启动模板：
+
+```bash
+HAND_BACKEND=lhandpro_dobot \
+HAND_GRASP_MODE=flex \
+LHAND_RS485_BAUD=500000 \
+LHAND_RS485_NODE_ID=1 \
 HAND_WEIGHT_KG=0.xxx \
 HAND_COG_X_M=0.xxx HAND_COG_Y_M=0.xxx HAND_COG_Z_M=0.xxx \
 TOOL_HAND_LENGTH_Z_M=0.xxx \

@@ -1680,14 +1680,20 @@ def _connect_and_open_hand(hand):
     return hand.open()
 
 
-def _create_hand():
+def _create_hand(arm=None):
     if HAND_BACKEND == "aero":
         from aero_gripper import AeroGripper
         return AeroGripper()
     if HAND_BACKEND in ("lhand", "lhandpro", "rs485"):
         from lhandpro_gripper import LHandProGripper
         return LHandProGripper()
-    raise ValueError(f"不支持的 HAND_BACKEND={HAND_BACKEND!r}, 可选 aero/lhandpro")
+    if HAND_BACKEND in ("lhandpro_dobot", "dobot_modbus", "tool_rs485"):
+        from dobot_modbus_gripper import DobotModbusGripper
+        return DobotModbusGripper(arm=arm)
+    raise ValueError(
+        f"不支持的 HAND_BACKEND={HAND_BACKEND!r}, "
+        "可选 aero/lhandpro/lhandpro_dobot"
+    )
 
 
 def _clear_failure_diagnostic():
@@ -1772,7 +1778,7 @@ def main():
         hand = None
     else:
         print(f"\n[3/4] 连接 {HAND_BACKEND} 灵巧手 ...")
-        hand = _create_hand()
+        hand = _create_hand(arm)
         _connect_and_open_hand(hand)
 
     if _current_layer_idx == STARTUP_LAYER_IDX:

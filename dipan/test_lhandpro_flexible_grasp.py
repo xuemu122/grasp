@@ -9,13 +9,26 @@ from lhandpro_gripper import DEFAULT_PROFILE_PATH, LHandProGripper, load_empty_p
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--transport", choices=("serial", "dobot"),
+        default=os.getenv("LHAND_TRANSPORT", "serial"),
+        help="serial=USB-RS485; dobot=机械臂末端RS485",
+    )
     parser.add_argument("--port", default=os.getenv("LHAND_RS485_PORT"), help="例如 /dev/ttyUSB0")
-    parser.add_argument("--baud", type=int, default=int(os.getenv("LHAND_RS485_BAUD", "500000")))
+    parser.add_argument("--robot-ip", default=os.getenv("DOBOT_IP", "192.168.5.1"))
+    parser.add_argument("--robot-port", type=int, default=int(os.getenv("DOBOT_PORT", "29999")))
+    parser.add_argument(
+        "--baud", type=int, default=None,
+        help="串口波特率；serial 默认500000，dobot 默认115200",
+    )
     parser.add_argument("--node", type=int, default=int(os.getenv("LHAND_RS485_NODE_ID", "1")))
     parser.add_argument("--profile", default=os.getenv("LHAND_FLEX_PROFILE", DEFAULT_PROFILE_PATH))
+    parser.add_argument("--home-timeout", type=float, default=float(os.getenv("LHAND_HOME_TIMEOUT_S", "45")))
+    parser.add_argument("--debug", action="store_true", help="打印回零期间六轴状态")
     subparsers = parser.add_subparsers(dest="action", required=True)
 
     subparsers.add_parser("info", help="只连接并读取轴状态，不使能、不回零")
+    subparsers.add_parser("home", help="清报警、使能并执行六轴回零，不发送位置命令")
     subparsers.add_parser("open", help="使能、回零并张开")
 
     record = subparsers.add_parser("record", help="空手扫位并录制空载电流曲线")
@@ -52,17 +65,34 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
     if args.action == "check-profile":
+        if not os.path.isfile(args.profile):
+            print(f"曲线不存在: {args.profile}\n请先执行 record 录制空载曲线。")
+            return 1
         rows = load_empty_profile(args.profile, args.dof)
         print(f"曲线有效: {args.profile}, rows={len(rows)}, range={rows[0][0]}..{rows[-1][0]}")
         return 0
 
-    require_port(parser, args)
-    hand = LHandProGripper(
-        port=args.port,
-        baud_rate=args.baud,
-        node_id=args.node,
-        profile_path=args.profile,
-    )
+    if args.transport == "serial":
+        require_port(parser, args)
+        baud = args.baud if args.baud is not None else int(os.getenv("LHAND_RS485_BAUD", "500000"))
+        hand = LHandProGripper(
+            port=args.port,
+            baud_rate=baud,
+            node_id=args.node,
+            profile_path=args.profile,
+            debug=args.debug,
+        )
+    else:
+        from dobot_modbus_gripper import DobotModbusGripper
+        baud = args.baud if args.baud is not None else int(os.getenv("LHAND_DOBOT_BAUD", "115200"))
+        hand = DobotModbusGripper(
+            robot_ip=args.robot_ip,
+            robot_port=args.robot_port,
+            baud_rate=baud,
+            node_id=args.node,
+            profile_path=args.profile,
+            debug=args.debug,
+        )
     try:
         if args.action == "info":
             hand.connect(enable_motors=False, home_motors=False)
@@ -82,7 +112,13 @@ def main():
                 "RECORD",
                 args.yes,
             )
-            hand.connect(enable_motors=True, home_motors=True)
+            hand.connect(
+                enable_motors=True,
+                home_motors=True,
+                home_timeout_s=args.home_timeout,
+            )
+            if not hand.open():
+                return 1
             hand.record_empty_profile(
                 output_path=args.profile,
                 start=args.start,
@@ -94,7 +130,13 @@ def main():
             )
             return 0
 
-        hand.connect(enable_motors=True, home_motors=True)
+        hand.connect(
+            enable_motors=True,
+            home_motors=True,
+            home_timeout_s=args.home_timeout,
+        )
+        if args.action == "home":
+            return 0
         if args.action == "open":
             return 0 if hand.open() else 1
 

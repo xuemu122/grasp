@@ -15,6 +15,40 @@ class FakeSDK:
     def __init__(self):
         self.positions = [0] * 6
         self.stopped = False
+        self.enabled = False
+        self.homing = False
+        self.homing_status_reads = 0
+        self.events = []
+
+    def set_clear_alarm(self, axis):
+        self.events.append("clear_alarm")
+
+    def set_enable(self, axis, enable):
+        self.enabled = bool(enable)
+        self.events.append("enable")
+
+    def get_enable(self, axis):
+        return self.enabled
+
+    def home_motors(self, axis):
+        self.homing = True
+        self.homing_status_reads = 0
+        self.events.append("home")
+
+    def get_now_status(self, axis):
+        if not self.homing:
+            return 0
+        self.homing_status_reads += 1
+        if self.homing_status_reads <= 6:
+            return 7
+        self.homing = False
+        return 0
+
+    def get_now_alarm(self, axis):
+        return 0
+
+    def get_now_position(self, axis):
+        return self.positions[axis - 1]
 
     def set_target_position(self, axis, position):
         self.positions[axis - 1] = position
@@ -39,11 +73,16 @@ class FakeSDK:
 
 
 class FakeController:
+    latest = None
+
     def __init__(self, **kwargs):
         self.sdk_handle = FakeSDK()
         self.is_connected = False
+        self.connect_kwargs = None
+        FakeController.latest = self
 
     def connect(self, **kwargs):
+        self.connect_kwargs = kwargs
         self.is_connected = True
         return True
 
@@ -58,6 +97,16 @@ class FakeController:
 
 
 class LHandProfileTests(unittest.TestCase):
+    def test_wrapper_homes_after_vendor_connect_configuration(self):
+        hand = LHandProGripper(controller_factory=FakeController)
+        with patch.dict(os.environ, {"LHAND_HOME_POLL_S": "0.1"}, clear=False):
+            hand.connect(enable_motors=True, home_motors=True, home_timeout_s=5)
+        controller = FakeController.latest
+        self.assertFalse(controller.connect_kwargs["enable_motors"])
+        self.assertFalse(controller.connect_kwargs["home_motors"])
+        self.assertEqual(controller.sdk_handle.events[:3], ["enable", "clear_alarm", "enable"])
+        self.assertIn("home", controller.sdk_handle.events)
+
     def test_profile_loader_and_window_envelope(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "empty.csv")

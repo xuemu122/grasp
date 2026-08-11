@@ -77,6 +77,7 @@ class LHandProGripper:
         node_id=None,
         profile_path=None,
         controller_factory=None,
+        debug=False,
     ):
         self.port = port or os.getenv("LHAND_RS485_PORT") or None
         self.baud_rate = int(baud_rate or os.getenv("LHAND_RS485_BAUD", "500000"))
@@ -85,6 +86,7 @@ class LHandProGripper:
             profile_path or os.getenv("LHAND_FLEX_PROFILE", DEFAULT_PROFILE_PATH)
         ))
         self._controller_factory = controller_factory
+        self.debug = bool(debug)
         self.controller = None
         self.dof_active = 0
         self.ok = True
@@ -107,7 +109,7 @@ class LHandProGripper:
         from lhandprolib_python_sdk.controller import LHandProController
         return LHandProController
 
-    def connect(self, enable_motors=None, home_motors=None):
+    def connect(self, enable_motors=None, home_motors=None, home_timeout_s=None):
         if self.controller is not None:
             return True
         enable = (
@@ -126,9 +128,12 @@ class LHandProGripper:
                 rs485_node_id=self.node_id,
             )
             connected = controller.connect(
-                enable_motors=enable,
-                home_motors=home,
-                home_wait_time=float(os.getenv("LHAND_HOME_WAIT_S", "6")),
+                # The vendor high-level controller applies hand_type after its
+                # built-in homing step. Configure first, then home below so the
+                # SDK's homed state is not reset before the first move.
+                enable_motors=False,
+                home_motors=False,
+                home_wait_time=0.0,
                 rs485_port_name=self.port,
                 rs485_baud_rate=self.baud_rate,
                 rs485_node_id=self.node_id,
@@ -143,8 +148,16 @@ class LHandProGripper:
                 f"[LHandPro] 已连接: port={self.port or 'auto'} "
                 f"baud={self.baud_rate} node={self.node_id} dof={self.dof_active}"
             )
+            if self.debug:
+                self._sdk.log_clear()
+                self._sdk.log_on(True, 20000)
+            if enable:
+                self._enable_motors()
+            if home:
+                self.home(timeout_s=home_timeout_s)
             return True
         except Exception as exc:
+            self._save_debug_log()
             self.ok = False
             if self.controller is not None:
                 try:
@@ -155,11 +168,159 @@ class LHandProGripper:
             print(f"[LHandPro] 连接失败: {exc}")
             raise
 
+    def _save_debug_log(self):
+        if not self.debug or self.controller is None or not self.controller.sdk_handle:
+            return None
+        path = os.path.abspath(os.path.expanduser(
+            os.getenv("LHAND_DEBUG_LOG", "/tmp/lhandpro_rs485_debug.log")
+        ))
+        try:
+            self.controller.sdk_handle.log_save(path)
+            print(f"[LHandPro][调试] SDK 通信日志已保存: {path}")
+            return path
+        except Exception as exc:
+            print(f"[LHandPro][调试] SDK 日志保存失败: {exc}")
+            return None
+
     @property
     def _sdk(self):
         if not self.ok or self.controller is None or not self.controller.sdk_handle:
             raise RuntimeError("LHandPro 尚未连接")
         return self.controller.sdk_handle
+
+    def _motor_snapshot(self):
+        sdk = self._sdk
+        snapshot = []
+        for axis in range(1, self.dof_active + 1):
+            snapshot.append({
+                "axis": axis,
+                "enable": bool(sdk.get_enable(axis)),
+                "status": int(sdk.get_now_status(axis)),
+                "alarm": int(sdk.get_now_alarm(axis)),
+                "position": int(sdk.get_now_position(axis)),
+                "current": int(sdk.get_now_current(axis)),
+            })
+        return snapshot
+
+    @staticmethod
+    def _snapshot_label(snapshot):
+        return " | ".join(
+            f"A{item['axis']}:en={int(item['enable'])} st={item['status']} "
+            f"alm={item['alarm']} pos={item['position']} I={item['current']}‰"
+            for item in snapshot
+        )
+
+    def _enable_motors(self):
+        sdk = self._sdk
+        # The protocol only acts on a changed control command. Force a disable
+        # edge first so repeated test runs cannot leave an old enable command
+        # latched in the device/SDK state machine.
+        sdk.set_enable(0, False)
+        time.sleep(0.25)
+        sdk.set_clear_alarm(0)
+        sdk.set_enable(0, True)
+        timeout_s = max(2.0, float(os.getenv("LHAND_ENABLE_TIMEOUT_S", "10")))
+        started_at = time.monotonic()
+        deadline = time.monotonic() + timeout_s
+        last_snapshot = []
+        retried_per_axis = False
+        last_log_at = 0.0
+        while time.monotonic() < deadline:
+            time.sleep(0.15)
+            last_snapshot = self._motor_snapshot()
+            alarms = [item for item in last_snapshot if item["alarm"]]
+            if alarms:
+                raise RuntimeError(
+                    "使能后检测到报警: " + self._snapshot_label(last_snapshot)
+                )
+            if last_snapshot and all(item["enable"] for item in last_snapshot):
+                print("[LHandPro] 六轴使能完成")
+                return
+            elapsed = time.monotonic() - started_at
+            if self.debug and (not last_log_at or elapsed - last_log_at >= 1.0):
+                print(f"[LHandPro][使能 {elapsed:.1f}s] {self._snapshot_label(last_snapshot)}")
+                last_log_at = elapsed
+            if elapsed >= 2.0 and not retried_per_axis:
+                disabled_axes = [item["axis"] for item in last_snapshot if not item["enable"]]
+                print(f"[LHandPro][使能恢复] 广播未生效，逐轴重发: {disabled_axes}")
+                for axis in disabled_axes:
+                    sdk.set_enable(axis, False)
+                    time.sleep(0.05)
+                    sdk.set_enable(axis, True)
+                retried_per_axis = True
+        raise TimeoutError(
+            f"等待六轴使能超时 {timeout_s:.1f}s: {self._snapshot_label(last_snapshot)}。"
+            "通信配置可读但驱动未使能，请检查转接盒 DC 主电源、手端 VDC/GND、"
+            "急停/使能开关和电源电流能力；USB-RS485 本身通常只保证通信。"
+        )
+
+    def home(self, timeout_s=None):
+        """Home all axes after SDK hand type/configuration has been applied."""
+        timeout_s = max(
+            3.0,
+            float(timeout_s or os.getenv("LHAND_HOME_TIMEOUT_S", "45")),
+        )
+        poll_s = max(0.1, float(os.getenv("LHAND_HOME_POLL_S", "0.25")))
+        sdk = self._sdk
+        home_current = os.getenv("LHAND_HOME_CURRENT")
+        if home_current not in (None, ""):
+            sdk.set_home_current(int(home_current))
+        if not all(item["enable"] for item in self._motor_snapshot()):
+            self._enable_motors()
+        sdk.set_clear_alarm(0)
+        print(f"[LHandPro] 开始六轴回零，超时 {timeout_s:.0f}s")
+        sdk.home_motors(0)
+
+        started_at = time.monotonic()
+        deadline = started_at + timeout_s
+        saw_homing = False
+        stable_count = 0
+        previous_positions = None
+        last_log_at = 0.0
+        last_snapshot = []
+        while time.monotonic() < deadline:
+            time.sleep(poll_s)
+            last_snapshot = self._motor_snapshot()
+            alarms = [item for item in last_snapshot if item["alarm"]]
+            if alarms:
+                raise RuntimeError(
+                    "回零期间检测到报警: " + self._snapshot_label(last_snapshot)
+                )
+            statuses = [item["status"] for item in last_snapshot]
+            positions = tuple(item["position"] for item in last_snapshot)
+            if any(status == 7 for status in statuses):
+                saw_homing = True
+                stable_count = 0
+            elif previous_positions == positions:
+                stable_count += 1
+            else:
+                stable_count = 0
+            previous_positions = positions
+
+            elapsed = time.monotonic() - started_at
+            if self.debug and (not last_log_at or elapsed - last_log_at >= 1.0):
+                print(f"[LHandPro][回零 {elapsed:.1f}s] {self._snapshot_label(last_snapshot)}")
+                last_log_at = elapsed
+
+            # Some firmware exposes LST_HOMING=7, while some only updates the
+            # final stopped state. Accept stable, alarm-free axes after a
+            # minimum settling interval in either case; move_motors performs
+            # the SDK's definitive homed-state check afterward.
+            minimum_elapsed = (
+                0.8
+                if saw_homing
+                else max(3.0, float(os.getenv("LHAND_HOME_MIN_WAIT_S", "8")))
+            )
+            if elapsed >= minimum_elapsed and stable_count >= 3 and all(status != 7 for status in statuses):
+                print(
+                    f"[LHandPro] 回零流程已停止: elapsed={elapsed:.1f}s "
+                    f"saw_homing={int(saw_homing)} positions={list(positions)}"
+                )
+                return True
+
+        raise TimeoutError(
+            f"六轴回零超时 {timeout_s:.1f}s: {self._snapshot_label(last_snapshot)}"
+        )
 
     def disconnect(self):
         self._holding = False
@@ -213,10 +374,21 @@ class LHandProGripper:
             return False
         try:
             self._holding = False
-            self._command_positions(
-                self._open_positions(),
-                wait_s=float(os.getenv("LHAND_OPEN_WAIT_S", "0.8")),
-            )
+            positions = self._open_positions()
+            try:
+                self._command_positions(
+                    positions,
+                    wait_s=float(os.getenv("LHAND_OPEN_WAIT_S", "0.8")),
+                )
+            except Exception as exc:
+                if getattr(exc, "error_code", None) != 11:
+                    raise
+                print("[LHandPro][恢复] SDK 仍报告未回零，重新执行回零后再试一次")
+                self.home()
+                self._command_positions(
+                    positions,
+                    wait_s=float(os.getenv("LHAND_OPEN_WAIT_S", "0.8")),
+                )
             print("[LHandPro] 张开")
             return True
         except Exception as exc:
