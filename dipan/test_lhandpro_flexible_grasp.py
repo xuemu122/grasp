@@ -30,6 +30,10 @@ def build_parser():
     subparsers = parser.add_subparsers(dest="action", required=True)
 
     subparsers.add_parser("info", help="只连接并读取轴状态，不使能、不回零")
+    subparsers.add_parser(
+        "check-sdo-write",
+        help="机械臂485无动作写入探测：仅将1轴控制设为空闲",
+    )
     subparsers.add_parser("home", help="清报警、使能并执行六轴回零，不发送位置命令")
     subparsers.add_parser("open", help="使能、回零并张开")
 
@@ -80,6 +84,8 @@ def main():
 
     if args.action == "set-baud" and args.transport != "serial":
         parser.error("set-baud 只能临时接回 USB-RS485 后使用 --transport serial")
+    if args.action == "check-sdo-write" and args.transport != "dobot":
+        parser.error("check-sdo-write 只用于 --transport dobot")
 
     if args.transport == "serial":
         require_port(parser, args)
@@ -131,6 +137,12 @@ def main():
                     f"status={sdk.get_now_status(axis)} alarm={sdk.get_now_alarm(axis)} "
                     f"position={sdk.get_now_position(axis)} current={sdk.get_now_current(axis)}‰"
                 )
+            return 0
+
+        if args.action == "check-sdo-write":
+            hand.connect(enable_motors=False, home_motors=False)
+            hand._sdk.stop_motors(1)
+            print("SDO写入探测成功: F100:01=位置模式/空闲，未使能、未回零、未发送位置")
             return 0
 
         if args.action == "record":
@@ -187,7 +199,7 @@ def main():
         print(f"测试失败: {exc}")
         return 1
     finally:
-        if args.action in ("set-baud", "info"):
+        if args.action in ("set-baud", "info", "check-sdo-write"):
             hand.disconnect(stop_motors=False)
         else:
             hand.disconnect()

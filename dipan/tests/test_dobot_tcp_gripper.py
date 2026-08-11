@@ -60,7 +60,7 @@ class DobotTcpGripperTests(unittest.TestCase):
             b"\x00\xf1\x01", b"\x60\xf1\x01", b"\x40\xf1\x01",
             b"\x20\xf1\x01", b"\x00\xf1\x01",
         ])
-        self.assertEqual(sender.frames[0][6:10], bytes.fromhex("01 20 00 00"))
+        self.assertEqual(sender.frames[0][6:10], bytes.fromhex("20 01 00 00"))
         self.assertEqual(sender.frames[1][6:10], (1234).to_bytes(4, "little"))
         self.assertTrue(all(_crc16_modbus(frame[:-2]) == int.from_bytes(frame[-2:], "little")
                             for frame in sender.frames))
@@ -72,7 +72,7 @@ class DobotTcpGripperTests(unittest.TestCase):
         adapter.home_motors(0)
         self.assertEqual([frame[5] for frame in sender.frames], [1, 2])
         self.assertEqual([frame[6:10] for frame in sender.frames], [
-            bytes.fromhex("04 25 00 00"), bytes.fromhex("04 25 00 00")
+            bytes.fromhex("25 04 00 00"), bytes.fromhex("25 04 00 00")
         ])
 
     def test_splits_long_frame_at_nova_forwarding_boundary(self):

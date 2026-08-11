@@ -146,6 +146,25 @@ def _build_tcp_controller(host, port, debug=False):
                             f"gap={self._tcp_tx_chunk_delay_s:.4f}s"
                         )
                     got_response = self._tcp_response.wait(self._tcp_response_timeout)
+                    if not got_response and payload[0] == 0x60:
+                        # Nova sometimes releases TCP data in 32-byte blocks.
+                        # An SDO reply can be left with its final CRC bytes in
+                        # the gateway buffer. A read-only status request flushes
+                        # that remainder so the normal CRC parser can validate it.
+                        flush_body = bytes((0x50, payload[1], 0xD0, 0x06))
+                        flush_crc = _crc16_modbus(flush_body)
+                        flush_frame = flush_body + bytes((flush_crc & 0xFF, flush_crc >> 8))
+                        if self._tcp_debug:
+                            print("[LHandPro/TCP485] SDO回包未完整，发送只读状态请求刷新透传缓冲")
+                        _send_tcp_rs485(
+                            sock,
+                            flush_frame,
+                            self._tcp_tx_chunk_bytes,
+                            self._tcp_tx_chunk_delay_s,
+                        )
+                        got_response = self._tcp_response.wait(
+                            max(0.3, self._tcp_response_timeout)
+                        )
                     if not got_response:
                         if self._tcp_debug:
                             print("[LHandPro/TCP485] 等待对应响应超时")
@@ -303,9 +322,9 @@ class _SdoMotorAdapter:
     def _control(self, axis, control, mode=None):
         for item in self._axes(axis):
             selected_mode = self._modes[item] if mode is None else int(mode)
-            # The protocol defines one U16 as mode in the high byte and
-            # control in the low byte. SDO writes the same object value.
-            value = ((selected_mode & 0xFF) << 8) | (int(control) & 0xFF)
+            # SDO serializes a U16 low byte first. Pack it so its wire bytes
+            # remain [mode, control], matching the protocol's PDO definition.
+            value = ((int(control) & 0xFF) << 8) | (selected_mode & 0xFF)
             self._write(SDO_MODE_CONTROL, item, value, "模式/控制")
 
     def set_control_mode(self, axis, mode):

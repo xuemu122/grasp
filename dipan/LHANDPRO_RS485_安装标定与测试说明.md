@@ -351,6 +351,10 @@ LHandPro SDK 的状态和 SDO 请求只有 6/12 字节，而使能、回零和�
 速度、`F160:轴号` 位置。状态、位置和电流反馈仍交给 SDK 解码。仅用于对比诊断时，
 可临时切回原 SDK 的 68 字节 PDO 控制：
 
+`F100` 的 SDO 数据必须保持协议字节顺序 `[模式, 控制]`：使能为 `20 01`、
+断使能为 `20 02`、清报警为 `20 03`、负向回零为 `25 04`。SDO 的整数在线上
+以低字节先传输，因此代码打包值时必须将控制字节放在高 8 位。
+
 ```bash
 LHAND_DOBOT_CONTROL=pdo \
 PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \
