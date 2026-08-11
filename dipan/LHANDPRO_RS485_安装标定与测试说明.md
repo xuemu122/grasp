@@ -290,9 +290,10 @@ tool=hand=...mm/palm=...mm/open=...mm, camera=...mm
 ### 9.1 通过机械臂末端 RS485 通信（当前接法）
 
 如果灵巧手直接插在 Nova 机械臂末端的 RS485/航插上，Linux 上通常不会出现
-`/dev/ttyUSB0`。不要再用 USB 串口命令；机械臂 Dashboard 会把末端 485 转成
-Modbus RTU 主站调用。代码保留原来的 `serial` 后端，同时新增 `dobot` 后端，
-不会影响旧 USB 接法。
+`/dev/ttyUSB0`。不要再用 USB 串口命令。程序先通过 Dashboard 设置末端供电和
+485 格式，再让厂商 SDK 通过 Nova 的 `192.168.5.1:60000` 原始透传端口发送和接收
+完整 RS485 帧。代码保留原来的 `serial` 后端，同时新增 `dobot` 后端，不会影响
+旧 USB 接法。
 
 先在机械臂已经上电、急停可用、手指周围无障碍的情况下执行只读检查：
 
@@ -301,41 +302,29 @@ cd /home/nvidia/grasp/dipan
 PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \
   --transport dobot \
   --robot-ip 192.168.5.1 \
-  --baud 115200 --node 1 \
+  --baud 500000 --node 1 \
   info
 ```
 
-这个命令只会设置末端供电/485格式、创建 Modbus 主站，然后读取六轴的位置、
+这个命令只会设置末端供电/485格式、连接 60000 透传端口，然后由 SDK 读取六轴的位置、
 状态、电流和报警，不会使能、回零或发送位置命令。输出正常后再执行：
 
-Nova V4.6.2 实机对 `500000` 返回 `-40002`（第二个必选参数范围错误），因此机械臂
-模式默认使用 `115200`。如果主站能创建但读取寄存器超时，说明灵巧手本体当前不是
-`115200`；需要临时接回 USB-RS485 转接盒，把手端波特率设置为 `115200` 后再接回
-机械臂。机械臂和灵巧手两端必须完全一致，代码无法只在一端自动转换波特率。
-
-手端原来按 `500000` 使用时，一次性修改命令如下。执行期间不会使能或回零电机：
-
-```bash
-cd /home/nvidia/grasp/dipan
-python3 test_lhandpro_flexible_grasp.py \
-  --transport serial --port /dev/ttyUSB0 --baud 500000 \
-  set-baud --new-baud 115200
-```
-
-看到“波特率已写为 115200”后，退出程序、给灵巧手断电再上电，再从 USB 盒子接回
-机械臂末端。若命令在“读取当前配置波特率”处超时，应先检查 USB 盒供电、A/B/GND、
-当前节点号和手端当前波特率，不能盲目认为写入成功。
+Nova V4.6.2 的 `ModbusRTUCreate` 会拒绝 `500000`，但末端透传资料确认控制器端口
+`60000` 直接对应末端 485。Jetson 已实测可连接该端口，因此程序不再使用
+`ModbusRTUCreate/GetHoldRegs` 猜测手端状态寄存器，而是复用 LHandPro SDK 自带的
+RS485 发送回调和数据解码接口。这样可以继续使用灵巧手原来的 `500000`，不需要拆线
+或修改手端波特率。
 
 ```bash
 # 第一次只做回零，现场有人按急停监护
 PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \
   --transport dobot --robot-ip 192.168.5.1 \
-  --baud 115200 --node 1 --debug --home-timeout 90 home
+  --baud 500000 --node 1 --debug --home-timeout 90 home
 
 # 回零确认无误后张开
 PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \
   --transport dobot --robot-ip 192.168.5.1 \
-  --baud 115200 --node 1 open
+  --baud 500000 --node 1 open
 ```
 
 回零失败时先回到 `info`，记录 `alarm/status/position/current`，不要连续重复
@@ -344,7 +333,7 @@ PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \
 ```bash
 PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \
   --transport dobot --robot-ip 192.168.5.1 \
-  --baud 115200 --node 1 --home-timeout 90 \
+  --baud 500000 --node 1 --home-timeout 90 \
   record --start 0 --max 9000 --step 250 --yes
 ```
 
@@ -352,7 +341,7 @@ PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \
 
 ```bash
 HAND_BACKEND=lhandpro_dobot HAND_GRASP_MODE=flex \
-LHAND_DOBOT_BAUD=115200 LHAND_RS485_NODE_ID=1 \
+LHAND_DOBOT_BAUD=500000 LHAND_RS485_NODE_ID=1 \
 python3 shelf_grasp.py
 ```
 

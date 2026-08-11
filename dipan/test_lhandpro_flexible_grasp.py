@@ -3,6 +3,7 @@
 
 import argparse
 import os
+import time
 
 from lhandpro_gripper import DEFAULT_PROFILE_PATH, LHandProGripper, load_empty_profile
 
@@ -19,12 +20,13 @@ def build_parser():
     parser.add_argument("--robot-port", type=int, default=int(os.getenv("DOBOT_PORT", "29999")))
     parser.add_argument(
         "--baud", type=int, default=None,
-        help="串口波特率；serial 默认500000，dobot 默认115200",
+        help="串口波特率；serial/dobot 默认500000",
     )
     parser.add_argument("--node", type=int, default=int(os.getenv("LHAND_RS485_NODE_ID", "1")))
     parser.add_argument("--profile", default=os.getenv("LHAND_FLEX_PROFILE", DEFAULT_PROFILE_PATH))
     parser.add_argument("--home-timeout", type=float, default=float(os.getenv("LHAND_HOME_TIMEOUT_S", "45")))
     parser.add_argument("--debug", action="store_true", help="打印回零期间六轴状态")
+    parser.add_argument("--hex-debug", action="store_true", help="打印末端485原始TX/RX帧")
     subparsers = parser.add_subparsers(dest="action", required=True)
 
     subparsers.add_parser("info", help="只连接并读取轴状态，不使能、不回零")
@@ -90,15 +92,16 @@ def main():
             debug=args.debug,
         )
     else:
-        from dobot_modbus_gripper import DobotModbusGripper
-        baud = args.baud if args.baud is not None else int(os.getenv("LHAND_DOBOT_BAUD", "115200"))
-        hand = DobotModbusGripper(
+        from dobot_tcp_gripper import DobotTcpGripper
+        baud = args.baud if args.baud is not None else int(os.getenv("LHAND_DOBOT_BAUD", "500000"))
+        hand = DobotTcpGripper(
             robot_ip=args.robot_ip,
             robot_port=args.robot_port,
             baud_rate=baud,
             node_id=args.node,
             profile_path=args.profile,
             debug=args.debug,
+            tcp_debug=args.hex_debug,
         )
     try:
         if args.action == "set-baud":
@@ -119,6 +122,7 @@ def main():
 
         if args.action == "info":
             hand.connect(enable_motors=False, home_motors=False)
+            time.sleep(max(0.0, float(os.getenv("LHAND_INFO_WAIT_S", "1.0"))))
             sdk = hand.controller.sdk_handle
             print(f"主动轴数: {hand.dof_active}")
             for axis in range(1, hand.dof_active + 1):

@@ -16,7 +16,7 @@ class FakeDashboard:
 
     def send(self, command):
         self.commands.append(command)
-        if command.startswith("ModbusRTUCreate"):
+        if command.startswith("ModbusCreate") or command.startswith("ModbusRTUCreate"):
             return "0,{3},ModbusRTUCreate();"
         if command.startswith("GetHoldRegs"):
             count = int(command.split(",")[2])
@@ -52,7 +52,7 @@ class DobotModbusGripperTests(unittest.TestCase):
             "SetToolPower(1)",
             "SetToolMode(1,0,1)",
             'SetTool485(500000,"N",1,1)',
-            'ModbusRTUCreate(1,500000,"N",8,1)',
+            'ModbusCreate("127.0.0.1",60000,1,1)',
         ])
         self.assertIn("GetHoldRegs(3,63488,4,U16)", dashboard.commands)
         self.assertIn("GetHoldRegs(3,63492,2,U16)", dashboard.commands)

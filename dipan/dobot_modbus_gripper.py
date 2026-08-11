@@ -84,10 +84,13 @@ class _DashboardClient:
 
 
 class _ModbusBridge:
-    def __init__(self, dashboard, node_id, baud_rate):
+    def __init__(self, dashboard, node_id, baud_rate, mode=None):
         self.dashboard = dashboard
         self.node_id = int(node_id)
         self.baud_rate = int(baud_rate)
+        self.mode = (mode or os.getenv("LHAND_DOBOT_MODBUS_MODE", "transparent")).strip().lower()
+        if self.mode not in ("transparent", "rtu"):
+            raise ValueError("LHAND_DOBOT_MODBUS_MODE 只能是 transparent 或 rtu")
         self.index = None
 
     def _call(self, command):
@@ -105,20 +108,28 @@ class _ModbusBridge:
         self._call("SetToolPower(1)")
         self._call("SetToolMode(1,0,1)")
         self._call(f'SetTool485({self.baud_rate},"N",1,1)')
-        try:
+        if self.mode == "transparent":
+            # Port 60000 is Nova's special end-tool RS485 transparent endpoint.
+            # ModbusCreate wraps that endpoint as RTU without applying the
+            # ModbusRTUCreate baud whitelist, so hand baud rates such as
+            # 500000 remain usable.
             values = self._call(
-                f'ModbusRTUCreate({self.node_id},{self.baud_rate},"N",8,1)'
+                f'ModbusCreate("127.0.0.1",60000,{self.node_id},1)'
             )
-        except DashboardError as exc:
-            if "ErrorID=-40002" in str(exc):
-                raise DashboardError(
-                    f"Nova 拒绝波特率 {self.baud_rate}（-40002：第二个必选参数范围错误）。"
-                    "当前 V4.6.2 通常使用 115200；请让灵巧手波特率与机械臂一致，"
-                    "然后重试 --baud 115200。"
-                ) from exc
-            raise
+        else:
+            try:
+                values = self._call(
+                    f'ModbusRTUCreate({self.node_id},{self.baud_rate},"N",8,1)'
+                )
+            except DashboardError as exc:
+                if "ErrorID=-40002" in str(exc):
+                    raise DashboardError(
+                        f"Nova 拒绝波特率 {self.baud_rate}（-40002：第二个必选参数范围错误）。"
+                        "请改用默认 transparent 模式，或在 rtu 模式下使用固件支持的波特率。"
+                    ) from exc
+                raise
         if not values:
-            raise DashboardError("ModbusRTUCreate 未返回句柄")
+            raise DashboardError("创建末端 Modbus 主站后未返回句柄")
         self.index = values[0]
         return self.index
 
@@ -240,7 +251,7 @@ class DobotModbusGripper(LHandProGripper):
     def __init__(self, arm=None, robot_ip="192.168.5.1", robot_port=DEFAULT_DASHBOARD_PORT,
                  baud_rate=None, node_id=None, profile_path=None, debug=False):
         if baud_rate is None:
-            baud_rate = int(os.getenv("LHAND_DOBOT_BAUD", "115200"))
+            baud_rate = int(os.getenv("LHAND_DOBOT_BAUD", "500000"))
         super().__init__(port=None, baud_rate=baud_rate, node_id=node_id,
                          profile_path=profile_path, debug=debug)
         self.arm = arm

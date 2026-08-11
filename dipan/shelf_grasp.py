@@ -1688,8 +1688,8 @@ def _create_hand(arm=None):
         from lhandpro_gripper import LHandProGripper
         return LHandProGripper()
     if HAND_BACKEND in ("lhandpro_dobot", "dobot_modbus", "tool_rs485"):
-        from dobot_modbus_gripper import DobotModbusGripper
-        return DobotModbusGripper(arm=arm)
+        from dobot_tcp_gripper import DobotTcpGripper
+        return DobotTcpGripper(arm=arm)
     raise ValueError(
         f"不支持的 HAND_BACKEND={HAND_BACKEND!r}, "
         "可选 aero/lhandpro/lhandpro_dobot"
