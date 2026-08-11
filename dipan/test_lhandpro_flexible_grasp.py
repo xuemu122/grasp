@@ -31,6 +31,10 @@ def build_parser():
     subparsers.add_parser("home", help="清报警、使能并执行六轴回零，不发送位置命令")
     subparsers.add_parser("open", help="使能、回零并张开")
 
+    set_baud = subparsers.add_parser("set-baud", help="USB直连时修改灵巧手本体RS485波特率")
+    set_baud.add_argument("--new-baud", type=int, required=True)
+    set_baud.add_argument("--yes", action="store_true", help="跳过修改确认提示")
+
     record = subparsers.add_parser("record", help="空手扫位并录制空载电流曲线")
     record.add_argument("--start", type=int, default=0)
     record.add_argument("--max", dest="maximum", type=int, default=9000)
@@ -72,6 +76,9 @@ def main():
         print(f"曲线有效: {args.profile}, rows={len(rows)}, range={rows[0][0]}..{rows[-1][0]}")
         return 0
 
+    if args.action == "set-baud" and args.transport != "serial":
+        parser.error("set-baud 只能临时接回 USB-RS485 后使用 --transport serial")
+
     if args.transport == "serial":
         require_port(parser, args)
         baud = args.baud if args.baud is not None else int(os.getenv("LHAND_RS485_BAUD", "500000"))
@@ -94,6 +101,22 @@ def main():
             debug=args.debug,
         )
     try:
+        if args.action == "set-baud":
+            confirm(
+                f"将灵巧手本体波特率改为 {args.new_baud}。输入 SETBAUD 继续: ",
+                "SETBAUD",
+                args.yes,
+            )
+            hand.connect(enable_motors=False, home_motors=False)
+            current_baud = hand.get_rs485_baudrate()
+            print(f"灵巧手当前配置波特率: {current_baud}")
+            hand.set_rs485_baudrate(args.new_baud)
+            print(
+                f"灵巧手波特率已写为 {args.new_baud}。断开 USB 转接盒并重新上电后，"
+                "再接回机械臂测试。"
+            )
+            return 0
+
         if args.action == "info":
             hand.connect(enable_motors=False, home_motors=False)
             sdk = hand.controller.sdk_handle
@@ -160,7 +183,10 @@ def main():
         print(f"测试失败: {exc}")
         return 1
     finally:
-        hand.disconnect()
+        if args.action == "set-baud":
+            hand.disconnect(stop_motors=False)
+        else:
+            hand.disconnect()
 
 
 if __name__ == "__main__":

@@ -313,6 +313,19 @@ Nova V4.6.2 实机对 `500000` 返回 `-40002`（第二个必选参数范围错�
 `115200`；需要临时接回 USB-RS485 转接盒，把手端波特率设置为 `115200` 后再接回
 机械臂。机械臂和灵巧手两端必须完全一致，代码无法只在一端自动转换波特率。
 
+手端原来按 `500000` 使用时，一次性修改命令如下。执行期间不会使能或回零电机：
+
+```bash
+cd /home/nvidia/grasp/dipan
+python3 test_lhandpro_flexible_grasp.py \
+  --transport serial --port /dev/ttyUSB0 --baud 500000 \
+  set-baud --new-baud 115200
+```
+
+看到“波特率已写为 115200”后，退出程序、给灵巧手断电再上电，再从 USB 盒子接回
+机械臂末端。若命令在“读取当前配置波特率”处超时，应先检查 USB 盒供电、A/B/GND、
+当前节点号和手端当前波特率，不能盲目认为写入成功。
+
 ```bash
 # 第一次只做回零，现场有人按急停监护
 PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \

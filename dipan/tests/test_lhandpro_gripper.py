@@ -19,6 +19,19 @@ class FakeSDK:
         self.homing = False
         self.homing_status_reads = 0
         self.events = []
+        self.rs485_baudrate = 500000
+
+    def _get_scalar(self, suffix, c_type, operation, *args):
+        del c_type, operation, args
+        if suffix != "get_rs485_baudrate":
+            raise AssertionError(suffix)
+        return self.rs485_baudrate
+
+    def _call_checked(self, suffix, operation, *args):
+        del operation
+        if suffix != "set_rs485_baudrate":
+            raise AssertionError(suffix)
+        self.rs485_baudrate = int(args[0])
 
     def set_clear_alarm(self, axis):
         self.events.append("clear_alarm")
@@ -97,6 +110,16 @@ class FakeController:
 
 
 class LHandProfileTests(unittest.TestCase):
+    def test_changes_hand_baud_without_motor_enable(self):
+        hand = LHandProGripper(controller_factory=FakeController)
+        hand.connect(enable_motors=False, home_motors=False)
+        self.assertEqual(hand.get_rs485_baudrate(), 500000)
+        self.assertEqual(hand.set_rs485_baudrate(115200), 115200)
+        self.assertEqual(FakeController.latest.sdk_handle.rs485_baudrate, 115200)
+        self.assertFalse(FakeController.latest.sdk_handle.enabled)
+        hand.disconnect(stop_motors=False)
+        self.assertFalse(FakeController.latest.sdk_handle.stopped)
+
     def test_wrapper_homes_after_vendor_connect_configuration(self):
         hand = LHandProGripper(controller_factory=FakeController)
         with patch.dict(os.environ, {"LHAND_HOME_POLL_S": "0.1"}, clear=False):

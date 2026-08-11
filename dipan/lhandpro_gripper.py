@@ -5,6 +5,7 @@ import csv
 import os
 import sys
 import time
+from ctypes import c_int
 
 
 DIPAN_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -322,14 +323,36 @@ class LHandProGripper:
             f"六轴回零超时 {timeout_s:.1f}s: {self._snapshot_label(last_snapshot)}"
         )
 
-    def disconnect(self):
+    def get_rs485_baudrate(self):
+        """Read the baud rate stored in the hand through the vendor SDK."""
+        sdk = self._sdk
+        if not hasattr(sdk, "_get_scalar"):
+            raise RuntimeError("当前 Python SDK 封装不支持读取 RS485 波特率")
+        return int(sdk._get_scalar(
+            "get_rs485_baudrate", c_int, "读取RS485波特率"
+        ))
+
+    def set_rs485_baudrate(self, baud_rate):
+        """Persist a new hand-side baud rate without enabling any motor."""
+        baud_rate = int(baud_rate)
+        if baud_rate <= 0:
+            raise ValueError("RS485 波特率必须大于 0")
+        sdk = self._sdk
+        if not hasattr(sdk, "_call_checked"):
+            raise RuntimeError("当前 Python SDK 封装不支持设置 RS485 波特率")
+        sdk._call_checked("set_rs485_baudrate", "设置RS485波特率", baud_rate)
+        self.baud_rate = baud_rate
+        return baud_rate
+
+    def disconnect(self, stop_motors=True):
         self._holding = False
         controller = self.controller
         self.controller = None
         if controller is None:
             return
         try:
-            controller.stop_motors()
+            if stop_motors:
+                controller.stop_motors()
         except Exception as exc:
             print(f"[LHandPro][警告] 停止电机失败: {exc}")
         finally:
