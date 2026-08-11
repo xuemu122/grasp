@@ -213,6 +213,11 @@ class LHandProGripper:
 
     def _enable_motors(self):
         sdk = self._sdk
+        # The vendor initialization example explicitly selects position mode
+        # before enabling.  Some firmware acknowledges RS485 traffic but
+        # ignores the enable edge while the control mode is still unset.
+        if hasattr(sdk, "set_control_mode"):
+            sdk.set_control_mode(0, 0)  # LCM_POSITION
         # The protocol only acts on a changed control command. Force a disable
         # edge first so repeated test runs cannot leave an old enable command
         # latched in the device/SDK state machine.

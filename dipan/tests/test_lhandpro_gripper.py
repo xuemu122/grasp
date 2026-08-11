@@ -36,6 +36,9 @@ class FakeSDK:
     def set_clear_alarm(self, axis):
         self.events.append("clear_alarm")
 
+    def set_control_mode(self, axis, mode):
+        self.events.append(f"control_mode:{axis}:{mode}")
+
     def set_enable(self, axis, enable):
         self.enabled = bool(enable)
         self.events.append("enable")
@@ -127,7 +130,10 @@ class LHandProfileTests(unittest.TestCase):
         controller = FakeController.latest
         self.assertFalse(controller.connect_kwargs["enable_motors"])
         self.assertFalse(controller.connect_kwargs["home_motors"])
-        self.assertEqual(controller.sdk_handle.events[:3], ["enable", "clear_alarm", "enable"])
+        self.assertEqual(
+            controller.sdk_handle.events[:4],
+            ["control_mode:0:0", "enable", "clear_alarm", "enable"],
+        )
         self.assertIn("home", controller.sdk_handle.events)
 
     def test_profile_loader_and_window_envelope(self):
