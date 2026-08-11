@@ -187,7 +187,7 @@ def main():
         print(f"测试失败: {exc}")
         return 1
     finally:
-        if args.action == "set-baud":
+        if args.action in ("set-baud", "info"):
             hand.disconnect(stop_motors=False)
         else:
             hand.disconnect()

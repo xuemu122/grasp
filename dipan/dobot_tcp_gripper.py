@@ -17,8 +17,13 @@ from lhandpro_gripper import DEFAULT_SDK_ROOT, LHandProGripper
 
 
 DEFAULT_TRANSPARENT_PORT = 60000
-DEFAULT_TX_CHUNK_BYTES = 60
-DEFAULT_TX_CHUNK_DELAY_S = 0.001
+DEFAULT_TX_CHUNK_BYTES = 4096
+DEFAULT_TX_CHUNK_DELAY_S = 0.0
+
+SDO_MODE_CONTROL = 0xF100
+SDO_CURRENT_LIMIT = 0xF120
+SDO_VELOCITY = 0xF140
+SDO_POSITION = 0xF160
 
 
 def _crc16_modbus(data):
@@ -31,7 +36,7 @@ def _crc16_modbus(data):
 
 
 def _send_tcp_rs485(sock, payload, chunk_bytes, chunk_delay_s):
-    """Send one RS485 frame without exceeding Nova's TCP forwarding block."""
+    """Send one complete RS485 frame, optionally chunked for diagnostics."""
     chunk_bytes = max(1, int(chunk_bytes))
     chunks = [payload[offset:offset + chunk_bytes]
               for offset in range(0, len(payload), chunk_bytes)]
@@ -97,6 +102,8 @@ def _build_tcp_controller(host, port, debug=False):
             self._tcp_rx_buffer = bytearray()
             self._tcp_response = threading.Event()
             self._tcp_expected = None
+            self._tcp_protocol_error = None
+            self._tcp_rx_frame_count = 0
             self._tcp_response_timeout = max(
                 0.05, float(os.getenv("LHAND_TCP_RESPONSE_TIMEOUT_S", "0.3"))
             )
@@ -121,6 +128,7 @@ def _build_tcp_controller(host, port, debug=False):
                     print(f"[LHandPro/TCP485][TX] {payload.hex(' ')}")
                 with self._tcp_send_lock:
                     self._tcp_response.clear()
+                    self._tcp_protocol_error = None
                     self._tcp_expected = (
                         (0x58, None) if payload[0] == 0x60
                         else (0x48, payload[2] if len(payload) > 2 else None)
@@ -137,14 +145,26 @@ def _build_tcp_controller(host, port, debug=False):
                             f"bytes={len(payload)} chunk={self._tcp_tx_chunk_bytes} "
                             f"gap={self._tcp_tx_chunk_delay_s:.4f}s"
                         )
-                    if not self._tcp_response.wait(self._tcp_response_timeout):
+                    got_response = self._tcp_response.wait(self._tcp_response_timeout)
+                    if not got_response:
                         if self._tcp_debug:
                             print("[LHandPro/TCP485] 等待对应响应超时")
+                    protocol_error = self._tcp_protocol_error
                     self._tcp_expected = None
+                if protocol_error:
+                    if self._tcp_debug:
+                        print(f"[LHandPro/TCP485] 发送被手端拒绝: {protocol_error}")
+                    return False
+                if payload[0] == 0x60 and not got_response:
+                    return False
                 return True
             except OSError as exc:
                 print(f"[LHandPro/TCP485] 发送失败: {exc}")
                 return False
+
+        def send_rs485_frame(self, data):
+            """Send a protocol-specific frame outside the SDK command builder."""
+            return self._rs485_send_callback(bytes(data))
 
         def _receive_loop(self):
             sock = self.tcp_socket
@@ -164,18 +184,22 @@ def _build_tcp_controller(host, port, debug=False):
                 self._tcp_rx_buffer.extend(data)
                 frames, self._tcp_rx_buffer = _extract_rs485_frames(self._tcp_rx_buffer)
                 for frame in frames:
+                    self._tcp_rx_frame_count += 1
                     expected = self._tcp_expected
+                    if frame[0] == 0x48 and frame[3] == 1 and frame[4] == 2:
+                        self._tcp_protocol_error = (
+                            f"type=0x{frame[2]:02x} CRC校验错误"
+                        )
+                        print(
+                            f"[LHandPro/TCP485][协议错误] 手端报告CRC错误: "
+                            f"type=0x{frame[2]:02x}"
+                        )
                     if expected and frame[0] == expected[0] and (
                         expected[1] is None or frame[2] == expected[1]
                     ):
                         # Signal before SDK decode so a synchronous SDK command
                         # cannot deadlock with its receive-side decoder.
                         self._tcp_response.set()
-                    if frame[0] == 0x48 and frame[3] == 1 and frame[4] == 2:
-                        print(
-                            f"[LHandPro/TCP485][协议错误] 手端报告CRC错误: "
-                            f"type=0x{frame[2]:02x}"
-                        )
                     if not self.sdk_handle or not self.is_connected:
                         continue
                     try:
@@ -234,6 +258,89 @@ def _build_tcp_controller(host, port, debug=False):
     return TcpRS485Controller
 
 
+class _SdoMotorAdapter:
+    """Send motor commands through short SDO frames; keep SDK feedback APIs."""
+
+    def __init__(self, sdk, send_frame, node_id, dof, direction_bits=0x20):
+        self._sdk = sdk
+        self._send_frame = send_frame
+        self._node_id = int(node_id) & 0xFF
+        self._dof = int(dof)
+        self._direction_bits = int(direction_bits) & 0x60
+        self._modes = {axis: self._direction_bits for axis in range(1, self._dof + 1)}
+
+    def __getattr__(self, name):
+        return getattr(self._sdk, name)
+
+    def _axes(self, axis):
+        axis = int(axis)
+        if axis == 0:
+            return range(1, self._dof + 1)
+        if not 1 <= axis <= self._dof:
+            raise ValueError(f"轴编号必须在 0..{self._dof}: {axis}")
+        return (axis,)
+
+    def _write(self, index, axis, value, label):
+        value = int(value) & 0xFFFFFFFF
+        for item in self._axes(axis):
+            # The supplied RS485 protocol table defines 0x23 as the write
+            # command (four data bytes). The SDK emits 0x2B for small values,
+            # which this hand firmware silently ignores.
+            body = bytes((
+                0x60,
+                self._node_id,
+                0x23,
+                int(index) & 0xFF,
+                (int(index) >> 8) & 0xFF,
+                int(item) & 0xFF,
+            )) + value.to_bytes(4, "little")
+            crc = _crc16_modbus(body)
+            if not self._send_frame(body + bytes((crc & 0xFF, crc >> 8))):
+                raise RuntimeError(
+                    f"SDO {label} F{index & 0xFFF:03X}:{item:02X} 发送失败"
+                )
+
+    def _control(self, axis, control, mode=None):
+        for item in self._axes(axis):
+            selected_mode = self._modes[item] if mode is None else int(mode)
+            # The protocol defines one U16 as mode in the high byte and
+            # control in the low byte. SDO writes the same object value.
+            value = ((selected_mode & 0xFF) << 8) | (int(control) & 0xFF)
+            self._write(SDO_MODE_CONTROL, item, value, "模式/控制")
+
+    def set_control_mode(self, axis, mode):
+        for item in self._axes(axis):
+            self._modes[item] = self._direction_bits | (int(mode) & 0x07)
+
+    def set_enable(self, axis, enabled):
+        self._control(axis, 1 if enabled else 2)
+
+    def set_clear_alarm(self, axis):
+        self._control(axis, 3)
+
+    def set_target_position(self, axis, position):
+        self._write(SDO_POSITION, axis, position, "位置")
+
+    def set_position_velocity(self, axis, velocity):
+        self._write(SDO_VELOCITY, axis, velocity, "速度")
+
+    def set_max_current(self, axis, current):
+        self._write(SDO_CURRENT_LIMIT, axis, current, "电流限制")
+
+    def move_motors(self, axis):
+        self._control(axis, 5)
+
+    def home_motors(self, axis):
+        self._control(axis, 4, self._direction_bits | 5)
+
+    def stop_motors(self, axis):
+        self._control(axis, 0)
+
+    def set_home_current(self, current):
+        # No corresponding runtime object is defined in the supplied table.
+        del current
+
+
 class DobotTcpGripper(LHandProGripper):
     """Use the vendor grasp API while Nova transports its raw RS485 frames."""
 
@@ -256,6 +363,7 @@ class DobotTcpGripper(LHandProGripper):
         self.robot_port = int(robot_port)
         self.transparent_port = int(transparent_port)
         self.tcp_debug = bool(tcp_debug)
+        self._sdo_adapter = None
         self._custom_controller_factory = controller_factory
         super().__init__(
             port=f"tcp://{robot_ip}:{self.transparent_port}",
@@ -291,20 +399,76 @@ class DobotTcpGripper(LHandProGripper):
             dashboard = _DashboardClient(self.robot_ip, self.robot_port)
             dashboard.connect()
         try:
-            _dashboard_call(dashboard, "SetToolPower(1)")
+            power_cycle = os.getenv("LHAND_DOBOT_POWER_CYCLE", "0").lower() in (
+                "1", "true", "yes", "on"
+            )
+            if power_cycle:
+                print("[LHandPro/TCP485] 重置末端链路：工具电源断电后重新上电")
+                _dashboard_call(dashboard, "SetToolPower(0)")
+                time.sleep(max(0.2, float(os.getenv("LHAND_DOBOT_POWER_OFF_WAIT_S", "0.5"))))
             _dashboard_call(dashboard, "SetToolMode(1,0,1)")
             _dashboard_call(dashboard, f'SetTool485({self.baud_rate},"N",1,1)')
-            time.sleep(0.1)
+            _dashboard_call(dashboard, "SetToolPower(1)")
+            time.sleep(max(0.1, float(os.getenv("LHAND_DOBOT_POWER_ON_WAIT_S", "1.0"))))
         finally:
             if owns_dashboard:
                 dashboard.close()
+
+    @property
+    def _sdk(self):
+        if self._sdo_adapter is not None:
+            return self._sdo_adapter
+        return super()._sdk
 
     def connect(self, enable_motors=None, home_motors=None, home_timeout_s=None):
         if self.controller is not None:
             return True
         self._configure_robot_port()
-        return super().connect(
-            enable_motors=enable_motors,
-            home_motors=home_motors,
-            home_timeout_s=home_timeout_s,
+        enable = (
+            os.getenv("LHAND_ENABLE_ON_CONNECT", "1").lower() in ("1", "true", "yes", "on")
+            if enable_motors is None else bool(enable_motors)
         )
+        home = (
+            os.getenv("LHAND_HOME_ON_CONNECT", "1").lower() in ("1", "true", "yes", "on")
+            if home_motors is None else bool(home_motors)
+        )
+        try:
+            super().connect(enable_motors=False, home_motors=False)
+            if getattr(self.controller, "_tcp_rx_frame_count", 0) <= 0:
+                raise RuntimeError(
+                    "Nova 60000 连接已建立，但未收到任何有效手端RS485帧。"
+                    "请保持手端波特率500000，检查末端供电、A/B/通信地和"
+                    "机械臂60000透传服务；不允许使能或回零。"
+                )
+            control_transport = os.getenv("LHAND_DOBOT_CONTROL", "sdo").strip().lower()
+            if control_transport not in ("sdo", "pdo"):
+                raise ValueError("LHAND_DOBOT_CONTROL 只能是 sdo 或 pdo")
+            if control_transport == "sdo":
+                direction_bits = int(os.getenv("LHAND_SDO_DIRECTION_BITS", "0x20"), 0)
+                self._sdo_adapter = _SdoMotorAdapter(
+                    self.controller.sdk_handle,
+                    self.controller.send_rs485_frame,
+                    self.node_id,
+                    self.dof_active,
+                    direction_bits,
+                )
+                print("[LHandPro/TCP485] 电机控制使用短 SDO 帧（状态读取仍使用 SDK）")
+            if enable:
+                self._enable_motors()
+            if home:
+                self.home(timeout_s=home_timeout_s)
+            return True
+        except Exception:
+            self._sdo_adapter = None
+            if self.controller is not None:
+                super().disconnect(stop_motors=False)
+            raise
+
+    def disconnect(self, stop_motors=True):
+        if stop_motors and self._sdo_adapter is not None and self.controller is not None:
+            try:
+                self._sdo_adapter.stop_motors(0)
+            except Exception as exc:
+                print(f"[LHandPro/TCP485][警告] SDO 停止失败: {exc}")
+        self._sdo_adapter = None
+        return super().disconnect(stop_motors=False)

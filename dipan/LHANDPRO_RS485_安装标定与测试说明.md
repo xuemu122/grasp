@@ -309,13 +309,26 @@ PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \
 这个命令只会设置末端供电/485格式、连接 60000 透传端口，然后由 SDK 读取六轴的位置、
 状态、电流和报警，不会使能、回零或发送位置命令。输出正常后再执行：
 
+如果从第一条 `60 01 40 ...` 开始就没有任何 `[RX]`，说明返回链路没有工作，不是轴使能或控制字问题。请先停止旧进程，按下面顺序重新配置末端：
+
+```text
+SetToolPower(0)
+SetToolMode(1,0,1)
+SetTool485(500000,"N",1,1)
+SetToolPower(1)
+```
+
+等待 2~3 秒后再运行 `info`。手端波特率必须与 `SetTool485` 一致，不要使用
+`600000`。同时检查手端 VDC/GND、RS485 A/B 和通信地；只有看到 `[RX] 58 ...`或 `[RX] 48 ...`
+才可继续执行 `home` 和运动测试。
+
 Nova V4.6.2 的 `ModbusRTUCreate` 会拒绝 `500000`，但末端透传资料确认控制器端口
 `60000` 直接对应末端 485。Jetson 已实测可连接该端口，因此程序不再使用
 `ModbusRTUCreate/GetHoldRegs` 猜测手端状态寄存器，而是复用 LHandPro SDK 自带的
 RS485 发送回调和数据解码接口。这样可以继续使用灵巧手原来的 `500000`，不需要拆线
 或修改手端波特率。
 
-### 9.2 Nova 透传长帧分片
+### 9.2 Nova 透传与 SDO 控制
 
 LHandPro SDK 的状态和 SDO 请求只有 6/12 字节，而使能、回零和运动控制帧为
 68 字节。若调试日志出现下面的状态 `02`，表示手端报告 CRC 错误，不是
@@ -325,21 +338,28 @@ LHandPro SDK 的状态和 SDO 请求只有 6/12 字节，而使能、回零和�
 [LHandPro/TCP485][协议错误] 手端报告CRC错误: type=0x81
 ```
 
-程序默认将 68 字节帧按 `60+8` 字节分段送入 Nova 60000 透传端口，短帧不分段。
-首次回零使用 `--hex-debug` 确认日志出现：
+实测对 68 字节帧做 `60+8` TCP 分片仍不能改变手端的 CRC 拒绝，
+因此程序不再默认分片。协议表中的同一批运动对象可以用短 SDO 帧访问（读取 12 字节，写入 14 字节），
+并已经过只读实机验证：`F100/F120/F140/F160` 的子索引 `1` 均有有效响应。
+所以 `dobot` 后端默认改用协议规定的 `0x23` 四字节写入 SDO 帧执行：
 
 ```text
-[LHandPro/TCP485] 长帧分 2 段发送: bytes=68 chunk=60 gap=0.0010s
+[LHandPro/TCP485] 电机控制使用短 SDO 帧（状态读取仍使用 SDK）
 ```
 
-如果现场仍返回 CRC 错误，可以只调整透传分片，不改 SDK 的原始帧内容：
+对象映射为：`F100:轴号` 模式/控制、`F120:轴号` 电流限制、`F140:轴号`
+速度、`F160:轴号` 位置。状态、位置和电流反馈仍交给 SDK 解码。仅用于对比诊断时，
+可临时切回原 SDK 的 68 字节 PDO 控制：
 
 ```bash
-LHAND_TCP_TX_CHUNK_BYTES=32 LHAND_TCP_TX_CHUNK_DELAY_S=0.001 \
+LHAND_DOBOT_CONTROL=pdo \
 PYTHONPATH=. python3 test_lhandpro_flexible_grasp.py \
   --transport dobot --robot-ip 192.168.5.1 \
   --baud 500000 --node 1 --hex-debug --home-timeout 90 home
 ```
+
+不建议在正常抓取中使用 `pdo`；手端一旦明确返回 CRC 错误，程序会立即报错，
+不再连续重发控制帧。
 
 ### 9.3 末端供电限制（必须确认）
 
