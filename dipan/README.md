@@ -133,7 +133,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `SELF_COLLISION_VERBOSE`：自碰撞护栏通过时是否打印最近余量，默认关闭。
 - `DOBOT_IK_VERBOSE`：是否打印自碰撞检查用的 `InverseKin` 请求/响应，默认关闭；排查 IK 失败时可开启。
 - `DEPTH_GUARD_ENABLE`：深度护栏开关，默认开启；会排除当前画面中所有检测框，把其余深度点当成货架/障碍，检查对齐和探入路径。
-- `DEPTH_GUARD_CAMERA_ENABLE`：相机碰撞盒开关，默认开启；相机安装在新连接件的上方托板，按法兰系 `X=-150..-90mm`、`Y=-72.5..72.5mm`、`Z=20..45mm` 建模，并与连接件、手部一起检查整条路径。
+- `DEPTH_GUARD_CAMERA_ENABLE`：相机碰撞盒开关，当前默认关闭，末端模型只考虑连接件和 DH116。以后安装相机并实测外壳位置后可重新开启。
 - `TOOL_CAMERA_LONG_SIDE_Y_M` / `TOOL_CAMERA_BODY_DEPTH_X_M` / `TOOL_CAMERA_HEIGHT_Z_M`：相机外壳尺寸，默认分别为 `0.145/0.060/0.025` m；旧的 `TOOL_CAMERA_LENGTH_X_M` / `TOOL_CAMERA_WIDTH_Y_M` 仍作为兼容配置读取。
 - `TOOL_CAMERA_CENTER_X_M` / `TOOL_CAMERA_CENTER_Y_M`：相机外壳中心在法兰坐标系的位置，默认 `-0.120/0.0` m。
 - `TOOL_CAMERA_Z_MIN_M`：相机盒在新连接件托板上方的法兰 `Z` 起点，默认 `0.020` m；实测安装位置有偏移时可调整。
@@ -542,7 +542,7 @@ Q     跳过/退出
 
 从放置点或未知位姿前往下一层使用 `go_to_layer_from_non_shelf_pose()`；从收起位进层会先严格反向经过放置过渡点，再抬高、横移和垂直下落；抓取后的上撤使用 `go_to_layer_via_clearance()`。任何安全路径无法读取当前位姿时都会停止，不再回退为直接 `MovL`。
 
-自碰撞护栏使用 Nova5 连杆胶囊和完整末端包络共同检查：DH116、转接法兰、相机托板和腕部相机都会参与关节路径采样。默认尺寸可通过 `TOOL_ADAPTER_*`、`TOOL_HAND_MOUNT_OFFSET_Z_M`、`TOOL_HAND_LENGTH_Z_M`、`TOOL_HAND_BODY_DEPTH_X_M`、`TOOL_HAND_PALM_WIDTH_Y_M`、`TOOL_HAND_OPEN_WIDTH_Y_M`、`TOOL_CAMERA_LENGTH_X_M`、`TOOL_CAMERA_WIDTH_Y_M`、`TOOL_CAMERA_HEIGHT_Z_M` 和 `TOOL_CAMERA_Z_MIN_M` 按实测调整。碰撞模型、当前关节角、逆解或检查过程不可用时默认拒绝运动；只有明确设置 `SELF_COLLISION_ENABLE=0` 或 `SELF_COLLISION_FAIL_CLOSED=0` 才会关闭相应门禁。
+自碰撞护栏使用 Nova5 连杆胶囊和完整末端包络共同检查：DH116、转接法兰和连接件长托板都会参与关节路径采样，暂不包含相机实体。默认尺寸可通过 `TOOL_ADAPTER_*`、`TOOL_HAND_MOUNT_OFFSET_Z_M`、`TOOL_HAND_LENGTH_Z_M`、`TOOL_HAND_BODY_DEPTH_X_M`、`TOOL_HAND_PALM_WIDTH_Y_M` 和 `TOOL_HAND_OPEN_WIDTH_Y_M` 按实测调整。碰撞模型、当前关节角、逆解或检查过程不可用时默认拒绝运动；只有明确设置 `SELF_COLLISION_ENABLE=0` 或 `SELF_COLLISION_FAIL_CLOSED=0` 才会关闭相应门禁。
 
 ## 底盘放置流程
 

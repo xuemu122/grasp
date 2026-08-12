@@ -212,7 +212,7 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         self.assertFalse(self.check_depth_path([world_point], rotation=rotation).ok)
         self.assertTrue(self.check_depth_path([[-0.10, 0.09, 0.0325]]).ok)
 
-    def test_self_collision_camera_cover_and_safe_poses(self):
+    def test_camera_geometry_is_available_but_not_in_self_collision_model(self):
         strips = camera_capsule_strips()
         self.assertEqual(len(strips), 4)
         self.assertAlmostEqual(strips[0][0][0], -0.15)
@@ -220,7 +220,7 @@ class ToolCollisionGeometryTests(unittest.TestCase):
 
         guard = Nova5SelfCollisionGuard()
         camera_specs = [item for item in guard.capsules if item.name == "tool_camera"]
-        self.assertEqual(len(camera_specs), 4)
+        self.assertEqual(len(camera_specs), 0)
         self.assertTrue(guard.check([-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]).ok)
         self.assertTrue(guard.check([0.0] * 6).ok)
         self.assertTrue(guard.check([-106.5, -2.2, 98.1, -178.1, -88.2, 93.3]).ok)
@@ -264,7 +264,7 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         self.assertTrue(any({a, b} == {"tool_hand_palm", "Link4"} for a, b in checked_names))
         self.assertTrue(any({a, b} == {"tool_hand_thumb", "Link4"} for a, b in checked_names))
         self.assertTrue(any({a, b} == {"tool_hand_fingers", "Link3"} for a, b in checked_names))
-        self.assertTrue(any({a, b} == {"tool_camera", "Link4"} for a, b in checked_names))
+        self.assertFalse(any("tool_camera" in (a, b) for a, b in checked_names))
         self.assertFalse(any(
             a.startswith("tool_") and b in ("Link5", "Link6")
             or b.startswith("tool_") and a in ("Link5", "Link6")

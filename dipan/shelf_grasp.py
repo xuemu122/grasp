@@ -147,7 +147,7 @@ TARGET_DEPTH_REFINE_MAX_DELTA_M = float(os.getenv("TARGET_DEPTH_REFINE_MAX_DELTA
 DEPTH_GUARD_ENABLE = os.getenv("DEPTH_GUARD_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 DEPTH_GUARD_STRIDE = int(os.getenv("DEPTH_GUARD_STRIDE", "8"))
 DEPTH_GUARD_CLEARANCE_M = float(os.getenv("DEPTH_GUARD_CLEARANCE_M", "0.002"))
-DEPTH_GUARD_CAMERA_ENABLE = os.getenv("DEPTH_GUARD_CAMERA_ENABLE", "1").lower() in ("1", "true", "yes", "on")
+DEPTH_GUARD_CAMERA_ENABLE = os.getenv("DEPTH_GUARD_CAMERA_ENABLE", "0").lower() in ("1", "true", "yes", "on")
 DEPTH_GUARD_CAMERA_CLEARANCE_M = float(os.getenv("DEPTH_GUARD_CAMERA_CLEARANCE_M", str(DEPTH_GUARD_CLEARANCE_M)))
 DEPTH_GUARD_SELF_MASK_CAMERA_PADDING_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_CAMERA_PADDING_M", "0.01"))
 DEPTH_GUARD_CAMERA_BOX_MIN_M, DEPTH_GUARD_CAMERA_BOX_MAX_M = camera_box_bounds(
@@ -1749,13 +1749,15 @@ def main():
         f"  灵巧手: 总长{HAND_LENGTH*100:.0f}cm, 掌心{HAND_PALM_LENGTH_M*100:.1f}cm, "
         f"手指厚{HAND_FINGER_THICKNESS_M*100:.1f}cm, 掌宽{HAND_W_Y*100:.1f}cm, {HAND_WEIGHT}kg"
     )
-    print(
-        f"  相机碰撞盒: {camera_size_label_mm()}, 法兰系 "
-        f"X={DEPTH_GUARD_CAMERA_BOX_MIN_M[0]*1000:.0f}..{DEPTH_GUARD_CAMERA_BOX_MAX_M[0]*1000:.0f}mm, "
-        f"Y={DEPTH_GUARD_CAMERA_BOX_MIN_M[1]*1000:.0f}..{DEPTH_GUARD_CAMERA_BOX_MAX_M[1]*1000:.0f}mm, "
-        f"Z={DEPTH_GUARD_CAMERA_BOX_MIN_M[2]*1000:.0f}..{DEPTH_GUARD_CAMERA_BOX_MAX_M[2]*1000:.0f}mm, "
-        f"{'启用' if DEPTH_GUARD_CAMERA_ENABLE else '关闭'}"
-    )
+    if DEPTH_GUARD_CAMERA_ENABLE:
+        print(
+            f"  相机碰撞盒: {camera_size_label_mm()}, 法兰系 "
+            f"X={DEPTH_GUARD_CAMERA_BOX_MIN_M[0]*1000:.0f}..{DEPTH_GUARD_CAMERA_BOX_MAX_M[0]*1000:.0f}mm, "
+            f"Y={DEPTH_GUARD_CAMERA_BOX_MIN_M[1]*1000:.0f}..{DEPTH_GUARD_CAMERA_BOX_MAX_M[1]*1000:.0f}mm, "
+            f"Z={DEPTH_GUARD_CAMERA_BOX_MIN_M[2]*1000:.0f}..{DEPTH_GUARD_CAMERA_BOX_MAX_M[2]*1000:.0f}mm"
+        )
+    else:
+        print("  相机碰撞盒: 暂不建模（连接件长托板仍参与碰撞检查）")
     print(f"  灵巧手后端: {HAND_BACKEND}, 手势模式: {HAND_GRASP_MODE}")
     if HAND_BACKEND in ("lhandpro_dobot", "dobot_modbus", "tool_rs485"):
         print(

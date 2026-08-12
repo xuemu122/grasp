@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from tool_geometry import camera_capsule_strips, hand_capsule_parts
+from tool_geometry import hand_capsule_parts
 
 
 NOVA5_URDF = "/home/nvidia/grasp/dobot_ws/src/DOBOT_6Axis_ROS2_V4/dobot_rviz/urdf/nova5_robot.urdf"
@@ -241,18 +241,7 @@ class Nova5SelfCollisionGuard:
             for group, capsules in hand_capsule_parts().items()
             for start, end, radius in capsules
         )
-        camera = tuple(
-            CapsuleSpec(
-                "Link6",
-                "tool_camera",
-                np.asarray(start, dtype=np.float64),
-                np.asarray(end, dtype=np.float64),
-                float(radius),
-                tool_group="tool_camera",
-            )
-            for start, end, radius in camera_capsule_strips()
-        )
-        return robot + hand + camera
+        return robot + hand
 
     def _make_check_pairs(self) -> Tuple[Tuple[int, int], ...]:
         pairs = []

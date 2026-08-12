@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared flange-frame geometry for the DH116 hand and wrist camera.
+"""Shared flange-frame geometry for the DH116 hand and printed adapter.
 
 The DH116 defaults below combine the hand URDF swept envelope with the printed
 adapter from ``urdf/new.3mf``.  The round adapter face starts at the Nova tool
@@ -281,5 +281,5 @@ def tool_size_label_mm():
     return (
         f"hand={HAND_LENGTH_Z_M*1000:.0f}mm/adapter={ADAPTER_LENGTH_Z_M*1000:.0f}mm/"
         f"palm={HAND_BODY_DEPTH_X_M*1000:.0f}x{HAND_PALM_WIDTH_Y_M*1000:.0f}mm/"
-        f"open={HAND_OPEN_WIDTH_Y_M*1000:.0f}mm, camera={camera_size_label_mm()}"
+        f"open={HAND_OPEN_WIDTH_Y_M*1000:.0f}mm"
     )
