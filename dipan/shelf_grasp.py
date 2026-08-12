@@ -86,7 +86,7 @@ HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.13, 0.012, 0.008)
+SIDE_GRASP_OFFSET_M = (-0.12, 0.006, 0.008)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.035)
 
@@ -103,7 +103,7 @@ LOW_Z_APPROACH_SPEED = 60
 LOW_Z_GRASP_SPEED = 20
 MOTION_SETTLE_S = float(os.getenv("MOTION_SETTLE_S", "0.2"))  # 运动完成后的短缓冲
 GRASP_SETTLE_S = float(os.getenv("GRASP_SETTLE_S", "0.4"))    # 抓取前进/后退短缓冲
-HAND_CLOSE_WAIT_S = float(os.getenv("HAND_CLOSE_WAIT_S", "3.0"))
+HAND_CLOSE_WAIT_S = float(os.getenv("HAND_CLOSE_WAIT_S", "1.0"))
 PLACE_TRANSITION_CP = os.getenv("PLACE_TRANSITION_CP", "60")       # 过渡点到放置点的平滑比例
 PLACE_SMOOTH_TRANSITION = os.getenv("PLACE_SMOOTH_TRANSITION", "0").lower() in ("1", "true", "yes", "on")
 PLACE_RETURN_CLEARANCE_MM = float(os.getenv("PLACE_RETURN_CLEARANCE_MM", "140"))  # 放置后回层的安全抬高量

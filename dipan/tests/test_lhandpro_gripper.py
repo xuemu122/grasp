@@ -113,6 +113,20 @@ class FakeController:
 
 
 class LHandProfileTests(unittest.TestCase):
+    def test_default_open_pose_lowers_thumb_side_axis(self):
+        hand = LHandProGripper(controller_factory=FakeController)
+        hand.connect(enable_motors=False, home_motors=False)
+        with patch.dict(os.environ, {}, clear=True), patch("time.sleep"):
+            self.assertTrue(hand.open())
+        self.assertEqual(FakeController.latest.sdk_handle.positions, [9000, 0, 0, 0, 0, 0])
+
+    def test_open_pose_can_still_be_overridden(self):
+        hand = LHandProGripper(controller_factory=FakeController)
+        hand.connect(enable_motors=False, home_motors=False)
+        with patch.dict(os.environ, {"LHAND_OPEN_POSITIONS": "100,0,0,0,0,0"}, clear=False), patch("time.sleep"):
+            self.assertTrue(hand.open())
+        self.assertEqual(FakeController.latest.sdk_handle.positions, [100, 0, 0, 0, 0, 0])
+
     def test_changes_hand_baud_without_motor_enable(self):
         hand = LHandProGripper(controller_factory=FakeController)
         hand.connect(enable_motors=False, home_motors=False)
@@ -202,7 +216,7 @@ class LHandProfileTests(unittest.TestCase):
                 self.assertTrue(hand.flexible_close())
 
             positions = FakeController.latest.sdk_handle.positions
-            self.assertEqual(positions[0], 0)
+            self.assertEqual(positions[0], 9000)
             self.assertEqual(positions[1], 3000)
             self.assertEqual(positions[4], 3000)
             self.assertEqual(positions[5], 3000)

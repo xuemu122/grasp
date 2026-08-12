@@ -93,6 +93,12 @@ class DobotTcpGripperTests(unittest.TestCase):
             ),
         )
 
+        sender.frames.clear()
+        for axis in range(1, 7):
+            adapter.set_target_position(axis, 5500)
+        adapter.move_motors(0)
+        self.assertEqual([frame[2] for frame in sender.frames], [0x82])
+
     def test_sdo_adapter_maps_six_axis_motion_objects(self):
         sdk = FakeSDK()
         sender = FakeFrameSender()

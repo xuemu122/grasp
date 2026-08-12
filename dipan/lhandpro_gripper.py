@@ -380,9 +380,13 @@ class LHandProGripper:
         print("[LHandPro] 已断开")
 
     def _open_positions(self):
-        return _parse_int_vector(
-            os.getenv("LHAND_OPEN_POSITIONS"), self.dof_active, 0
-        )
+        raw = os.getenv("LHAND_OPEN_POSITIONS")
+        if raw not in (None, ""):
+            return _parse_int_vector(raw, self.dof_active, 0)
+        # DH116 axis 1 is thumb abduction/side-swing. Its tested 9000 endpoint
+        # is the lowest open pose; axes 2..6 remain fully open at zero.
+        default = [9000] + [0] * max(0, self.dof_active - 1)
+        return default[:self.dof_active]
 
     def _max_positions(self):
         return _parse_int_vector(
@@ -509,10 +513,12 @@ class LHandProGripper:
             if not required_axes or not required_axes.issubset(active_axes):
                 raise ValueError("required axes 必须是 active axes 的非空子集")
 
+            # Fast profile: keep the old responsive cadence while retaining
+            # two consecutive contact detections and the hard-current stop.
             step = max(1, int(os.getenv("LHAND_FLEX_STEP", "250")))
-            settle = max(0.035, float(os.getenv("LHAND_FLEX_SETTLE_S", "0.08")))
-            samples = max(1, int(os.getenv("LHAND_FLEX_SAMPLES", "2")))
-            sample_delay = max(0.0, float(os.getenv("LHAND_FLEX_SAMPLE_DELAY_S", "0.01")))
+            settle = max(0.025, float(os.getenv("LHAND_FLEX_SETTLE_S", "0.05")))
+            samples = max(1, int(os.getenv("LHAND_FLEX_SAMPLES", "1")))
+            sample_delay = max(0.0, float(os.getenv("LHAND_FLEX_SAMPLE_DELAY_S", "0")))
             threshold = float(os.getenv("LHAND_FLEX_PROFILE_DELTA", "80"))
             fallback_delta = float(os.getenv("LHAND_FLEX_BASELINE_DELTA", "120"))
             profile_window = max(0, int(os.getenv("LHAND_FLEX_PROFILE_WINDOW", "300")))
@@ -527,7 +533,7 @@ class LHandProGripper:
 
             values = list(open_positions)
             self._holding = False
-            self._command_positions(values, wait_s=0.25)
+            self._command_positions(values, wait_s=float(os.getenv("LHAND_FLEX_START_WAIT_S", "0.10")))
             baseline = [abs(value) for value in self._read_currents(samples, sample_delay)]
             hits = {axis: 0 for axis in required_axes}
             locked = {}
@@ -535,7 +541,8 @@ class LHandProGripper:
             at_max = set()
             print(
                 f"[LHandPro] 柔性抓取开始: active={sorted(active_axes)} "
-                f"required={sorted(required_axes)} step={step} threshold={threshold:.0f}"
+                f"required={sorted(required_axes)} step={step} settle={settle:.3f}s "
+                f"samples={samples} threshold={threshold:.0f}"
             )
 
             for step_index in range(max_steps):

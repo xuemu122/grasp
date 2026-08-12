@@ -67,7 +67,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `TARGET_DEPTH_REFINE_MAX_DELTA_M`：目标深度重采样允许偏离融合深度的最大值，默认 `0.08` m；超过则认为可能采到背景并跳过校正。
 - `MOTION_SETTLE_S`：普通运动完成后的短缓冲，默认 `0.2` 秒。
 - `GRASP_SETTLE_S`：抓取前进、闭手前、后退后的缓冲，默认 `0.4` 秒。
-- `HAND_CLOSE_WAIT_S`：灵巧手闭合后等待物体稳定的时间，默认 `3.0` 秒。
+- `HAND_CLOSE_WAIT_S`：灵巧手闭合后等待物体稳定的时间，默认 `1.0` 秒。
 - `HAND_BACKEND`：灵巧手后端，默认 `lhandpro_dobot`；通过 Nova 末端 RS485 使用新手。旧 Aero 硬件可显式设为 `aero`回退。
 - `LHAND_DOBOT_BAUD`：Nova 末端 RS485 波特率，默认 `115200`。
 - `LHAND_RS485_NODE_ID`：灵巧手 RS485 节点号，默认 `1`。
@@ -416,6 +416,11 @@ python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 flex
 `80‰` 才判定抓取成功。曲线缺失时默认拒绝柔性抓取。常用参数为
 `LHAND_FLEX_PROFILE_DELTA`、`LHAND_FLEX_STEP`、`LHAND_FLEX_EXTRA_CLOSE`、
 `LHAND_FLEX_REQUIRED_AXES` 和 `LHAND_FLEX_MIN_CONTACTS`。
+
+DH116 默认张开位置为 `9000,0,0,0,0,0`：1 号拇指侧摆到已录曲线覆盖的最下端，
+柔性闭合期间保持不动。默认快速反馈参数为 `LHAND_FLEX_SETTLE_S=0.05`、
+`LHAND_FLEX_SAMPLES=1`、`LHAND_FLEX_SAMPLE_DELAY_S=0`；末端短帧在限流和速度不变时
+只重复下发位置帧。现场需要恢复更保守节奏时可显式设为 `0.08`、`2`、`0.01`。
 
 独立测试通过并重新实测末端几何参数后，才启动完整货架流程：
 

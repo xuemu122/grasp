@@ -374,6 +374,8 @@ class _CompactMotorAdapter:
         self._currents = [600] * self._dof
         self._velocities = [12000] * self._dof
         self._positions = [0] * self._dof
+        self._sent_currents = None
+        self._sent_velocities = None
 
     def __getattr__(self, name):
         return getattr(self._sdk, name)
@@ -431,8 +433,14 @@ class _CompactMotorAdapter:
 
     def move_motors(self, axis):
         del axis
-        self._send(0x84, b"".join(self._u16(v) for v in self._currents), "电流")
-        self._send(0x83, b"".join(self._u16(v) for v in self._velocities), "速度")
+        currents = tuple(self._currents)
+        velocities = tuple(self._velocities)
+        if currents != self._sent_currents:
+            self._send(0x84, b"".join(self._u16(v) for v in currents), "电流")
+            self._sent_currents = currents
+        if velocities != self._sent_velocities:
+            self._send(0x83, b"".join(self._u16(v) for v in velocities), "速度")
+            self._sent_velocities = velocities
         self._send(0x82, b"".join(self._u16(v) for v in self._positions), "位置")
 
     def home_motors(self, axis):

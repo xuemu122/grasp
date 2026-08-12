@@ -146,7 +146,8 @@ python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 flex
 
 默认逻辑：
 
-- 1 号拇指侧摆保持张开位置，不参与抓取闭合。
+- 1 号拇指侧摆张开默认使用已录行程末端 `9000`（最低摆位），不参与抓取闭合；
+  可用 `LHAND_OPEN_POSITIONS` 覆盖，格式为六轴位置列表。
 - 2～6 号轴参与闭合并独立判断接触；2 号为拇指弯曲，3～6 号为四指弯曲。
 - 同位置电流比空载包络增加 `80‰`，连续 2 次才确认接触。
 - 接触后额外闭合 `150` 位置单位并锁定该轴。
@@ -159,6 +160,9 @@ python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 flex
 ```text
 LHAND_FLEX_PROFILE_DELTA       接触电流增量阈值，默认 80‰
 LHAND_FLEX_STEP                每步位置增量，默认 250
+LHAND_FLEX_SETTLE_S            每步位置命令后的等待，快速默认 0.05s
+LHAND_FLEX_SAMPLES             每步电流采样次数，快速默认 1
+LHAND_FLEX_SAMPLE_DELAY_S      同一步多次采样间隔，默认 0
 LHAND_FLEX_EXTRA_CLOSE         接触后补紧量，默认 150
 LHAND_FLEX_ACTIVE_AXES         参与闭合的轴，DH116 默认 2,3,4,5,6
 LHAND_FLEX_REQUIRED_AXES       必须等待接触或到上限的轴，DH116 默认 2,3,4,5,6
