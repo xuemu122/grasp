@@ -1,5 +1,6 @@
 {
   "navigation_enabled": true,
   "auto_return_charge": true,
-  "place_marker": "fangzhi"
+  "place_marker": "fangzhi",
+  "hand_model": "dh116"
 }

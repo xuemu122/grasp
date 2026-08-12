@@ -45,6 +45,7 @@ from tool_geometry import (
     HAND_PALM_LENGTH_Z_M,
     HAND_PALM_WIDTH_Y_M,
     HAND_THUMB_Z_MAX_M,
+    TOOL_HAND_MODEL,
     camera_box_bounds,
     camera_size_label_mm,
     hand_box_bounds,
@@ -117,7 +118,10 @@ WATER_CONF_THRESHOLD = float(os.getenv("WATER_CONF_THRESHOLD", "0.52"))
 DRINK_CLASS_IDS = set(range(70, 78)) | set(range(80, 87))
 # 当前默认使用电流反馈柔性抓取；原侧抓/上抓固定手势仍可通过 HAND_GRASP_MODE=bottle/auto 保留。
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "flex").lower()
-HAND_BACKEND = os.getenv("HAND_BACKEND", "lhandpro_dobot").strip().lower()
+HAND_BACKEND = os.getenv(
+    "HAND_BACKEND",
+    "aero" if TOOL_HAND_MODEL == "aero" else "lhandpro_dobot",
+).strip().lower()
 LHAND_DOBOT_BAUD = int(os.getenv("LHAND_DOBOT_BAUD", "115200"))
 LHAND_RS485_NODE_ID = int(os.getenv("LHAND_RS485_NODE_ID", "1"))
 LHAND_DOBOT_CONTROL = os.getenv("LHAND_DOBOT_CONTROL", "compact").strip().lower()
@@ -1707,6 +1711,12 @@ def _connect_and_open_hand(hand):
 
 
 def _create_hand(arm=None):
+    backend_model = "aero" if HAND_BACKEND == "aero" else "dh116"
+    if backend_model != TOOL_HAND_MODEL:
+        raise ValueError(
+            f"灵巧手配置不一致: TOOL_HAND_MODEL={TOOL_HAND_MODEL}, HAND_BACKEND={HAND_BACKEND}。"
+            "请通过管理端切换，或同时设置这两个环境变量。"
+        )
     if HAND_BACKEND == "aero":
         from aero_gripper import AeroGripper
         return AeroGripper()
@@ -1758,7 +1768,7 @@ def main():
         )
     else:
         print("  相机碰撞盒: 暂不建模（连接件长托板仍参与碰撞检查）")
-    print(f"  灵巧手后端: {HAND_BACKEND}, 手势模式: {HAND_GRASP_MODE}")
+    print(f"  灵巧手型号: {TOOL_HAND_MODEL}, 后端: {HAND_BACKEND}, 手势模式: {HAND_GRASP_MODE}")
     if HAND_BACKEND in ("lhandpro_dobot", "dobot_modbus", "tool_rs485"):
         print(
             f"  LHandPro: {LHAND_DOBOT_BAUD}bps, node={LHAND_RS485_NODE_ID}, "

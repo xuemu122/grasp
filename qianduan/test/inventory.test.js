@@ -95,6 +95,8 @@ test('completed orders decrement inventory once', async (t) => {
     const baseUrl = `http://127.0.0.1:${port}`;
     const chassisMapUnauthorized = await fetch(`${baseUrl}/api/chassis/map`);
     assert.equal(chassisMapUnauthorized.status, 401);
+    const handConfigUnauthorized = await fetch(`${baseUrl}/api/robot/hand-config`);
+    assert.equal(handConfigUnauthorized.status, 401);
 
     const loginResponse = await fetch(`${baseUrl}/api/admin/login`, {
         method: 'POST',
@@ -109,6 +111,31 @@ test('completed orders decrement inventory once', async (t) => {
     assert.equal(navigationConfig.data.navigation_enabled, false);
     assert.equal(navigationConfig.data.auto_return_charge, true);
     assert.equal(navigationConfig.data.place_marker, 'fangzhi');
+    assert.equal(navigationConfig.data.hand_model, 'dh116');
+
+    const handConfigResponse = await fetch(`${baseUrl}/api/robot/hand-config`, {
+        headers: { Cookie: adminCookie }
+    });
+    const handConfig = await handConfigResponse.json();
+    assert.equal(handConfig.data.model, 'dh116');
+    assert.equal(handConfig.data.backend, 'lhandpro_dobot');
+    const invalidHandResponse = await fetch(`${baseUrl}/api/robot/hand-config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+        body: JSON.stringify({ model: 'unknown' })
+    });
+    assert.equal(invalidHandResponse.status, 400);
+    const updateHandResponse = await fetch(`${baseUrl}/api/robot/hand-config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+        body: JSON.stringify({ model: 'aero' })
+    });
+    const updatedHand = await updateHandResponse.json();
+    assert.equal(updateHandResponse.status, 200);
+    assert.equal(updatedHand.data.model, 'aero');
+    assert.equal(updatedHand.data.backend, 'aero');
+    assert.equal(updatedHand.data.changed, true);
+
     const updateNavigationResponse = await fetch(`${baseUrl}/api/chassis/navigation-config`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
@@ -118,6 +145,8 @@ test('completed orders decrement inventory once', async (t) => {
     assert.equal(updatedNavigationConfig.data.navigation_enabled, true);
     assert.equal(updatedNavigationConfig.data.auto_return_charge, false);
     assert.equal(updatedNavigationConfig.data.place_marker, 'delivery-a');
+    assert.equal(updatedNavigationConfig.data.hand_model, 'aero');
+    assert.equal(JSON.parse(fs.readFileSync(chassisSettingsFile, 'utf8')).hand_model, 'aero');
 
     const shelfLayersResponse = await fetch(`${baseUrl}/api/shelf/layers`);
     const shelfLayers = await shelfLayersResponse.json();

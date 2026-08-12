@@ -84,6 +84,7 @@ const PRODUCT_UPLOAD_MAX_BYTES = Number(process.env.PRODUCT_UPLOAD_MAX_BYTES || 
 const ROBOT_WORKER_READY_TIMEOUT_MS = Number(process.env.ROBOT_WORKER_READY_TIMEOUT_MS || 90000);
 const ROBOT_GRAB_TIMEOUT_MS = Number(process.env.ROBOT_GRAB_TIMEOUT_MS || 120000);
 const ROBOT_STOW_TIMEOUT_MS = Number(process.env.ROBOT_STOW_TIMEOUT_MS || 120000);
+const ROBOT_RECONFIGURE_TIMEOUT_MS = Number(process.env.ROBOT_RECONFIGURE_TIMEOUT_MS || 30000);
 const ORDER_READY_CLOSE_DELAY_MS = Number(process.env.ORDER_READY_CLOSE_DELAY_MS || 3000);
 const ROBOT_FILTER_PREVIEW_TIMEOUT_MS = Number(process.env.ROBOT_FILTER_PREVIEW_TIMEOUT_MS || 30000);
 const ROBOT_INVENTORY_SCAN_TIMEOUT_MS = Number(process.env.ROBOT_INVENTORY_SCAN_TIMEOUT_MS || 60000);
@@ -122,6 +123,7 @@ let robotPoweroffPromise = null;
 let robotShutdownPromise = null;
 let robotEmergencyPromise = null;
 let robotFailureRecoveryPromise = null;
+let robotReconfigurePromise = null;
 let robotPoweredOff = false;
 let robotEmergencyStopped = false;
 let robotFilterPreviewPromise = null;
@@ -2261,6 +2263,47 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    if (pathname === '/api/robot/hand-config' && req.method === 'GET') {
+        if (!requireAdmin(req, res)) return;
+        const config = handRuntimeConfig(readChassisSettings().hand_model);
+        sendJSON(res, { code: 0, data: config });
+        return;
+    }
+
+    if (pathname === '/api/robot/hand-config' && req.method === 'PUT') {
+        if (!requireAdmin(req, res)) return;
+        const body = await parseBody(req);
+        let nextConfig;
+        try {
+            nextConfig = handRuntimeConfig(body && body.model);
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 400);
+            return;
+        }
+        const operation = currentRobotOperation();
+        if (operation && operation.status !== 'powered-off') {
+            sendJSON(res, { code: 1, message: `${operation.label}，暂不能切换灵巧手` }, 409);
+            return;
+        }
+        try {
+            const settings = readChassisSettings();
+            const changed = settings.hand_model !== nextConfig.model;
+            if (changed && !robotPoweredOff) await stopRobotWorkerForReconfigure();
+            writeChassisSettings({ ...settings, hand_model: nextConfig.model });
+            log(`🖐️ 灵巧手配置已切换为 ${nextConfig.label} (${nextConfig.backend})`);
+            sendJSON(res, {
+                code: 0,
+                message: changed
+                    ? `已切换为${nextConfig.label}；请确认实物已更换，下次任务将自动使用新配置`
+                    : `当前已经是${nextConfig.label}`,
+                data: { ...nextConfig, changed }
+            });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 500);
+        }
+        return;
+    }
+
     if (pathname === '/api/robot/stow' && req.method === 'POST') {
         if (!requireAdmin(req, res)) return;
         const operation = currentRobotOperation();
@@ -2403,7 +2446,8 @@ const server = http.createServer(async (req, res) => {
                 place_marker: placeMarker,
                 auto_return_charge: body.auto_return_charge === undefined
                     ? current.auto_return_charge
-                    : body.auto_return_charge
+                    : body.auto_return_charge,
+                hand_model: current.hand_model
             };
             writeChassisSettings(settings);
             log(`🚙 底盘导航已${settings.navigation_enabled ? '开启' : '关闭'}，自动回充已${settings.auto_return_charge ? '开启' : '关闭'}，放置点=${settings.place_marker}`);
@@ -2704,6 +2748,8 @@ function currentRobotOperation() {
     if (robotEmergencyPromise) return { status: 'emergency-stopping', label: '正在执行急停' };
     if (robotEmergencyStopped) return { status: 'emergency-stopped', label: '急停已触发，请人工检查并重启后端' };
     if (robotFailureRecoveryPromise) return { status: 'returning', label: '订单失败后正在收起并回充' };
+    if (robotReconfigurePromise) return { status: 'reconfiguring-hand', label: '正在切换灵巧手配置' };
+    if (robotWorkerStarting && !robotWorkerReady) return { status: 'starting', label: '抓取程序正在启动' };
     if (inventoryScanPromise) return { status: 'inventory-scanning', label: '正在巡架识别商品' };
     if (chassisNavigationPromise) return { status: 'chassis-moving', label: '底盘正在运动' };
     if (robotShutdownPromise) return { status: 'shutting-down', label: '机器人正在收起、断电并回充' };
@@ -2879,12 +2925,14 @@ function broadcastRobotStatus(status = currentRobotStatus(), message = '') {
 }
 
 function readChassisSettings() {
+    const defaultHandModel = normalizeHandModel(process.env.TOOL_HAND_MODEL || 'dh116');
     try {
         if (!fs.existsSync(CHASSIS_SETTINGS_FILE)) {
             return {
                 navigation_enabled: CHASSIS_NAVIGATION_DEFAULT_ENABLE,
                 auto_return_charge: ROBOT_AUTO_RETURN_CHARGE,
-                place_marker: CHASSIS_PLACE_MARKER_DEFAULT
+                place_marker: CHASSIS_PLACE_MARKER_DEFAULT,
+                hand_model: defaultHandModel
             };
         }
         const data = JSON.parse(fs.readFileSync(CHASSIS_SETTINGS_FILE, 'utf8'));
@@ -2893,14 +2941,16 @@ function readChassisSettings() {
             auto_return_charge: data.auto_return_charge === undefined
                 ? ROBOT_AUTO_RETURN_CHARGE
                 : Boolean(data.auto_return_charge),
-            place_marker: validateChassisMarkerName(data.place_marker || CHASSIS_PLACE_MARKER_DEFAULT)
+            place_marker: validateChassisMarkerName(data.place_marker || CHASSIS_PLACE_MARKER_DEFAULT),
+            hand_model: normalizeHandModel(data.hand_model || defaultHandModel)
         };
     } catch (error) {
         log(`⚠️ 底盘设置读取失败: ${error.message}`);
         return {
             navigation_enabled: CHASSIS_NAVIGATION_DEFAULT_ENABLE,
             auto_return_charge: ROBOT_AUTO_RETURN_CHARGE,
-            place_marker: CHASSIS_PLACE_MARKER_DEFAULT
+            place_marker: CHASSIS_PLACE_MARKER_DEFAULT,
+            hand_model: defaultHandModel
         };
     }
 }
@@ -3320,6 +3370,7 @@ function ensureRobotWorker() {
     robotWorkerStarting = new Promise((resolve, reject) => {
         log('🤖 启动常驻抓取 worker...');
         robotWorkerReady = false;
+        const configuredHand = handRuntimeConfig(readChassisSettings().hand_model);
         let settled = false;
         const child = spawn('python3', [GRASP_SCRIPT], {
             cwd: GRASP_CWD,
@@ -3330,7 +3381,8 @@ function ensureRobotWorker() {
                 CHASSIS_HOST,
                 CHASSIS_PORT: String(CHASSIS_PORT),
                 CHASSIS_SETTINGS_FILE,
-                HAND_BACKEND: process.env.HAND_BACKEND || 'lhandpro_dobot',
+                TOOL_HAND_MODEL: configuredHand.model,
+                HAND_BACKEND: configuredHand.backend,
                 HAND_GRASP_MODE: process.env.HAND_GRASP_MODE || 'flex',
                 LHAND_DOBOT_BAUD: process.env.LHAND_DOBOT_BAUD || '115200',
                 LHAND_RS485_NODE_ID: process.env.LHAND_RS485_NODE_ID || '1',
@@ -3483,6 +3535,20 @@ async function returnRobotToCharge(
         message: `机器人已到达充电桩，等待 ${Math.round(ORDER_READY_CLOSE_DELAY_MS / 1000)} 秒后恢复点单...`
     });
     broadcastRobotStatus('returning', '机器人已到达充电桩，正在等待系统稳定');
+}
+
+function normalizeHandModel(value) {
+    const model = String(value || '').trim().toLowerCase();
+    if (model === 'aero' || model === 'dh116') return model;
+    throw new Error('灵巧手型号无效，可选 aero 或 dh116');
+}
+
+function handRuntimeConfig(model) {
+    const normalized = normalizeHandModel(model);
+    if (normalized === 'aero') {
+        return { model: normalized, label: 'Aero 原手', backend: 'aero' };
+    }
+    return { model: normalized, label: 'DH116 新手', backend: 'lhandpro_dobot' };
 }
 
 async function recoverRobotAfterFailedOrder(ws, orderId, reason) {
@@ -4337,6 +4403,48 @@ async function emergencyStopRobot() {
     if (errors.length) log(`🛑 急停部分指令失败，但已有 ${successfulCommands} 条停止指令成功发送`);
     broadcastRobotStatus('emergency-stopped', '急停已触发，请人工检查并重启后端');
     return { mode: ROBOT_GRASP_REAL ? 'real' : 'simulated', detail: '急停指令已发送' };
+}
+
+async function stopRobotWorkerForReconfigure() {
+    if (robotReconfigurePromise) return robotReconfigurePromise;
+    if (!ROBOT_GRASP_REAL) {
+        robotWorkerReady = false;
+        return { mode: 'simulated', detail: '抓取 worker 已关闭' };
+    }
+    const worker = robotWorker;
+    if (!worker || worker.exitCode !== null) {
+        robotWorkerReady = false;
+        return { mode: 'real', detail: 'worker 已退出' };
+    }
+    robotReconfigurePromise = new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            worker.off('close', onClose);
+            worker.off('error', onError);
+            if (error) reject(error);
+            else resolve({ mode: 'real', detail: '抓取 worker 已停止，保持当前位置' });
+        };
+        const onClose = (code) => code === 0
+            ? finish()
+            : finish(new Error(`切换灵巧手时 worker 异常退出，退出码 ${code}`));
+        const onError = (error) => finish(error);
+        const timeout = setTimeout(() => finish(new Error(`停止抓取 worker 超时 (${ROBOT_RECONFIGURE_TIMEOUT_MS}ms)`)), ROBOT_RECONFIGURE_TIMEOUT_MS);
+        worker.once('close', onClose);
+        worker.once('error', onError);
+        worker.stdin.write('__quit__\n', (error) => {
+            if (error) finish(new Error(`无法发送灵巧手切换命令: ${error.message}`));
+        });
+    });
+    robotReconfigurePromise = robotReconfigurePromise.finally(() => {
+        robotReconfigurePromise = null;
+        robotWorkerReady = false;
+        broadcastRobotStatus();
+    });
+    broadcastRobotStatus('reconfiguring-hand', '正在关闭抓取程序以切换灵巧手');
+    return robotReconfigurePromise;
 }
 
 async function powerOffRobotWorker() {

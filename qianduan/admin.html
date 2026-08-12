@@ -312,6 +312,13 @@
                         <option value="fangzhi">fangzhi</option>
                     </select>
                 </label>
+                <label class="toggle-control">
+                    <span>末端灵巧手</span>
+                    <select class="select-box" id="robotHandModel" onchange="updateRobotHandConfig(this.value)">
+                        <option value="dh116">DH116 新手</option>
+                        <option value="aero">Aero 原手</option>
+                    </select>
+                </label>
                 <span class="map-status" id="chassisMapStatus">尚未读取底盘地图</span>
             </div>
             <div class="chassis-map" id="chassisMap"><div class="map-empty">暂无地图数据</div></div>
@@ -540,6 +547,7 @@
         let shelfLayers = {};
         let chassisMapData = { map: {}, markers: [] };
         let chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'fangzhi' };
+        let robotHandConfig = { model: 'dh116', label: 'DH116 新手', backend: 'lhandpro_dobot' };
         let inventoryScanData = { shelves: [], task: { status: 'idle', results: [] }, running: false };
         let inventoryConfigDraft = [];
         let inventoryConfigDirty = false;
@@ -605,7 +613,7 @@
 
         async function showAdmin() {
             document.getElementById('loginOverlay').hidden = true;
-            await Promise.all([loadShelfLayers(), loadChassisMap(), loadChassisNavigationConfig(), loadRobotStatus(), loadInventoryScan()]);
+            await Promise.all([loadShelfLayers(), loadChassisMap(), loadChassisNavigationConfig(), loadRobotHandConfig(), loadRobotStatus(), loadInventoryScan()]);
             await Promise.all([loadProducts(), loadCategories(), loadAdminOrders(1)]);
             switchAdminPage(currentAdminPage, { refresh: false });
             document.getElementById('adminRefreshStatus').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
@@ -651,7 +659,7 @@
             if (page === 'products') return Promise.allSettled([loadProducts({ silent: true }), loadCategories(), loadShelfLayers()]);
             if (page === 'orders') return loadAdminOrders(adminOrderPage, { silent: true });
             if (page === 'inventory-scan') return loadInventoryScan();
-            if (page === 'chassis') return Promise.allSettled([loadChassisMap(), loadChassisNavigationConfig()]);
+            if (page === 'chassis') return Promise.allSettled([loadChassisMap(), loadChassisNavigationConfig(), loadRobotHandConfig()]);
             return Promise.allSettled([loadRobotStatus(), loadProducts({ silent: true }), loadAdminOrders(adminOrderPage, { silent: true })]);
         }
 
@@ -953,6 +961,55 @@
             } finally {
                 toggle.disabled = false;
                 autoReturnToggle.disabled = false;
+            }
+        }
+
+        async function loadRobotHandConfig() {
+            const select = document.getElementById('robotHandModel');
+            select.disabled = true;
+            try {
+                const res = await adminFetch('/api/robot/hand-config', { cache: 'no-store', preserveSession: true });
+                const json = await readAdminJson(res, '灵巧手配置接口返回了无效数据');
+                if (res.status === 401) throw new Error('盒子端管理员会话配置不一致');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '读取灵巧手配置失败');
+                robotHandConfig = json.data;
+                select.value = robotHandConfig.model;
+            } catch (error) {
+                select.value = robotHandConfig.model;
+                showToast(error.message, 'error');
+            } finally {
+                select.disabled = false;
+            }
+        }
+
+        async function updateRobotHandConfig(model) {
+            const select = document.getElementById('robotHandModel');
+            const previous = robotHandConfig.model;
+            const label = model === 'aero' ? 'Aero 原手' : 'DH116 新手';
+            if (model === previous) return;
+            if (!window.confirm(`确认切换为“${label}”吗？\n\n系统会关闭当前空闲抓取程序。请确认实际灵巧手也已更换，下一次任务才会按新配置启动。`)) {
+                select.value = previous;
+                return;
+            }
+            select.disabled = true;
+            try {
+                const res = await adminFetch('/api/robot/hand-config', {
+                    preserveSession: true,
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model })
+                });
+                const json = await readAdminJson(res, '灵巧手切换接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '灵巧手切换失败');
+                robotHandConfig = json.data;
+                select.value = robotHandConfig.model;
+                showToast(json.message, 'success');
+                await loadRobotStatus();
+            } catch (error) {
+                select.value = previous;
+                showToast(error.message, 'error');
+            } finally {
+                select.disabled = false;
             }
         }
 

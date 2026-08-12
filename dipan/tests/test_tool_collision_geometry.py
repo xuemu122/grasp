@@ -1,8 +1,11 @@
+import importlib
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
+import tool_geometry
 
 from depth_collision_guard import check_hand_path, depth_to_robot_obstacles, hand_path_hit_mask
 from dobot_arm import DobotArm
@@ -270,6 +273,22 @@ class ToolCollisionGeometryTests(unittest.TestCase):
             or b.startswith("tool_") and a in ("Link5", "Link6")
             for a, b in checked_names
         ))
+
+    def test_z_aero_model_restores_original_open_hand_envelope(self):
+        try:
+            with patch.dict(os.environ, {"TOOL_HAND_MODEL": "aero"}, clear=False):
+                geometry = importlib.reload(tool_geometry)
+                self.assertEqual(geometry.TOOL_HAND_MODEL, "aero")
+                self.assertAlmostEqual(geometry.HAND_LENGTH_Z_M, 0.250)
+                self.assertAlmostEqual(geometry.HAND_OPEN_WIDTH_Y_M, 0.150)
+                self.assertEqual(len(geometry.hand_box_bounds()), 2)
+                parts = geometry.hand_capsule_parts()
+                self.assertEqual(set(parts), {"tool_hand_palm", "tool_hand_fingers"})
+                self.assertEqual(len(parts["tool_hand_palm"]), 12)
+                self.assertEqual(len(parts["tool_hand_fingers"]), 15)
+        finally:
+            with patch.dict(os.environ, {"TOOL_HAND_MODEL": "dh116"}, clear=False):
+                importlib.reload(tool_geometry)
 
     def test_collision_gate_fails_closed_when_ik_or_check_fails(self):
         arm = DobotArm.__new__(DobotArm)

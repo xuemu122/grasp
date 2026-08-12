@@ -1,14 +1,35 @@
 #!/usr/bin/env python3
-"""Shared flange-frame geometry for the DH116 hand and printed adapter.
+"""Shared flange-frame geometry for the selectable robot hand.
 
-The DH116 defaults below combine the hand URDF swept envelope with the printed
-adapter from ``urdf/new.3mf``.  The round adapter face starts at the Nova tool
-flange, its camera plate points along flange -X, and the hand starts after the
-adapter along flange +Z.  Mount dimensions remain overrideable.
+``TOOL_HAND_MODEL=aero`` selects the original Aero hand envelope.
+``TOOL_HAND_MODEL=dh116`` selects the DH116 hand and printed adapter from
+``urdf/new.3mf``.  Geometry is selected before the worker imports motion and
+collision modules, so one worker always uses one consistent tool model.
 """
 
 import math
 import os
+
+
+def _resolve_hand_model():
+    requested = os.getenv("TOOL_HAND_MODEL", "").strip().lower()
+    if not requested:
+        requested = "aero" if os.getenv("HAND_BACKEND", "").strip().lower() == "aero" else "dh116"
+    aliases = {
+        "aero": "aero",
+        "old": "aero",
+        "original": "aero",
+        "dh116": "dh116",
+        "lhandpro": "dh116",
+        "new": "dh116",
+    }
+    model = aliases.get(requested)
+    if model is None:
+        raise ValueError(f"不支持的 TOOL_HAND_MODEL={requested!r}, 可选 aero/dh116")
+    return model
+
+
+TOOL_HAND_MODEL = _resolve_hand_model()
 
 
 # The camera's 145 mm side runs laterally across the wrist.  Its optical
@@ -43,48 +64,82 @@ ADAPTER_CAMERA_Y_MIN_M = float(os.getenv("TOOL_ADAPTER_CAMERA_Y_MIN_M", "-0.0305
 ADAPTER_CAMERA_Y_MAX_M = float(os.getenv("TOOL_ADAPTER_CAMERA_Y_MAX_M", "0.0296"))
 ADAPTER_CAMERA_Z_MAX_M = float(os.getenv("TOOL_ADAPTER_CAMERA_Z_MAX_M", "0.0200"))
 
-# DH116 swept AABB from the supplied URDF, relative to the hand base:
-#   all links: X=-33.9..112.8, Y=-49.6..57.9, Z=0..192.4 mm
-#   base:      X=-33.9..28.4,  Y=-41.8..41.6, Z=0..108.4 mm
-#   thumb:     X=7.6..112.8,   Y=-49.6..57.9, Z=22.6..119.0 mm
-#   fingers:   X=-25.1..70.6,  Y=-45.1..43.8, Z=52.0..192.4 mm
-HAND_MOUNT_OFFSET_Z_M = float(os.getenv(
-    "TOOL_HAND_MOUNT_OFFSET_Z_M", str(ADAPTER_LENGTH_Z_M)
-))
-HAND_LENGTH_Z_M = float(os.getenv(
-    "TOOL_HAND_LENGTH_Z_M", str(HAND_MOUNT_OFFSET_Z_M + 0.195)
-))
-HAND_PALM_LENGTH_Z_M = float(os.getenv(
-    "HAND_PALM_LENGTH_M", str(HAND_MOUNT_OFFSET_Z_M + 0.110)
-))
-HAND_BODY_DEPTH_X_M = float(os.getenv("TOOL_HAND_BODY_DEPTH_X_M", "0.062"))
-HAND_PALM_WIDTH_Y_M = float(os.getenv("TOOL_HAND_PALM_WIDTH_Y_M", "0.086"))
-HAND_OPEN_WIDTH_Y_M = float(os.getenv("TOOL_HAND_OPEN_WIDTH_Y_M", "0.112"))
-HAND_MOUNT_EXCLUSION_Z_M = float(os.getenv(
-    "TOOL_HAND_MOUNT_EXCLUSION_Z_M", str(HAND_MOUNT_OFFSET_Z_M)
-))
-
-HAND_PALM_X_MIN_M = float(os.getenv("TOOL_HAND_PALM_X_MIN_M", "-0.036"))
-HAND_PALM_X_MAX_M = float(os.getenv("TOOL_HAND_PALM_X_MAX_M", "0.030"))
-HAND_PALM_Y_MIN_M = float(os.getenv("TOOL_HAND_PALM_Y_MIN_M", "-0.044"))
-HAND_PALM_Y_MAX_M = float(os.getenv("TOOL_HAND_PALM_Y_MAX_M", "0.044"))
-HAND_THUMB_X_MIN_M = float(os.getenv("TOOL_HAND_THUMB_X_MIN_M", "0.006"))
-HAND_THUMB_X_MAX_M = float(os.getenv("TOOL_HAND_THUMB_X_MAX_M", "0.115"))
-HAND_THUMB_Y_MIN_M = float(os.getenv("TOOL_HAND_THUMB_Y_MIN_M", "-0.052"))
-HAND_THUMB_Y_MAX_M = float(os.getenv("TOOL_HAND_THUMB_Y_MAX_M", "0.060"))
-HAND_FINGERS_X_MIN_M = float(os.getenv("TOOL_HAND_FINGERS_X_MIN_M", "-0.027"))
-HAND_FINGERS_X_MAX_M = float(os.getenv("TOOL_HAND_FINGERS_X_MAX_M", "0.073"))
-HAND_FINGERS_Y_MIN_M = float(os.getenv("TOOL_HAND_FINGERS_Y_MIN_M", "-0.047"))
-HAND_FINGERS_Y_MAX_M = float(os.getenv("TOOL_HAND_FINGERS_Y_MAX_M", "0.046"))
-HAND_THUMB_Z_MAX_M = float(os.getenv(
-    "TOOL_HAND_THUMB_Z_MAX_M", str(HAND_MOUNT_OFFSET_Z_M + 0.121)
-))
+if TOOL_HAND_MODEL == "aero":
+    # Original coarse open-hand envelope used before the DH116 integration.
+    HAND_MOUNT_OFFSET_Z_M = 0.0
+    HAND_LENGTH_Z_M = float(os.getenv("TOOL_HAND_LENGTH_Z_M", "0.250"))
+    HAND_PALM_LENGTH_Z_M = float(os.getenv("HAND_PALM_LENGTH_M", "0.157"))
+    HAND_BODY_DEPTH_X_M = float(os.getenv("TOOL_HAND_BODY_DEPTH_X_M", "0.080"))
+    HAND_PALM_WIDTH_Y_M = float(os.getenv("TOOL_HAND_PALM_WIDTH_Y_M", "0.095"))
+    HAND_OPEN_WIDTH_Y_M = float(os.getenv("TOOL_HAND_OPEN_WIDTH_Y_M", "0.150"))
+    HAND_MOUNT_EXCLUSION_Z_M = float(os.getenv("TOOL_HAND_MOUNT_EXCLUSION_Z_M", "0.050"))
+    HAND_PALM_X_MIN_M = -HAND_BODY_DEPTH_X_M * 0.5
+    HAND_PALM_X_MAX_M = HAND_BODY_DEPTH_X_M * 0.5
+    HAND_PALM_Y_MIN_M = -HAND_PALM_WIDTH_Y_M * 0.5
+    HAND_PALM_Y_MAX_M = HAND_PALM_WIDTH_Y_M * 0.5
+    HAND_THUMB_X_MIN_M = HAND_PALM_X_MIN_M
+    HAND_THUMB_X_MAX_M = HAND_PALM_X_MAX_M
+    HAND_THUMB_Y_MIN_M = HAND_PALM_Y_MIN_M
+    HAND_THUMB_Y_MAX_M = HAND_PALM_Y_MAX_M
+    HAND_FINGERS_X_MIN_M = -HAND_BODY_DEPTH_X_M * 0.5
+    HAND_FINGERS_X_MAX_M = HAND_BODY_DEPTH_X_M * 0.5
+    HAND_FINGERS_Y_MIN_M = -HAND_OPEN_WIDTH_Y_M * 0.5
+    HAND_FINGERS_Y_MAX_M = HAND_OPEN_WIDTH_Y_M * 0.5
+    HAND_THUMB_Z_MAX_M = HAND_PALM_LENGTH_Z_M
+else:
+    # DH116 swept AABB from the supplied URDF, relative to the hand base:
+    #   all links: X=-33.9..112.8, Y=-49.6..57.9, Z=0..192.4 mm
+    #   base:      X=-33.9..28.4,  Y=-41.8..41.6, Z=0..108.4 mm
+    #   thumb:     X=7.6..112.8,   Y=-49.6..57.9, Z=22.6..119.0 mm
+    #   fingers:   X=-25.1..70.6,  Y=-45.1..43.8, Z=52.0..192.4 mm
+    HAND_MOUNT_OFFSET_Z_M = float(os.getenv(
+        "TOOL_HAND_MOUNT_OFFSET_Z_M", str(ADAPTER_LENGTH_Z_M)
+    ))
+    HAND_LENGTH_Z_M = float(os.getenv(
+        "TOOL_HAND_LENGTH_Z_M", str(HAND_MOUNT_OFFSET_Z_M + 0.195)
+    ))
+    HAND_PALM_LENGTH_Z_M = float(os.getenv(
+        "HAND_PALM_LENGTH_M", str(HAND_MOUNT_OFFSET_Z_M + 0.110)
+    ))
+    HAND_BODY_DEPTH_X_M = float(os.getenv("TOOL_HAND_BODY_DEPTH_X_M", "0.062"))
+    HAND_PALM_WIDTH_Y_M = float(os.getenv("TOOL_HAND_PALM_WIDTH_Y_M", "0.086"))
+    HAND_OPEN_WIDTH_Y_M = float(os.getenv("TOOL_HAND_OPEN_WIDTH_Y_M", "0.112"))
+    HAND_MOUNT_EXCLUSION_Z_M = float(os.getenv(
+        "TOOL_HAND_MOUNT_EXCLUSION_Z_M", str(HAND_MOUNT_OFFSET_Z_M)
+    ))
+    HAND_PALM_X_MIN_M = float(os.getenv("TOOL_HAND_PALM_X_MIN_M", "-0.036"))
+    HAND_PALM_X_MAX_M = float(os.getenv("TOOL_HAND_PALM_X_MAX_M", "0.030"))
+    HAND_PALM_Y_MIN_M = float(os.getenv("TOOL_HAND_PALM_Y_MIN_M", "-0.044"))
+    HAND_PALM_Y_MAX_M = float(os.getenv("TOOL_HAND_PALM_Y_MAX_M", "0.044"))
+    HAND_THUMB_X_MIN_M = float(os.getenv("TOOL_HAND_THUMB_X_MIN_M", "0.006"))
+    HAND_THUMB_X_MAX_M = float(os.getenv("TOOL_HAND_THUMB_X_MAX_M", "0.115"))
+    HAND_THUMB_Y_MIN_M = float(os.getenv("TOOL_HAND_THUMB_Y_MIN_M", "-0.052"))
+    HAND_THUMB_Y_MAX_M = float(os.getenv("TOOL_HAND_THUMB_Y_MAX_M", "0.060"))
+    HAND_FINGERS_X_MIN_M = float(os.getenv("TOOL_HAND_FINGERS_X_MIN_M", "-0.027"))
+    HAND_FINGERS_X_MAX_M = float(os.getenv("TOOL_HAND_FINGERS_X_MAX_M", "0.073"))
+    HAND_FINGERS_Y_MIN_M = float(os.getenv("TOOL_HAND_FINGERS_Y_MIN_M", "-0.047"))
+    HAND_FINGERS_Y_MAX_M = float(os.getenv("TOOL_HAND_FINGERS_Y_MAX_M", "0.046"))
+    HAND_THUMB_Z_MAX_M = float(os.getenv(
+        "TOOL_HAND_THUMB_Z_MAX_M", str(HAND_MOUNT_OFFSET_Z_M + 0.121)
+    ))
 
 
 def hand_box_bounds(clearance_m=0.0):
-    """Return adapter and DH116 swept AABBs in the Nova flange frame."""
+    """Return selected open-hand AABBs in the Nova flange frame."""
     clearance = max(0.0, float(clearance_m))
-    boxes = (
+    if TOOL_HAND_MODEL == "aero":
+        boxes = (
+            (
+                (HAND_PALM_X_MIN_M, HAND_PALM_Y_MIN_M, HAND_MOUNT_EXCLUSION_Z_M),
+                (HAND_PALM_X_MAX_M, HAND_PALM_Y_MAX_M, min(HAND_PALM_LENGTH_Z_M, HAND_LENGTH_Z_M)),
+            ),
+            (
+                (HAND_FINGERS_X_MIN_M, HAND_FINGERS_Y_MIN_M, max(HAND_MOUNT_EXCLUSION_Z_M, HAND_PALM_LENGTH_Z_M - 0.025)),
+                (HAND_FINGERS_X_MAX_M, HAND_FINGERS_Y_MAX_M, HAND_LENGTH_Z_M),
+            ),
+        )
+    else:
+        boxes = (
         (
             (ADAPTER_FLANGE_X_MIN_M, ADAPTER_FLANGE_Y_MIN_M, 0.0),
             (ADAPTER_FLANGE_X_MAX_M, ADAPTER_FLANGE_Y_MAX_M, ADAPTER_LENGTH_Z_M),
@@ -113,7 +168,7 @@ def hand_box_bounds(clearance_m=0.0):
             ),
             (HAND_FINGERS_X_MAX_M, HAND_FINGERS_Y_MAX_M, HAND_LENGTH_Z_M),
         ),
-    )
+        )
     return tuple(
         (
             tuple(float(value) - clearance for value in box_min),
@@ -217,7 +272,28 @@ def _box_capsule_grid(
 
 
 def hand_capsule_parts():
-    """Return adapter and DH116 swept-envelope capsules in the Link6 frame."""
+    """Return selected open-hand swept-envelope capsules in the Link6 frame."""
+    if TOOL_HAND_MODEL == "aero":
+        palm_end = max(HAND_MOUNT_EXCLUSION_Z_M, min(HAND_PALM_LENGTH_Z_M, HAND_LENGTH_Z_M))
+        return {
+            "tool_hand_palm": _box_capsule_grid(
+                HAND_BODY_DEPTH_X_M,
+                HAND_PALM_WIDTH_Y_M,
+                HAND_MOUNT_EXCLUSION_Z_M,
+                palm_end,
+                3,
+                4,
+            ),
+            "tool_hand_fingers": _box_capsule_grid(
+                HAND_BODY_DEPTH_X_M,
+                HAND_OPEN_WIDTH_Y_M,
+                max(HAND_MOUNT_EXCLUSION_Z_M, HAND_PALM_LENGTH_Z_M - 0.025),
+                HAND_LENGTH_Z_M,
+                3,
+                5,
+            ),
+        }
+
     adapter_flange = _box_capsule_grid(
         ADAPTER_FLANGE_X_MAX_M - ADAPTER_FLANGE_X_MIN_M,
         ADAPTER_FLANGE_Y_MAX_M - ADAPTER_FLANGE_Y_MIN_M,
@@ -278,8 +354,14 @@ def camera_size_label_mm():
 
 
 def tool_size_label_mm():
+    if TOOL_HAND_MODEL == "aero":
+        return (
+            f"model=aero/hand={HAND_LENGTH_Z_M*1000:.0f}mm/"
+            f"palm={HAND_BODY_DEPTH_X_M*1000:.0f}x{HAND_PALM_WIDTH_Y_M*1000:.0f}mm/"
+            f"open={HAND_OPEN_WIDTH_Y_M*1000:.0f}mm"
+        )
     return (
-        f"hand={HAND_LENGTH_Z_M*1000:.0f}mm/adapter={ADAPTER_LENGTH_Z_M*1000:.0f}mm/"
+        f"model=dh116/hand={HAND_LENGTH_Z_M*1000:.0f}mm/adapter={ADAPTER_LENGTH_Z_M*1000:.0f}mm/"
         f"palm={HAND_BODY_DEPTH_X_M*1000:.0f}x{HAND_PALM_WIDTH_Y_M*1000:.0f}mm/"
         f"open={HAND_OPEN_WIDTH_Y_M*1000:.0f}mm"
     )
