@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import os
 from pathlib import Path
 from unittest.mock import ANY, Mock, call, patch
 
@@ -28,11 +29,54 @@ class StartupHand(FakeHand):
         self.connect_calls += 1
 
 
+class FailedOpenHand(StartupHand):
+    def open(self):
+        self.open_calls += 1
+        return False
+
+
 class PickCycleRoutingTests(unittest.TestCase):
+    def test_main_algorithm_builds_verified_dobot_lhandpro_backend(self):
+        arm = Mock(ip="192.168.5.1")
+        fake_class = Mock(return_value=object())
+        with (
+            patch.object(shelf_grasp, "HAND_BACKEND", "lhandpro_dobot"),
+            patch("dobot_tcp_gripper.DobotTcpGripper", fake_class),
+        ):
+            hand = shelf_grasp._create_hand(arm)
+
+        self.assertIsNotNone(hand)
+        fake_class.assert_called_once_with(
+            arm=arm,
+            robot_ip="192.168.5.1",
+            baud_rate=shelf_grasp.LHAND_DOBOT_BAUD,
+            node_id=shelf_grasp.LHAND_RS485_NODE_ID,
+            profile_path=shelf_grasp.LHAND_FLEX_PROFILE,
+            control_transport=shelf_grasp.LHAND_DOBOT_CONTROL,
+            debug=shelf_grasp.LHAND_DEBUG,
+            tcp_debug=shelf_grasp.LHAND_HEX_DEBUG,
+        )
+
+    def test_flexible_startup_rejects_missing_lhand_profile_before_connect(self):
+        hand = StartupHand()
+        hand.profile_path = "/tmp/definitely-missing-lhand-profile.csv"
+        with patch.object(shelf_grasp, "HAND_GRASP_MODE", "flex"):
+            with self.assertRaisesRegex(RuntimeError, "缺少空载曲线"):
+                shelf_grasp._connect_and_open_hand(hand)
+        self.assertEqual(hand.connect_calls, 0)
+        self.assertEqual(hand.open_calls, 0)
+
     def test_startup_connects_and_opens_hand_without_arm_motion(self):
         hand = StartupHand()
 
         self.assertTrue(shelf_grasp._connect_and_open_hand(hand))
+        self.assertEqual(hand.connect_calls, 1)
+        self.assertEqual(hand.open_calls, 1)
+
+    def test_startup_aborts_when_hand_cannot_open(self):
+        hand = FailedOpenHand()
+        with self.assertRaisesRegex(RuntimeError, "张开失败"):
+            shelf_grasp._connect_and_open_hand(hand)
         self.assertEqual(hand.connect_calls, 1)
         self.assertEqual(hand.open_calls, 1)
 

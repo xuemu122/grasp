@@ -3330,6 +3330,11 @@ function ensureRobotWorker() {
                 CHASSIS_HOST,
                 CHASSIS_PORT: String(CHASSIS_PORT),
                 CHASSIS_SETTINGS_FILE,
+                HAND_BACKEND: process.env.HAND_BACKEND || 'lhandpro_dobot',
+                HAND_GRASP_MODE: process.env.HAND_GRASP_MODE || 'flex',
+                LHAND_DOBOT_BAUD: process.env.LHAND_DOBOT_BAUD || '115200',
+                LHAND_RS485_NODE_ID: process.env.LHAND_RS485_NODE_ID || '1',
+                LHAND_DOBOT_CONTROL: process.env.LHAND_DOBOT_CONTROL || 'compact',
                 SHELF_GRASP_WORKER: '1',
                 SHELF_GRASP_IDLE_STARTUP: '1'
             }

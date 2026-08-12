@@ -115,7 +115,16 @@ WATER_CONF_THRESHOLD = float(os.getenv("WATER_CONF_THRESHOLD", "0.52"))
 DRINK_CLASS_IDS = set(range(70, 78)) | set(range(80, 87))
 # 当前默认使用电流反馈柔性抓取；原侧抓/上抓固定手势仍可通过 HAND_GRASP_MODE=bottle/auto 保留。
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "flex").lower()
-HAND_BACKEND = os.getenv("HAND_BACKEND", "aero").strip().lower()
+HAND_BACKEND = os.getenv("HAND_BACKEND", "lhandpro_dobot").strip().lower()
+LHAND_DOBOT_BAUD = int(os.getenv("LHAND_DOBOT_BAUD", "115200"))
+LHAND_RS485_NODE_ID = int(os.getenv("LHAND_RS485_NODE_ID", "1"))
+LHAND_DOBOT_CONTROL = os.getenv("LHAND_DOBOT_CONTROL", "compact").strip().lower()
+LHAND_FLEX_PROFILE = os.path.abspath(os.path.expanduser(os.getenv(
+    "LHAND_FLEX_PROFILE",
+    os.path.join(os.path.dirname(__file__), "runtime", "lhandpro_empty.csv"),
+)))
+LHAND_DEBUG = os.getenv("LHAND_DEBUG", "0").lower() in ("1", "true", "yes", "on")
+LHAND_HEX_DEBUG = os.getenv("LHAND_HEX_DEBUG", "0").lower() in ("1", "true", "yes", "on")
 DETECTION_STABILITY_IOU = float(os.getenv("DETECTION_STABILITY_IOU", "0.35"))
 DETECTION_CAPTURE_FRAMES = max(1, int(os.getenv("DETECTION_CAPTURE_FRAMES", "10")))
 DETECTION_WARMUP_FRAMES = max(0, int(os.getenv("DETECTION_WARMUP_FRAMES", "2")))
@@ -1675,9 +1684,20 @@ def _save_failure_diagnostic(image):
 
 def _connect_and_open_hand(hand):
     """Initialize the gripper without requiring any arm motion."""
+    if (
+        HAND_GRASP_MODE in ("flex", "flexible", "current")
+        and hasattr(hand, "profile_path")
+        and not os.path.isfile(hand.profile_path)
+    ):
+        raise RuntimeError(
+            f"柔性抓取缺少空载曲线: {hand.profile_path}。"
+            "请先用 test_lhandpro_flexible_grasp.py record 录制。"
+        )
     hand.connect()
     print("[启动] 机械臂保持当前位置，先张开灵巧手")
-    return hand.open()
+    if not hand.open():
+        raise RuntimeError("灵巧手启动张开失败，拒绝进入机械臂抓取流程")
+    return True
 
 
 def _create_hand(arm=None):
@@ -1689,7 +1709,16 @@ def _create_hand(arm=None):
         return LHandProGripper()
     if HAND_BACKEND in ("lhandpro_dobot", "dobot_modbus", "tool_rs485"):
         from dobot_tcp_gripper import DobotTcpGripper
-        return DobotTcpGripper(arm=arm)
+        return DobotTcpGripper(
+            arm=arm,
+            robot_ip=getattr(arm, "ip", os.getenv("DOBOT_IP", "192.168.5.1")),
+            baud_rate=LHAND_DOBOT_BAUD,
+            node_id=LHAND_RS485_NODE_ID,
+            profile_path=LHAND_FLEX_PROFILE,
+            control_transport=LHAND_DOBOT_CONTROL,
+            debug=LHAND_DEBUG,
+            tcp_debug=LHAND_HEX_DEBUG,
+        )
     raise ValueError(
         f"不支持的 HAND_BACKEND={HAND_BACKEND!r}, "
         "可选 aero/lhandpro/lhandpro_dobot"
@@ -1722,6 +1751,11 @@ def main():
         f"{'启用' if DEPTH_GUARD_CAMERA_ENABLE else '关闭'}"
     )
     print(f"  灵巧手后端: {HAND_BACKEND}, 手势模式: {HAND_GRASP_MODE}")
+    if HAND_BACKEND in ("lhandpro_dobot", "dobot_modbus", "tool_rs485"):
+        print(
+            f"  LHandPro: {LHAND_DOBOT_BAUD}bps, node={LHAND_RS485_NODE_ID}, "
+            f"control={LHAND_DOBOT_CONTROL}, profile={LHAND_FLEX_PROFILE}"
+        )
     print(f"  抓取策略: {'临时强制全部侧抓' if FORCE_SIDE_GRASP else '按物体尺寸自动选择'}")
     print(f"  目标商品: {TARGET_PRODUCT_QUERY or '未指定'}")
     if SHELF_GRASP_WORKER:

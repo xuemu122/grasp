@@ -68,7 +68,10 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `MOTION_SETTLE_S`：普通运动完成后的短缓冲，默认 `0.2` 秒。
 - `GRASP_SETTLE_S`：抓取前进、闭手前、后退后的缓冲，默认 `0.4` 秒。
 - `HAND_CLOSE_WAIT_S`：灵巧手闭合后等待物体稳定的时间，默认 `3.0` 秒。
-- `HAND_BACKEND`：灵巧手后端，默认 `aero`；新 RS485 灵巧手设为 `lhandpro`。默认值不变，旧硬件不受影响。
+- `HAND_BACKEND`：灵巧手后端，默认 `lhandpro_dobot`；通过 Nova 末端 RS485 使用新手。旧 Aero 硬件可显式设为 `aero`回退。
+- `LHAND_DOBOT_BAUD`：Nova 末端 RS485 波特率，默认 `115200`。
+- `LHAND_RS485_NODE_ID`：灵巧手 RS485 节点号，默认 `1`。
+- `LHAND_DOBOT_CONTROL`：控制帧类型，默认 `compact`，执行“使能→回零→再使能→电流→速度→位置”。
 - `HAND_GRASP_MODE`：灵巧手抓取模式，默认 `flex`，使用电流反馈柔性抓取；可设 `bottle` 使用旧瓶子固定手势，或设 `auto` 使用普通/上抓固定手势。
 - `FORCE_SIDE_GRASP`：是否临时强制所有目标按侧面抓取点规划，默认 `0`，即宽盒/矮盒会自动上抓；设为 `1` 可临时全侧抓。
 - `AERO_FLEX_PROFILE`：柔性抓取空载曲线 CSV，默认 `/home/nvidia/grasp/dipan/runtime/aero_empty.csv`；建议先用 `test_aero_current_grasp.py --disable-trigger` 录制。

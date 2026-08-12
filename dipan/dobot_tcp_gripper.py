@@ -464,6 +464,7 @@ class DobotTcpGripper(LHandProGripper):
         profile_path=None,
         debug=False,
         tcp_debug=False,
+        control_transport=None,
         controller_factory=None,
     ):
         baud_rate = int(baud_rate or os.getenv("LHAND_DOBOT_BAUD", "115200"))
@@ -472,6 +473,9 @@ class DobotTcpGripper(LHandProGripper):
         self.robot_port = int(robot_port)
         self.transparent_port = int(transparent_port)
         self.tcp_debug = bool(tcp_debug)
+        self.control_transport = (
+            control_transport or os.getenv("LHAND_DOBOT_CONTROL", "compact")
+        ).strip().lower()
         self._sdo_adapter = None
         self._custom_controller_factory = controller_factory
         super().__init__(
@@ -546,10 +550,10 @@ class DobotTcpGripper(LHandProGripper):
             if getattr(self.controller, "_tcp_rx_frame_count", 0) <= 0:
                 raise RuntimeError(
                     "Nova 60000 连接已建立，但未收到任何有效手端RS485帧。"
-                    "请保持手端波特率500000，检查末端供电、A/B/通信地和"
+                    f"请确认手端波特率与当前{self.baud_rate}一致，检查末端供电、A/B/通信地和"
                     "机械臂60000透传服务；不允许使能或回零。"
                 )
-            control_transport = os.getenv("LHAND_DOBOT_CONTROL", "compact").strip().lower()
+            control_transport = self.control_transport
             if control_transport not in ("compact", "sdo", "pdo"):
                 raise ValueError("LHAND_DOBOT_CONTROL 只能是 compact、sdo 或 pdo")
             direction_bits = int(os.getenv("LHAND_SDO_DIRECTION_BITS", "0x20"), 0)
