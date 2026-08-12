@@ -496,13 +496,13 @@ class LHandProGripper:
                     max_positions = [min(position, profile_max) for position in max_positions]
             active_axes = _parse_int_set(
                 os.getenv("LHAND_FLEX_ACTIVE_AXES"),
-                ",".join(str(axis) for axis in range(1, self.dof_active + 1)),
+                ",".join(str(axis) for axis in range(2, self.dof_active + 1)),
                 1,
                 self.dof_active,
             )
             required_axes = _parse_int_set(
                 os.getenv("LHAND_FLEX_REQUIRED_AXES"),
-                ",".join(str(axis) for axis in range(3, self.dof_active + 1)),
+                ",".join(str(axis) for axis in range(2, self.dof_active + 1)),
                 1,
                 self.dof_active,
             )

@@ -44,8 +44,10 @@ from tool_geometry import (
     HAND_LENGTH_Z_M,
     HAND_PALM_LENGTH_Z_M,
     HAND_PALM_WIDTH_Y_M,
+    HAND_THUMB_Z_MAX_M,
     camera_box_bounds,
     camera_size_label_mm,
+    hand_box_bounds,
 )
 from target_selection import (
     bbox_iou as _bbox_iou,
@@ -156,6 +158,8 @@ DEPTH_GUARD_SELF_CAMERA_BOX_MIN_M, DEPTH_GUARD_SELF_CAMERA_BOX_MAX_M = camera_bo
 )
 DEPTH_GUARD_HAND_RADIUS_M = float(os.getenv("DEPTH_GUARD_HAND_RADIUS_M", str(HAND_W_Y * 0.5 + DEPTH_GUARD_CLEARANCE_M)))
 DEPTH_GUARD_FINGER_RADIUS_M = float(os.getenv("DEPTH_GUARD_FINGER_RADIUS_M", str(HAND_FINGER_THICKNESS_M * 0.5 + DEPTH_GUARD_CLEARANCE_M)))
+DEPTH_GUARD_HAND_BOXES_M = hand_box_bounds(DEPTH_GUARD_CLEARANCE_M)
+DEPTH_GUARD_SELF_HAND_BOXES_M = hand_box_bounds(DEPTH_GUARD_SELF_MASK_CAMERA_PADDING_M)
 DEPTH_GUARD_APPROACH_LENGTH_M = float(os.getenv("DEPTH_GUARD_APPROACH_LENGTH_M", "0.08"))
 DEPTH_GUARD_PATH_SAMPLES = int(os.getenv("DEPTH_GUARD_PATH_SAMPLES", "8"))
 DEPTH_GUARD_MIN_HIT_POINTS = max(1, int(os.getenv("DEPTH_GUARD_MIN_HIT_POINTS", "2")))
@@ -224,7 +228,7 @@ def _current_layer_allows_low_z() -> bool:
 
 def _depth_guard_hand_radius_profile(hand_length_m=HAND_LENGTH, self_mask=False):
     length = max(0.0, float(hand_length_m))
-    palm_len = max(0.0, min(float(HAND_PALM_LENGTH_M), length))
+    palm_len = max(0.0, min(float(max(HAND_PALM_LENGTH_M, HAND_THUMB_Z_MAX_M)), length))
     palm_radius = DEPTH_GUARD_SELF_MASK_RADIUS_M if self_mask else DEPTH_GUARD_HAND_RADIUS_M
     finger_radius = DEPTH_GUARD_SELF_MASK_FINGER_RADIUS_M if self_mask else DEPTH_GUARD_FINGER_RADIUS_M
     profile = []
@@ -281,6 +285,7 @@ def _depth_guard_path_ok(
         flange_rotation_m=flange_rotation_m,
         camera_box_min_local_m=DEPTH_GUARD_CAMERA_BOX_MIN_M if DEPTH_GUARD_CAMERA_ENABLE else None,
         camera_box_max_local_m=DEPTH_GUARD_CAMERA_BOX_MAX_M if DEPTH_GUARD_CAMERA_ENABLE else None,
+        hand_boxes_local_m=DEPTH_GUARD_HAND_BOXES_M,
         min_hit_points=DEPTH_GUARD_MIN_HIT_POINTS,
         camera_min_hit_points=DEPTH_GUARD_CAMERA_MIN_HIT_POINTS,
     )
@@ -463,6 +468,7 @@ def _save_depth_guard_viz(
         flange_rotation_m=flange_rotation_m,
         camera_box_min_local_m=DEPTH_GUARD_CAMERA_BOX_MIN_M if DEPTH_GUARD_CAMERA_ENABLE else None,
         camera_box_max_local_m=DEPTH_GUARD_CAMERA_BOX_MAX_M if DEPTH_GUARD_CAMERA_ENABLE else None,
+        hand_boxes_local_m=DEPTH_GUARD_HAND_BOXES_M,
         return_components=True,
     )
     camera_hit_pixels = pixels[camera_hit_mask] if len(pixels) == len(camera_hit_mask) else np.zeros((0, 2), dtype=np.int32)
@@ -2312,6 +2318,7 @@ def main():
                     self_camera_box_max_local_m=(
                         DEPTH_GUARD_SELF_CAMERA_BOX_MAX_M if DEPTH_GUARD_CAMERA_ENABLE else None
                     ),
+                    self_hand_boxes_local_m=DEPTH_GUARD_SELF_HAND_BOXES_M,
                     noise_filter_radius_px=DEPTH_GUARD_NOISE_FILTER_RADIUS_PX,
                     noise_filter_min_support=DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT,
                     noise_filter_tolerance_m=DEPTH_GUARD_NOISE_FILTER_TOLERANCE_M,

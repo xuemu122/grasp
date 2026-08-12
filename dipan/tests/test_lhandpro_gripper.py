@@ -181,6 +181,33 @@ class LHandProfileTests(unittest.TestCase):
                 self.assertTrue(hand.flexible_close())
             self.assertTrue(hand.is_holding())
 
+    def test_flexible_close_keeps_thumb_side_axis_open_by_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "empty.csv")
+            with open(path, "w", newline="", encoding="utf-8") as output:
+                writer = csv.DictWriter(
+                    output,
+                    fieldnames=["command"] + [f"current_{axis}" for axis in range(1, 7)],
+                )
+                writer.writeheader()
+                for command in range(0, 3001, 250):
+                    writer.writerow({
+                        "command": command,
+                        **{f"current_{axis}": 100 for axis in range(1, 7)},
+                    })
+
+            hand = LHandProGripper(profile_path=path, controller_factory=FakeController)
+            with patch.dict(os.environ, {}, clear=True), patch("time.sleep"):
+                hand.connect(enable_motors=False, home_motors=False)
+                self.assertTrue(hand.flexible_close())
+
+            positions = FakeController.latest.sdk_handle.positions
+            self.assertEqual(positions[0], 0)
+            self.assertEqual(positions[1], 3000)
+            self.assertEqual(positions[4], 3000)
+            self.assertEqual(positions[5], 3000)
+            self.assertTrue(hand.is_holding())
+
     def test_missing_profile_refuses_flexible_close(self):
         with tempfile.TemporaryDirectory() as directory:
             hand = LHandProGripper(

@@ -133,16 +133,16 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `SELF_COLLISION_VERBOSE`：自碰撞护栏通过时是否打印最近余量，默认关闭。
 - `DOBOT_IK_VERBOSE`：是否打印自碰撞检查用的 `InverseKin` 请求/响应，默认关闭；排查 IK 失败时可开启。
 - `DEPTH_GUARD_ENABLE`：深度护栏开关，默认开启；会排除当前画面中所有检测框，把其余深度点当成货架/障碍，检查对齐和探入路径。
-- `DEPTH_GUARD_CAMERA_ENABLE`：相机碰撞盒开关，默认开启；相机默认安装在手掌根部上方，按法兰系 `X=-150..-90mm`、`Y=-72.5..72.5mm`、`Z=-25..0mm` 建模，并与手部一起检查整条路径。
+- `DEPTH_GUARD_CAMERA_ENABLE`：相机碰撞盒开关，默认开启；相机安装在新连接件的上方托板，按法兰系 `X=-150..-90mm`、`Y=-72.5..72.5mm`、`Z=20..45mm` 建模，并与连接件、手部一起检查整条路径。
 - `TOOL_CAMERA_LONG_SIDE_Y_M` / `TOOL_CAMERA_BODY_DEPTH_X_M` / `TOOL_CAMERA_HEIGHT_Z_M`：相机外壳尺寸，默认分别为 `0.145/0.060/0.025` m；旧的 `TOOL_CAMERA_LENGTH_X_M` / `TOOL_CAMERA_WIDTH_Y_M` 仍作为兼容配置读取。
 - `TOOL_CAMERA_CENTER_X_M` / `TOOL_CAMERA_CENTER_Y_M`：相机外壳中心在法兰坐标系的位置，默认 `-0.120/0.0` m。
-- `TOOL_CAMERA_Z_MIN_M`：相机盒在法兰 `Z` 方向的起点，默认 `-0.025` m（镜头平面后方）；实测安装位置有偏移时可调整。
+- `TOOL_CAMERA_Z_MIN_M`：相机盒在新连接件托板上方的法兰 `Z` 起点，默认 `0.020` m；实测安装位置有偏移时可调整。
 - `DEPTH_GUARD_CAMERA_CLEARANCE_M`：深度护栏对相机盒增加的安全余量，默认等于 `DEPTH_GUARD_CLEARANCE_M`，即 `0.002` m。
 - `DEPTH_GUARD_SELF_MASK_CAMERA_PADDING_M`：从深度点云剔除相机自身时的外扩量，默认 `0.01` m。
-- `HAND_PALM_LENGTH_M`：法兰到掌心前端长度，默认 `0.157` m；之后到指尖的部分按手指建模。
+- `HAND_PALM_LENGTH_M`：Nova 法兰经连接件到掌心前端的长度，默认约 `0.1555` m；之后到指尖的部分按手指建模。
 - `HAND_FINGER_THICKNESS_M`：手指厚度，默认 `0.03` m。
 - `DEPTH_GUARD_CLEARANCE_M`：深度护栏额外安全余量，默认 `0.002` m。
-- `DEPTH_GUARD_HAND_RADIUS_M`：掌心段安全半径，默认约 `0.0495` m；等于 95mm 掌心宽度的一半再加 2mm 余量。
+- `DEPTH_GUARD_HAND_RADIUS_M`：掌心段安全半径，默认约 `0.045` m；等于 86mm 掌心宽度的一半再加 2mm 余量。偏置拇指、连接件和相机托板由独立盒体覆盖。
 - `DEPTH_GUARD_FINGER_RADIUS_M`：手指段安全半径，默认约 `0.017` m；等于 30mm 手指厚度的一半再加 2mm 余量。
 - `DEPTH_GUARD_SELF_MASK_RADIUS_M` / `DEPTH_GUARD_SELF_MASK_FINGER_RADIUS_M`：从深度障碍点里排除相机看到的自己手，默认约 `0.07` m；只影响“删自己手”，不影响路径碰撞半径。
 - `DEPTH_GUARD_APPROACH_LENGTH_M`：对齐路径使用的手部检查长度，默认 `0.08` m；对齐阶段只检查法兰/手掌根部附近，避免把准备抓的货物前方误判成碰撞。最后探入仍使用完整手长。
@@ -411,8 +411,9 @@ python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 record --max 7000 --
 python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 flex
 ```
 
-3～6 号轴默认作为四根手指独立判断；至少两根手指相对同位置空载包络增加 `80‰`
-才判定抓取成功。曲线缺失时默认拒绝柔性抓取。常用参数为
+1 号拇指侧摆默认保持张开位置不动；2～6 号轴参与独立判断并等待接触或到上限，
+其中 2 号为拇指弯曲、3～6 号为四指弯曲。至少两个轴相对同位置空载包络增加
+`80‰` 才判定抓取成功。曲线缺失时默认拒绝柔性抓取。常用参数为
 `LHAND_FLEX_PROFILE_DELTA`、`LHAND_FLEX_STEP`、`LHAND_FLEX_EXTRA_CLOSE`、
 `LHAND_FLEX_REQUIRED_AXES` 和 `LHAND_FLEX_MIN_CONTACTS`。
 
@@ -541,7 +542,7 @@ Q     跳过/退出
 
 从放置点或未知位姿前往下一层使用 `go_to_layer_from_non_shelf_pose()`；从收起位进层会先严格反向经过放置过渡点，再抬高、横移和垂直下落；抓取后的上撤使用 `go_to_layer_via_clearance()`。任何安全路径无法读取当前位姿时都会停止，不再回退为直接 `MovL`。
 
-自碰撞护栏使用 Nova5 连杆胶囊和完整末端包络共同检查：Aero 掌体、张开手指和腕部相机都会参与关节路径采样。默认尺寸可通过 `TOOL_HAND_LENGTH_Z_M`、`TOOL_HAND_BODY_DEPTH_X_M`、`TOOL_HAND_PALM_WIDTH_Y_M`、`TOOL_HAND_OPEN_WIDTH_Y_M`、`TOOL_CAMERA_LENGTH_X_M`、`TOOL_CAMERA_WIDTH_Y_M`、`TOOL_CAMERA_HEIGHT_Z_M` 和 `TOOL_CAMERA_Z_MIN_M` 按实测调整。碰撞模型、当前关节角、逆解或检查过程不可用时默认拒绝运动；只有明确设置 `SELF_COLLISION_ENABLE=0` 或 `SELF_COLLISION_FAIL_CLOSED=0` 才会关闭相应门禁。
+自碰撞护栏使用 Nova5 连杆胶囊和完整末端包络共同检查：DH116、转接法兰、相机托板和腕部相机都会参与关节路径采样。默认尺寸可通过 `TOOL_ADAPTER_*`、`TOOL_HAND_MOUNT_OFFSET_Z_M`、`TOOL_HAND_LENGTH_Z_M`、`TOOL_HAND_BODY_DEPTH_X_M`、`TOOL_HAND_PALM_WIDTH_Y_M`、`TOOL_HAND_OPEN_WIDTH_Y_M`、`TOOL_CAMERA_LENGTH_X_M`、`TOOL_CAMERA_WIDTH_Y_M`、`TOOL_CAMERA_HEIGHT_Z_M` 和 `TOOL_CAMERA_Z_MIN_M` 按实测调整。碰撞模型、当前关节角、逆解或检查过程不可用时默认拒绝运动；只有明确设置 `SELF_COLLISION_ENABLE=0` 或 `SELF_COLLISION_FAIL_CLOSED=0` 才会关闭相应门禁。
 
 ## 底盘放置流程
 

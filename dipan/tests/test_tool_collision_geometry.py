@@ -7,7 +7,14 @@ import numpy as np
 from depth_collision_guard import check_hand_path, depth_to_robot_obstacles, hand_path_hit_mask
 from dobot_arm import DobotArm
 from self_collision_guard import Nova5SelfCollisionGuard
-from tool_geometry import camera_box_bounds, camera_capsule_strips, hand_capsule_parts
+from tool_geometry import (
+    ADAPTER_LENGTH_Z_M,
+    adapter_camera_mount_capsules,
+    camera_box_bounds,
+    camera_capsule_strips,
+    hand_box_bounds,
+    hand_capsule_parts,
+)
 
 
 class ToolCollisionGeometryTests(unittest.TestCase):
@@ -29,7 +36,7 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         )
 
     def test_camera_point_is_not_covered_by_hand_only(self):
-        point = [[-0.10, 0.0, -0.0125]]
+        point = [[-0.10, 0.0, 0.0325]]
         self.assertTrue(self.check_depth_path(point, include_camera=False).ok)
         self.assertFalse(self.check_depth_path(point, include_camera=True).ok)
 
@@ -79,9 +86,53 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.hit_count, 2)
 
+    def test_depth_guard_covers_offset_dh116_thumb_box(self):
+        thumb_point = np.asarray([[0.10, 0.0, 0.08]], dtype=np.float32)
+        without_boxes = check_hand_path(
+            thumb_point,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            0.195,
+            0.01,
+            samples=2,
+        )
+        with_boxes = check_hand_path(
+            thumb_point,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            0.195,
+            0.01,
+            samples=2,
+            flange_rotation_m=np.eye(3),
+            hand_boxes_local_m=hand_box_bounds(),
+        )
+        self.assertTrue(without_boxes.ok)
+        self.assertFalse(with_boxes.ok)
+
+    def test_depth_guard_rotates_dh116_boxes_with_flange(self):
+        rotation = np.array(
+            [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            dtype=np.float32,
+        )
+        rotated_thumb_point = rotation @ np.array([0.10, 0.0, 0.08], dtype=np.float32)
+        result = check_hand_path(
+            np.asarray([rotated_thumb_point]),
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            0.195,
+            0.01,
+            samples=2,
+            flange_rotation_m=rotation,
+            hand_boxes_local_m=hand_box_bounds(),
+        )
+        self.assertFalse(result.ok)
+
     def test_depth_guard_uses_separate_camera_support_threshold(self):
         camera_points = np.asarray(
-            [[-0.10, -0.02 + index * 0.008, -0.0125] for index in range(6)],
+            [[-0.10, -0.02 + index * 0.008, 0.0325] for index in range(6)],
             dtype=np.float32,
         )
         mixed_points = np.concatenate(
@@ -146,20 +197,20 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(self.box_max[0], -0.09)
         self.assertAlmostEqual(self.box_min[1], -0.0725)
         self.assertAlmostEqual(self.box_max[1], 0.0725)
-        self.assertAlmostEqual(self.box_min[2], -0.025)
-        self.assertAlmostEqual(self.box_max[2], 0.0)
-        self.assertFalse(self.check_depth_path([[-0.12, 0.06, -0.0125]]).ok)
-        self.assertTrue(self.check_depth_path([[-0.03, 0.0, -0.0125]]).ok)
+        self.assertAlmostEqual(self.box_min[2], 0.020)
+        self.assertAlmostEqual(self.box_max[2], 0.045)
+        self.assertFalse(self.check_depth_path([[-0.12, 0.06, 0.0325]]).ok)
+        self.assertTrue(self.check_depth_path([[-0.03, 0.0, 0.0325]]).ok)
 
     def test_camera_box_follows_flange_rotation(self):
         rotation = np.array(
             [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
             dtype=np.float32,
         )
-        local_point = np.array([-0.10, 0.0, -0.0125], dtype=np.float32)
+        local_point = np.array([-0.10, 0.0, 0.0325], dtype=np.float32)
         world_point = rotation @ local_point
         self.assertFalse(self.check_depth_path([world_point], rotation=rotation).ok)
-        self.assertTrue(self.check_depth_path([[-0.10, 0.09, -0.0125]]).ok)
+        self.assertTrue(self.check_depth_path([[-0.10, 0.09, 0.0325]]).ok)
 
     def test_self_collision_camera_cover_and_safe_poses(self):
         strips = camera_capsule_strips()
@@ -176,15 +227,34 @@ class ToolCollisionGeometryTests(unittest.TestCase):
 
     def test_self_collision_hand_envelope_and_tool_pairs(self):
         parts = hand_capsule_parts()
-        self.assertEqual(len(parts["tool_hand_palm"]), 12)
+        self.assertEqual(len(parts["tool_adapter_flange"]), 36)
+        self.assertEqual(len(parts["tool_adapter_camera_mount"]), 5)
+        self.assertEqual(len(parts["tool_hand_palm"]), 24)
+        self.assertEqual(len(parts["tool_hand_thumb"]), 12)
         self.assertEqual(len(parts["tool_hand_fingers"]), 15)
-        self.assertAlmostEqual(parts["tool_hand_palm"][0][0][2], 0.05)
-        self.assertAlmostEqual(parts["tool_hand_fingers"][-1][1][2], 0.25)
+        self.assertAlmostEqual(parts["tool_hand_palm"][0][0][2], ADAPTER_LENGTH_Z_M)
+        self.assertAlmostEqual(parts["tool_hand_fingers"][-1][1][2], 0.2405)
+
+        mount = adapter_camera_mount_capsules()
+        self.assertAlmostEqual(mount[0][0][0], -0.1505)
+        self.assertAlmostEqual(mount[-1][1][0], -0.0335)
+
+        palm_x = [capsule[0][0] for capsule in parts["tool_hand_palm"]]
+        thumb_x = [capsule[0][0] for capsule in parts["tool_hand_thumb"]]
+        self.assertLess(min(palm_x), 0.0)
+        self.assertGreater(min(thumb_x), 0.0)
+        self.assertGreater(max(thumb_x), max(palm_x))
 
         guard = Nova5SelfCollisionGuard()
+        adapter_specs = [item for item in guard.capsules if item.name == "tool_adapter_flange"]
+        mount_specs = [item for item in guard.capsules if item.name == "tool_adapter_camera_mount"]
         palm_specs = [item for item in guard.capsules if item.name == "tool_hand_palm"]
+        thumb_specs = [item for item in guard.capsules if item.name == "tool_hand_thumb"]
         finger_specs = [item for item in guard.capsules if item.name == "tool_hand_fingers"]
-        self.assertEqual(len(palm_specs), 12)
+        self.assertEqual(len(adapter_specs), 36)
+        self.assertEqual(len(mount_specs), 5)
+        self.assertEqual(len(palm_specs), 24)
+        self.assertEqual(len(thumb_specs), 12)
         self.assertEqual(len(finger_specs), 15)
 
         checked_names = [
@@ -192,6 +262,7 @@ class ToolCollisionGeometryTests(unittest.TestCase):
             for i, j in guard._check_pairs
         ]
         self.assertTrue(any({a, b} == {"tool_hand_palm", "Link4"} for a, b in checked_names))
+        self.assertTrue(any({a, b} == {"tool_hand_thumb", "Link4"} for a, b in checked_names))
         self.assertTrue(any({a, b} == {"tool_hand_fingers", "Link3"} for a, b in checked_names))
         self.assertTrue(any({a, b} == {"tool_camera", "Link4"} for a, b in checked_names))
         self.assertFalse(any(

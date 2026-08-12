@@ -146,11 +146,11 @@ python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 flex
 
 默认逻辑：
 
-- 1～6 号轴参与闭合。
-- 3～6 号轴作为四根手指独立判断接触。
+- 1 号拇指侧摆保持张开位置，不参与抓取闭合。
+- 2～6 号轴参与闭合并独立判断接触；2 号为拇指弯曲，3～6 号为四指弯曲。
 - 同位置电流比空载包络增加 `80‰`，连续 2 次才确认接触。
 - 接触后额外闭合 `150` 位置单位并锁定该轴。
-- 至少 2 根手指确认接触才算成功。
+- 至少 2 个轴确认接触才算成功。
 - 控制最大电流默认 `600‰`；实测电流达到 `750‰` 安全停止。
 - 曲线缺失时拒绝柔性抓取。
 
@@ -160,7 +160,8 @@ python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 flex
 LHAND_FLEX_PROFILE_DELTA       接触电流增量阈值，默认 80‰
 LHAND_FLEX_STEP                每步位置增量，默认 250
 LHAND_FLEX_EXTRA_CLOSE         接触后补紧量，默认 150
-LHAND_FLEX_REQUIRED_AXES       必须判断的手指轴，默认 3,4,5,6
+LHAND_FLEX_ACTIVE_AXES         参与闭合的轴，DH116 默认 2,3,4,5,6
+LHAND_FLEX_REQUIRED_AXES       必须等待接触或到上限的轴，DH116 默认 2,3,4,5,6
 LHAND_FLEX_MIN_CONTACTS        成功所需最少接触轴，默认 2
 LHAND_FLEX_MAX_CURRENT         SDK 下发的最大电流，默认 600‰
 LHAND_FLEX_HARD_CURRENT        实测硬保护阈值，默认 750‰
@@ -205,6 +206,26 @@ export HAND_COG_Z_M=0.xxx
 
 ### 8.2 必须实测的尺寸
 
+仓库已按 `/home/nvidia/grasp/urdf/DH116-R000-A1/urdf/DH116-R000-A1.urdf`
+和 `/home/nvidia/grasp/urdf/new.3mf` 更新默认碰撞箱。连接件圆环内孔轴沿法兰 `+Z`，
+手安装在圆环上表面，长托板沿法兰 `-X` 伸出，相机放在托板上表面。手部运动范围
+覆盖六个主动轴及随动轴，并在各边加入约 2 mm 建模余量：
+
+| 部分 | 法兰系包络（米） |
+|---|---|
+| 连接件总包络 | `X=-0.1505..0.033`，`Y=-0.0335..0.0335`，`Z=0..0.0455` |
+| 手掌/整手 | `X=-0.036..0.115`，`Y=-0.052..0.060`，`Z=0.0455..0.2405` |
+| 拇指扫掠 | `X=0.006..0.115`，`Y=-0.052..0.060`，`Z=0.0655..0.1665` |
+| 四指扫掠 | `X=-0.027..0.073`，`Y=-0.047..0.046`，`Z=0.0955..0.2405` |
+| 相机盒 | `X=-0.150..-0.090`，`Y=-0.0725..0.0725`，`Z=0.020..0.045` |
+
+程序用多组胶囊网格覆盖以上包络，不再假设灵巧手以法兰原点为中心。该默认值只在
+3MF 的实际装配方向与现有法兰坐标约定一致时成立；如果打印件安装方向或相机型号改变，
+仍必须重新换算。
+
+3MF 只能确定连接件和相机外壳的碰撞位置，不能确定镜头光心。它不会覆盖
+`calib_eye_in_hand.json` 或 `hand_eye.py` 中的手眼外参；实装后仍必须重新做手眼标定。
+
 全部单位为米：
 
 | 环境变量 | 实测定义 |
@@ -215,7 +236,16 @@ export HAND_COG_Z_M=0.xxx
 | `TOOL_HAND_PALM_WIDTH_Y_M` | 掌体、转接件在 `Y` 方向的最大总宽度 |
 | `TOOL_HAND_OPEN_WIDTH_Y_M` | 完全张开时最外侧手指之间的最大 `Y` 宽度 |
 | `TOOL_HAND_MOUNT_EXCLUSION_Z_M` | 法兰到主手体起点；新转接件不确定时先设 `0`，让手碰撞箱从法兰开始覆盖 |
+| `TOOL_ADAPTER_LENGTH_Z_M` | 连接件圆环法兰到灵巧手安装面的 `+Z` 距离，默认 `0.0455` |
+| `TOOL_HAND_MOUNT_OFFSET_Z_M` | 灵巧手 `base_link` 相对 Nova 法兰的 `+Z` 偏移，默认跟随连接件长度 |
+| `TOOL_ADAPTER_*` | 连接件圆环和相机托板的 X/Y/Z 包络边界 |
 | `HAND_FINGER_THICKNESS_M` | 手指/指尖在路径检查中使用的最大厚度 |
+
+三段不对称盒体还可以分别通过 `TOOL_HAND_PALM_X_MIN_M/MAX_M/Y_MIN_M/MAX_M`、
+`TOOL_HAND_THUMB_X_MIN_M/MAX_M/Y_MIN_M/MAX_M`、
+`TOOL_HAND_FINGERS_X_MIN_M/MAX_M/Y_MIN_M/MAX_M` 和
+`TOOL_HAND_THUMB_Z_MAX_M` 覆盖。只要安装方向或转接板改变，就应优先重新计算这些边界，
+不能只调整总宽度。
 
 测量值应包含安装误差和保护余量。不要使用产品外形图的单一视图估算张开宽度。
 
@@ -237,8 +267,8 @@ export HAND_FINGER_THICKNESS_M=0.xxx
 
 程序同时使用两套末端保护：
 
-1. `self_collision_guard.py`：把掌体和张开手指包络转换为多根胶囊，检查末端与 Nova
-   自身连杆的碰撞。
+1. `self_collision_guard.py`：把连接件、相机托板和手部运动包络转换为多根胶囊，检查
+   完整末端与 Nova 自身连杆的碰撞。
 2. `shelf_grasp.py` 深度护栏：根据当前深度点云检查手掌/手指沿抓取路径是否撞到货架，
    并从点云里剔除相机看到的灵巧手自身。
 
