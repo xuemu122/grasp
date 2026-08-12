@@ -37,7 +37,7 @@ def build_parser():
     subparsers.add_parser("home", help="清报警、使能并执行六轴回零，不发送位置命令")
     subparsers.add_parser("open", help="使能、回零并张开")
 
-    set_baud = subparsers.add_parser("set-baud", help="USB直连时修改灵巧手本体RS485波特率")
+    set_baud = subparsers.add_parser("set-baud", help="修改并保存灵巧手本体RS485波特率")
     set_baud.add_argument("--new-baud", type=int, required=True)
     set_baud.add_argument("--yes", action="store_true", help="跳过修改确认提示")
 
@@ -82,8 +82,6 @@ def main():
         print(f"曲线有效: {args.profile}, rows={len(rows)}, range={rows[0][0]}..{rows[-1][0]}")
         return 0
 
-    if args.action == "set-baud" and args.transport != "serial":
-        parser.error("set-baud 只能临时接回 USB-RS485 后使用 --transport serial")
     if args.action == "check-sdo-write" and args.transport != "dobot":
         parser.error("check-sdo-write 只用于 --transport dobot")
 
@@ -99,7 +97,7 @@ def main():
         )
     else:
         from dobot_tcp_gripper import DobotTcpGripper
-        baud = args.baud if args.baud is not None else int(os.getenv("LHAND_DOBOT_BAUD", "500000"))
+        baud = args.baud if args.baud is not None else int(os.getenv("LHAND_DOBOT_BAUD", "115200"))
         hand = DobotTcpGripper(
             robot_ip=args.robot_ip,
             robot_port=args.robot_port,
@@ -121,12 +119,13 @@ def main():
             print(f"灵巧手当前配置波特率: {current_baud}")
             hand.set_rs485_baudrate(args.new_baud)
             print(
-                f"灵巧手波特率已写为 {args.new_baud}。断开 USB 转接盒并重新上电后，"
-                "再接回机械臂测试。"
+                f"灵巧手波特率已写为 {args.new_baud}并请求保存。"
+                "完整重新上电后，机械臂末端必须使用相同波特率。"
             )
             return 0
 
         if args.action == "info":
+            print(type(hand))
             hand.connect(enable_motors=False, home_motors=False)
             time.sleep(max(0.0, float(os.getenv("LHAND_INFO_WAIT_S", "1.0"))))
             sdk = hand.controller.sdk_handle

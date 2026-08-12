@@ -271,7 +271,7 @@ class LHandProGripper:
             "通信配置可读但驱动未使能。" + power_hint
         )
 
-    def home(self, timeout_s=None):
+    def home(self, timeout_s=None, clear_alarm=True):
         """Home all axes after SDK hand type/configuration has been applied."""
         timeout_s = max(
             3.0,
@@ -284,7 +284,8 @@ class LHandProGripper:
             sdk.set_home_current(int(home_current))
         if not all(item["enable"] for item in self._motor_snapshot()):
             self._enable_motors()
-        sdk.set_clear_alarm(0)
+        if clear_alarm:
+            sdk.set_clear_alarm(0)
         print(f"[LHandPro] 开始六轴回零，超时 {timeout_s:.0f}s")
         sdk.home_motors(0)
 
@@ -357,6 +358,9 @@ class LHandProGripper:
         if not hasattr(sdk, "_call_checked"):
             raise RuntimeError("当前 Python SDK 封装不支持设置 RS485 波特率")
         sdk._call_checked("set_rs485_baudrate", "设置RS485波特率", baud_rate)
+        library = getattr(sdk, "_lib", None)
+        if library is not None and hasattr(library, "lhandprolib_save_sdo_drive_param"):
+            sdk._call_checked("save_sdo_drive_param", "保存RS485波特率")
         self.baud_rate = baud_rate
         return baud_rate
 

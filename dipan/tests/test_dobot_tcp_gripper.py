@@ -7,6 +7,7 @@ from dobot_tcp_gripper import (
     _dashboard_call,
     _extract_rs485_frames,
     _send_tcp_rs485,
+    _CompactMotorAdapter,
     _SdoMotorAdapter,
 )
 
@@ -46,6 +47,52 @@ class FakeFrameSender:
 
 
 class DobotTcpGripperTests(unittest.TestCase):
+    def test_compact_adapter_matches_vendor_enable_and_home_examples(self):
+        sender = FakeFrameSender()
+        adapter = _CompactMotorAdapter(FakeSDK(), sender, 1, 6, direction_bits=0x20)
+        adapter.set_enable(0, True)
+        adapter.home_motors(0)
+        self.assertEqual(
+            sender.frames[0],
+            bytes.fromhex(
+                "50 01 81 06 20 01 20 01 20 01 20 01 20 01 20 01 e8 4a"
+            ),
+        )
+        self.assertEqual(
+            sender.frames[1],
+            bytes.fromhex(
+                "50 01 81 06 25 04 25 04 25 04 25 04 25 04 25 04 50 3e"
+            ),
+        )
+
+    def test_compact_adapter_sends_current_speed_then_position(self):
+        sender = FakeFrameSender()
+        adapter = _CompactMotorAdapter(FakeSDK(), sender, 1, 6, direction_bits=0x20)
+        for axis in range(1, 7):
+            adapter.set_max_current(axis, 1000)
+            adapter.set_position_velocity(axis, 2000)
+            adapter.set_target_position(axis, 5000)
+        adapter.move_motors(0)
+        self.assertEqual([frame[2] for frame in sender.frames], [0x84, 0x83, 0x82])
+        self.assertEqual(
+            sender.frames[0],
+            bytes.fromhex(
+                "50 01 84 06 e8 03 e8 03 e8 03 e8 03 e8 03 e8 03 97 c0"
+            ),
+        )
+        self.assertEqual(
+            sender.frames[1],
+            bytes.fromhex(
+                "50 01 83 06 d0 07 d0 07 d0 07 d0 07 d0 07 d0 07 7a d5"
+            ),
+        )
+        self.assertEqual(
+            sender.frames[2],
+            bytes.fromhex(
+                "50 01 82 06 88 13 88 13 88 13 88 13 88 13 88 13 62 7b"
+            ),
+        )
+
     def test_sdo_adapter_maps_six_axis_motion_objects(self):
         sdk = FakeSDK()
         sender = FakeFrameSender()

@@ -360,6 +360,96 @@ class _SdoMotorAdapter:
         del current
 
 
+class _CompactMotorAdapter:
+    """Motor commands using the firmware's compact six-axis custom frames."""
+
+    def __init__(self, sdk, send_frame, node_id, dof, direction_bits=0x20):
+        self._sdk = sdk
+        self._send_frame = send_frame
+        self._node_id = int(node_id) & 0xFF
+        self._dof = int(dof)
+        self._direction_bits = int(direction_bits) & 0x60
+        self._modes = [self._direction_bits] * self._dof
+        self._controls = [0] * self._dof
+        self._currents = [600] * self._dof
+        self._velocities = [12000] * self._dof
+        self._positions = [0] * self._dof
+
+    def __getattr__(self, name):
+        return getattr(self._sdk, name)
+
+    def _axes(self, axis):
+        axis = int(axis)
+        if axis == 0:
+            return range(self._dof)
+        if not 1 <= axis <= self._dof:
+            raise ValueError(f"轴编号必须在 0..{self._dof}: {axis}")
+        return (axis - 1,)
+
+    @staticmethod
+    def _u16(value):
+        return (int(value) & 0xFFFF).to_bytes(2, "little")
+
+    def _send(self, frame_type, payload, label):
+        body = bytes((0x50, self._node_id, int(frame_type), self._dof)) + bytes(payload)
+        crc = _crc16_modbus(body)
+        frame = body + bytes((crc & 0xFF, crc >> 8))
+        if not self._send_frame(frame):
+            raise RuntimeError(f"短帧{label}发送失败: type=0x{frame_type:02X}")
+
+    def _send_control(self):
+        payload = bytearray()
+        for mode, control in zip(self._modes, self._controls):
+            payload.extend((mode & 0xFF, control & 0xFF))
+        self._send(0x81, payload, "模式/控制")
+
+    def set_control_mode(self, axis, mode):
+        for index in self._axes(axis):
+            self._modes[index] = self._direction_bits | (int(mode) & 0x07)
+
+    def set_enable(self, axis, enabled):
+        for index in self._axes(axis):
+            self._controls[index] = 1 if enabled else 2
+        self._send_control()
+
+    def set_clear_alarm(self, axis):
+        for index in self._axes(axis):
+            self._controls[index] = 3
+        self._send_control()
+
+    def set_target_position(self, axis, position):
+        for index in self._axes(axis):
+            self._positions[index] = int(position)
+
+    def set_position_velocity(self, axis, velocity):
+        for index in self._axes(axis):
+            self._velocities[index] = int(velocity)
+
+    def set_max_current(self, axis, current):
+        for index in self._axes(axis):
+            self._currents[index] = int(current)
+
+    def move_motors(self, axis):
+        del axis
+        self._send(0x84, b"".join(self._u16(v) for v in self._currents), "电流")
+        self._send(0x83, b"".join(self._u16(v) for v in self._velocities), "速度")
+        self._send(0x82, b"".join(self._u16(v) for v in self._positions), "位置")
+
+    def home_motors(self, axis):
+        for index in self._axes(axis):
+            self._modes[index] = self._direction_bits | 5
+            self._controls[index] = 4
+        self._send_control()
+
+    def stop_motors(self, axis):
+        for index in self._axes(axis):
+            self._controls[index] = 0
+        self._send_control()
+
+    def set_home_current(self, current):
+        del current
+
+
 class DobotTcpGripper(LHandProGripper):
     """Use the vendor grasp API while Nova transports its raw RS485 frames."""
 
@@ -376,7 +466,7 @@ class DobotTcpGripper(LHandProGripper):
         tcp_debug=False,
         controller_factory=None,
     ):
-        baud_rate = int(baud_rate or os.getenv("LHAND_DOBOT_BAUD", "500000"))
+        baud_rate = int(baud_rate or os.getenv("LHAND_DOBOT_BAUD", "115200"))
         self.arm = arm
         self.robot_ip = robot_ip
         self.robot_port = int(robot_port)
@@ -459,11 +549,20 @@ class DobotTcpGripper(LHandProGripper):
                     "请保持手端波特率500000，检查末端供电、A/B/通信地和"
                     "机械臂60000透传服务；不允许使能或回零。"
                 )
-            control_transport = os.getenv("LHAND_DOBOT_CONTROL", "sdo").strip().lower()
-            if control_transport not in ("sdo", "pdo"):
-                raise ValueError("LHAND_DOBOT_CONTROL 只能是 sdo 或 pdo")
+            control_transport = os.getenv("LHAND_DOBOT_CONTROL", "compact").strip().lower()
+            if control_transport not in ("compact", "sdo", "pdo"):
+                raise ValueError("LHAND_DOBOT_CONTROL 只能是 compact、sdo 或 pdo")
+            direction_bits = int(os.getenv("LHAND_SDO_DIRECTION_BITS", "0x20"), 0)
+            if control_transport == "compact":
+                self._sdo_adapter = _CompactMotorAdapter(
+                    self.controller.sdk_handle,
+                    self.controller.send_rs485_frame,
+                    self.node_id,
+                    self.dof_active,
+                    direction_bits,
+                )
+                print("[LHandPro/TCP485] 电机控制使用厂家短帧协议")
             if control_transport == "sdo":
-                direction_bits = int(os.getenv("LHAND_SDO_DIRECTION_BITS", "0x20"), 0)
                 self._sdo_adapter = _SdoMotorAdapter(
                     self.controller.sdk_handle,
                     self.controller.send_rs485_frame,
@@ -473,15 +572,42 @@ class DobotTcpGripper(LHandProGripper):
                 )
                 print("[LHandPro/TCP485] 电机控制使用短 SDO 帧（状态读取仍使用 SDK）")
             if enable:
-                self._enable_motors()
+                if control_transport == "compact":
+                    self._compact_enable(after_home=False)
+                else:
+                    self._enable_motors()
             if home:
-                self.home(timeout_s=home_timeout_s)
+                self.home(
+                    timeout_s=home_timeout_s,
+                    clear_alarm=(control_transport != "compact"),
+                )
+                if control_transport == "compact":
+                    self._compact_enable(after_home=True)
             return True
         except Exception:
             self._sdo_adapter = None
             if self.controller is not None:
                 super().disconnect(stop_motors=False)
             raise
+
+    def _compact_enable(self, after_home):
+        sdk = self._sdk
+        sdk.set_control_mode(0, 0)
+        sdk.set_enable(0, True)
+        timeout_s = max(2.0, float(os.getenv("LHAND_ENABLE_TIMEOUT_S", "10")))
+        deadline = time.monotonic() + timeout_s
+        last_snapshot = []
+        while time.monotonic() < deadline:
+            time.sleep(0.15)
+            last_snapshot = self._motor_snapshot()
+            if last_snapshot and all(item["enable"] for item in last_snapshot):
+                label = "回零后六轴重新使能完成" if after_home else "六轴使能完成"
+                print(f"[LHandPro] {label}")
+                return
+        raise TimeoutError(
+            ("回零后等待六轴重新使能超时: " if after_home else "等待六轴使能超时: ")
+            + self._snapshot_label(last_snapshot)
+        )
 
     def disconnect(self, stop_motors=True):
         if stop_motors and self._sdo_adapter is not None and self.controller is not None:
