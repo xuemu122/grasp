@@ -167,7 +167,10 @@ DEPTH_GUARD_HAND_BOXES_M = hand_box_bounds(DEPTH_GUARD_CLEARANCE_M)
 DEPTH_GUARD_SELF_HAND_BOXES_M = hand_box_bounds(DEPTH_GUARD_SELF_MASK_CAMERA_PADDING_M)
 DEPTH_GUARD_APPROACH_LENGTH_M = float(os.getenv("DEPTH_GUARD_APPROACH_LENGTH_M", "0.08"))
 DEPTH_GUARD_PATH_SAMPLES = int(os.getenv("DEPTH_GUARD_PATH_SAMPLES", "8"))
-DEPTH_GUARD_MIN_HIT_POINTS = max(1, int(os.getenv("DEPTH_GUARD_MIN_HIT_POINTS", "2")))
+# Sparse shelf-edge/depth-boundary samples are common near the bottom of the
+# image. Require a small point cluster before stopping the arm so one sampled
+# edge pair does not cause a false alarm.
+DEPTH_GUARD_MIN_HIT_POINTS = max(1, int(os.getenv("DEPTH_GUARD_MIN_HIT_POINTS", "4")))
 DEPTH_GUARD_CAMERA_MIN_HIT_POINTS = max(1, int(os.getenv("DEPTH_GUARD_CAMERA_MIN_HIT_POINTS", "12")))
 DEPTH_GUARD_NOISE_FILTER_RADIUS_PX = max(0, int(os.getenv("DEPTH_GUARD_NOISE_FILTER_RADIUS_PX", "2")))
 DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT = max(1, int(os.getenv("DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT", "4")))
