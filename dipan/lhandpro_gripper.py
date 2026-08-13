@@ -607,16 +607,17 @@ class LHandProGripper:
             if not required_axes or not required_axes.issubset(active_axes):
                 raise ValueError("required axes 必须是 active axes 的非空子集")
 
-            # Fast profile: keep the old responsive cadence while retaining
-            # two consecutive contact detections and the hard-current stop.
-            step = max(1, int(os.getenv("LHAND_FLEX_STEP", "250")))
-            settle = max(0.015, float(os.getenv("LHAND_FLEX_SETTLE_S", "0.025")))
+            # Use a short, even command cadence. Current feedback and the hard
+            # stop remain active at every step, while a larger default ramp
+            # avoids dozens of visible start/stop cycles over RS485.
+            step = max(1, int(os.getenv("LHAND_FLEX_STEP", "500")))
+            settle = max(0.010, float(os.getenv("LHAND_FLEX_SETTLE_S", "0.015")))
             samples = max(1, int(os.getenv("LHAND_FLEX_SAMPLES", "1")))
             sample_delay = max(0.0, float(os.getenv("LHAND_FLEX_SAMPLE_DELAY_S", "0")))
             threshold = float(os.getenv("LHAND_FLEX_PROFILE_DELTA", "80"))
             fallback_delta = float(os.getenv("LHAND_FLEX_BASELINE_DELTA", "120"))
             profile_window = max(0, int(os.getenv("LHAND_FLEX_PROFILE_WINDOW", "300")))
-            consecutive = max(1, int(os.getenv("LHAND_FLEX_CONSECUTIVE", "2")))
+            consecutive = max(1, int(os.getenv("LHAND_FLEX_CONSECUTIVE", "1")))
             extra_close = max(0, int(os.getenv("LHAND_FLEX_EXTRA_CLOSE", "150")))
             min_position = int(os.getenv("LHAND_FLEX_MIN_POSITION", "1000"))
             min_contacts = max(1, min(
@@ -624,10 +625,13 @@ class LHandProGripper:
             ))
             hard_current = float(os.getenv("LHAND_FLEX_HARD_CURRENT", "750"))
             max_steps = max(1, int(os.getenv("LHAND_FLEX_MAX_STEPS", "120")))
+            continuous = os.getenv("LHAND_FLEX_CONTINUOUS", "1").lower() in (
+                "1", "true", "yes", "on"
+            )
 
             values = list(open_positions)
             self._holding = False
-            self._command_positions(values, wait_s=float(os.getenv("LHAND_FLEX_START_WAIT_S", "0.10")))
+            self._command_positions(values, wait_s=float(os.getenv("LHAND_FLEX_START_WAIT_S", "0.03")))
             baseline = [abs(value) for value in self._read_currents(samples, sample_delay)]
             hits = {axis: 0 for axis in required_axes}
             locked = {}
@@ -635,13 +639,36 @@ class LHandProGripper:
             at_max = set()
             print(
                 f"[LHandPro] 柔性抓取开始: active={sorted(active_axes)} "
-                f"required={sorted(required_axes)} step={step} settle={settle:.3f}s "
+                f"required={sorted(required_axes)} "
+                f"mode={'continuous' if continuous else 'step'} "
+                f"step={step} settle={settle:.3f}s "
                 f"samples={samples} threshold={threshold:.0f}"
             )
 
+            # In continuous mode every active motor receives its final travel
+            # target once and moves without intermediate stops. The loop only
+            # monitors actual position/current and locks a contacted axis.
+            for axis in active_axes:
+                index = axis - 1
+                values[index] = (
+                    max_positions[index]
+                    if continuous
+                    else min(max_positions[index], values[index] + step)
+                )
+
+            if continuous:
+                self._command_positions(values, wait_s=0.0)
+
             for step_index in range(max_steps):
-                self._command_positions(values, wait_s=settle)
+                if continuous:
+                    time.sleep(settle)
+                else:
+                    self._command_positions(values, wait_s=settle)
                 currents = [abs(value) for value in self._read_currents(samples, sample_delay)]
+                actual_positions = [
+                    int(self._sdk.get_now_position(axis))
+                    for axis in range(1, self.dof_active + 1)
+                ]
                 if any(current >= hard_current for current in currents):
                     hot_axes = [index + 1 for index, current in enumerate(currents) if current >= hard_current]
                     self._sdk.stop_motors(0)
@@ -652,10 +679,11 @@ class LHandProGripper:
                     return False
 
                 events = []
+                target_changed = False
                 for axis in required_axes:
                     if axis in locked:
                         continue
-                    command = values[axis - 1]
+                    command = actual_positions[axis - 1] if continuous else values[axis - 1]
                     if profile:
                         empty_current = profile_current_envelope(
                             profile, command, axis, profile_window
@@ -671,6 +699,7 @@ class LHandProGripper:
                     if hits[axis] >= consecutive:
                         lock_position = min(max_positions[axis - 1], command + extra_close)
                         values[axis - 1] = lock_position
+                        target_changed = True
                         locked[axis] = lock_position
                         contacts.add(axis)
                         events.append(
@@ -683,14 +712,22 @@ class LHandProGripper:
                     if axis in locked:
                         continue
                     index = axis - 1
-                    values[index] = min(max_positions[index], values[index] + step)
-                    if axis in required_axes and values[index] >= max_positions[index]:
-                        locked[axis] = values[index]
+                    if not continuous:
+                        values[index] = min(max_positions[index], values[index] + step)
+                    reached_max = (
+                        actual_positions[index] >= max_positions[index]
+                        if continuous
+                        else values[index] >= max_positions[index]
+                    )
+                    if axis in required_axes and reached_max:
+                        locked[axis] = max_positions[index]
                         at_max.add(axis)
                         events.append(f"axis{axis}@max(no contact)")
 
                 if events:
                     print(f"[LHandPro] 柔性锁定: {', '.join(events)}")
+                if continuous and target_changed:
+                    self._command_positions(values, wait_s=0.0)
                 if all(axis in locked for axis in required_axes):
                     self._command_positions(values, wait_s=settle)
                     if len(contacts) < min_contacts:
