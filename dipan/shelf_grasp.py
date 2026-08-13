@@ -26,6 +26,7 @@ from orbbec_detect import _assess_lighting
 
 from dobot_arm import DobotArm, _clamp_cp
 from grasp_planner import (
+    EDGE_MIDPOINT_GRASP_ENABLE,
     FORCE_SIDE_GRASP,
     SIDE_GRASP_MAX_HEIGHT_M,
     SIDE_GRASP_MIN_HEIGHT_M,
@@ -179,6 +180,7 @@ DEPTH_GUARD_NOISE_FILTER_RADIUS_PX = max(0, int(os.getenv("DEPTH_GUARD_NOISE_FIL
 DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT = max(1, int(os.getenv("DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT", "4")))
 DEPTH_GUARD_NOISE_FILTER_TOLERANCE_M = float(os.getenv("DEPTH_GUARD_NOISE_FILTER_TOLERANCE_M", "0.025"))
 DEPTH_GUARD_MAX_DEPTH_M = float(os.getenv("DEPTH_GUARD_MAX_DEPTH_M", "1.20"))
+DEPTH_GUARD_TARGET_DEPTH_MARGIN_M = float(os.getenv("DEPTH_GUARD_TARGET_DEPTH_MARGIN_M", "0.06"))
 DEPTH_GUARD_EXCLUDE_MARGIN_PX = int(os.getenv("DEPTH_GUARD_EXCLUDE_MARGIN_PX", "32"))
 DEPTH_GUARD_SELF_MASK_ENABLE = os.getenv("DEPTH_GUARD_SELF_MASK_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 DEPTH_GUARD_SELF_MASK_RADIUS_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_RADIUS_M", str(DEPTH_GUARD_HAND_RADIUS_M + 0.02)))
@@ -2239,7 +2241,7 @@ def main():
             print(f"抓取点 ({grip_mode}): ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
             latest_failure_image = _draw_failure_diagnostic(best_img, detections, target, grip_pixel)
 
-            if grip_mode.endswith("_side"):
+            if grip_mode.endswith("_side") and not EDGE_MIDPOINT_GRASP_ENABLE:
                 corrected_pixel, original_clearance_m, bottom_clearance_m = (
                     clamp_side_grasp_pixel_to_safe_clearance(target, grip_pixel, camera.fy)
                 )
@@ -2352,6 +2354,8 @@ def main():
                     depth_observation_flange_pose,
                     stride=DEPTH_GUARD_STRIDE,
                     max_depth_m=DEPTH_GUARD_MAX_DEPTH_M,
+                    target_depth_m=target.depth_m,
+                    target_depth_margin_m=DEPTH_GUARD_TARGET_DEPTH_MARGIN_M,
                     exclude_bbox=None,
                     exclude_bboxes=depth_guard_exclude_bboxes,
                     exclude_margin_px=DEPTH_GUARD_EXCLUDE_MARGIN_PX,

@@ -35,6 +35,9 @@ MAX_GRASP_DEPTH_M = float(os.getenv("MAX_GRASP_DEPTH_M", "0.52"))  # 超过此�
 ALLOW_NO_DEPTH_GRASP = os.getenv("ALLOW_NO_DEPTH_GRASP", "0").lower() in ("1", "true", "yes", "on")
 # Temporary field policy: prefer side grasps for every product unless explicitly disabled.
 FORCE_SIDE_GRASP = os.getenv("FORCE_SIDE_GRASP", "1").lower() in ("1", "true", "yes", "on")
+# Use the midpoint of the selected vertical bbox edge.  This preserves the
+# side-grasp geometry while avoiding the old height shift toward the shelf.
+EDGE_MIDPOINT_GRASP_ENABLE = os.getenv("EDGE_MIDPOINT_GRASP_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 
 
 def side_grasp_bottom_clearance_m(det, grip_pixel, fy):
@@ -531,13 +534,24 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
     depth = det.depth_m or 0.5
     fy = getattr(transformer, "fy", fx)
 
+    if EDGE_MIDPOINT_GRASP_ENABLE:
+        edge_u = float(x1 if edge == "left" else x2)
+        edge_v = (y1 + y2) / 2.0
+        mode = f"{edge}_side"
+        print(f"  → 检测框{edge}侧边线中点抓取, 像素=({edge_u:.0f},{edge_v:.0f})")
+    else:
+        edge_u = edge_v = None
+        mode = None
+
     pixel_w = x2 - x1
     pixel_h = y2 - y1
     real_w = pixel_w * depth / fx
     real_h = pixel_h * depth / fy
     print(f"  盒宽: {pixel_w}px → {real_w*100:.1f}cm, 盒高: {pixel_h}px → {real_h*100:.1f}cm")
 
-    if FORCE_SIDE_GRASP or real_w <= 0.08:
+    if EDGE_MIDPOINT_GRASP_ENABLE:
+        pass
+    elif FORCE_SIDE_GRASP or real_w <= 0.08:
         edge_u = x1 if edge == "left" else x2
         if real_h <= SIDE_GRASP_MIN_HEIGHT_M:
             edge_u = (x1 + x2) / 2
@@ -581,7 +595,7 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
     # 只在非侧抓模式下重采样抓取点深度
     # 侧抓点在 bbox 边缘(x1/x2), get_depth_at 的 radius 区域会混入背景,
     # 中位数被拉深。bbox 中心深度与侧抓点在同一前表面, 直接复用。
-    if not mode.endswith("_side") and camera is not None and depth_img is not None:
+    if "side" not in mode and camera is not None and depth_img is not None:
         sampled_depth = camera.get_depth_at(depth_img, edge_u, edge_v, radius=5)
         if sampled_depth and sampled_depth > 0:
             grasp_depth = sampled_depth

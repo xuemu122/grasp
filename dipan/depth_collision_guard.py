@@ -35,6 +35,8 @@ def depth_to_robot_obstacles(
     stride: int = 8,
     min_depth_m: float = 0.08,
     max_depth_m: float = 1.20,
+    target_depth_m: Optional[float] = None,
+    target_depth_margin_m: float = 0.06,
     exclude_bbox: Optional[Tuple[float, float, float, float]] = None,
     exclude_bboxes: Optional[Sequence[Tuple[float, float, float, float]]] = None,
     exclude_margin_px: int = 24,
@@ -67,6 +69,10 @@ def depth_to_robot_obstacles(
     depth_scale = getattr(camera, "_depth_scale", None) or 0.001
     depth_m = depth_img[grid_y, grid_x].astype(np.float32) * float(depth_scale)
     valid = (depth_m >= min_depth_m) & (depth_m <= max_depth_m)
+    if target_depth_m is not None and np.isfinite(float(target_depth_m)):
+        # Points materially farther than the selected product are usually the
+        # rear shelf/back wall. They must not veto the product's approach path.
+        valid &= depth_m <= float(target_depth_m) + max(0.0, float(target_depth_margin_m))
 
     # Reject isolated depth speckles before projecting them into the robot frame.
     # A real shelf or bottle surface has nearby pixels at a similar depth; a

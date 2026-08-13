@@ -183,6 +183,7 @@ class ShelfBoardFilterTests(unittest.TestCase):
     def test_side_grasp_moves_original_selection_down_one_centimeter(self):
         det = SimpleNamespace(bbox=(10, 0, 30, 100), depth_m=0.2)
         with (
+            patch.object(grasp_planner, "EDGE_MIDPOINT_GRASP_ENABLE", False),
             patch.object(grasp_planner, "FORCE_SIDE_GRASP", True),
             patch.object(grasp_planner, "SIDE_GRASP_MIN_HEIGHT_M", 0.065),
             patch.object(grasp_planner, "SIDE_GRASP_MAX_HEIGHT_M", 0.11),
@@ -205,6 +206,7 @@ class ShelfBoardFilterTests(unittest.TestCase):
     def test_side_grasp_minimum_is_measured_from_detection_box_bottom(self):
         det = SimpleNamespace(bbox=(10, 0, 30, 100), depth_m=0.14)
         with (
+            patch.object(grasp_planner, "EDGE_MIDPOINT_GRASP_ENABLE", False),
             patch.object(grasp_planner, "FORCE_SIDE_GRASP", True),
             patch.object(grasp_planner, "SIDE_GRASP_MIN_HEIGHT_M", 0.065),
             patch.object(grasp_planner, "SIDE_GRASP_MAX_HEIGHT_M", 0.11),
@@ -227,6 +229,7 @@ class ShelfBoardFilterTests(unittest.TestCase):
     def test_side_grasp_maximum_is_measured_from_detection_box_bottom(self):
         det = SimpleNamespace(bbox=(10, 0, 30, 200), depth_m=0.2)
         with (
+            patch.object(grasp_planner, "EDGE_MIDPOINT_GRASP_ENABLE", False),
             patch.object(grasp_planner, "FORCE_SIDE_GRASP", True),
             patch.object(grasp_planner, "SIDE_GRASP_MIN_HEIGHT_M", 0.065),
             patch.object(grasp_planner, "SIDE_GRASP_MAX_HEIGHT_M", 0.11),
@@ -249,6 +252,7 @@ class ShelfBoardFilterTests(unittest.TestCase):
         transformer = ArbitraryWorldZTransformer()
         transformer.fy = 390.0
         with (
+            patch.object(grasp_planner, "EDGE_MIDPOINT_GRASP_ENABLE", False),
             patch.object(grasp_planner, "FORCE_SIDE_GRASP", True),
             patch.object(grasp_planner, "SIDE_GRASP_MIN_HEIGHT_M", 0.065),
             patch.object(grasp_planner, "SIDE_GRASP_MAX_HEIGHT_M", 0.11),
@@ -269,6 +273,19 @@ class ShelfBoardFilterTests(unittest.TestCase):
     def test_side_grasp_clearance_is_invalid_without_depth(self):
         det = SimpleNamespace(bbox=(10, 0, 30, 100), depth_m=None)
         self.assertIsNone(grasp_planner.side_grasp_bottom_clearance_m(det, (30, 50), 390.0))
+
+    def test_default_grasp_uses_selected_bbox_edge_midpoint(self):
+        det = SimpleNamespace(bbox=(10, 20, 30, 100), depth_m=0.2)
+        with patch.object(grasp_planner, "EDGE_MIDPOINT_GRASP_ENABLE", True):
+            _, _, _, mode, _, grip_pixel = grasp_planner.plan_edge_grasp(
+                det,
+                "right",
+                FakeTransformer(),
+                (0, 0, 0, 0, 0, 0),
+                fx=100.0,
+            )
+        self.assertEqual(mode, "right_side")
+        self.assertEqual(grip_pixel, (30.0, 60.0))
 
     def test_low_side_grasp_pixel_is_moved_to_preferred_safe_height(self):
         det = SimpleNamespace(bbox=(10, 0, 30, 100), depth_m=0.2)

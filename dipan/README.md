@@ -153,6 +153,8 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `DEPTH_GUARD_MIN_HIT_POINTS`：手部路径触发中止所需的独立深度点数，默认 `4`；少量层板边缘/深度跳变点不会误报，连续障碍点簇仍会拦截。需要更保守时可调回 `2`，现场仍有边缘误报时可调到 `5` 或 `6`。
 - `DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS`：DH116 偏置拇指/手指和连接件外接盒触发中止所需的独立深度点数，默认 `12`；外接盒比中心胶囊保守，因此要求更完整的障碍点簇。调试图中这类命中显示为橙点。
 - `DEPTH_GUARD_MAX_DEPTH_M`：纳入障碍点的最大深度，默认 `1.20` m；货架背景太远造成误拦截时可调小。
+- `DEPTH_GUARD_TARGET_DEPTH_MARGIN_M`：相对当前目标深度允许纳入护栏的后方余量，默认 `0.06` m；更远的后层板/背板点会被忽略。
+- `EDGE_MIDPOINT_GRASP_ENABLE`：是否使用所选检测框侧边竖线的中点作为抓取点，默认开启；右侧目标使用 `(x2, (y1+y2)/2)`。设为 `0` 可恢复旧的侧抓高度偏移策略。
 - `DEPTH_GUARD_EXCLUDE_MARGIN_PX`：检测框外扩排除范围，默认 `32` px；如果货物边缘被误当货架可继续调大。
 - `DEPTH_GUARD_SELF_MASK_ENABLE`：自手部深度点剔除开关，默认开启；用于过滤深度相机看到的当前灵巧手/手指，避免把自己的手当障碍。
 - `DEPTH_GUARD_SELF_MASK_RADIUS_M`：自手部剔除半径，默认约 `0.0725` m；如果红点仍贴在手指上可略调大，如果误删近处层板可调小。
