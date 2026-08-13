@@ -405,6 +405,15 @@ class DobotArm:
         return self.movj(joints, speed=80)
 
     def close(self):
-        self.send("DisableRobot()")
-        self.sock.close()
-        print("[DOBOT] 已断开")
+        sock = self.sock
+        if sock is None:
+            return
+        try:
+            response = self.send("DisableRobot()")
+            print(f"[DOBOT] DisableRobot: {response}")
+        finally:
+            try:
+                sock.close()
+            finally:
+                self.sock = None
+                print("[DOBOT] 已断开")

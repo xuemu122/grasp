@@ -5,6 +5,7 @@
 - 硬件控制/手眼变换/抓取规划拆到独立模块，便于现场调参
 """
 
+import atexit
 import sys
 import os
 import time
@@ -1710,6 +1711,14 @@ def _connect_and_open_hand(hand):
     return True
 
 
+def _disable_arm_on_process_exit(arm):
+    """Best-effort safety net for Ctrl+C during startup initialization."""
+    try:
+        arm.close()
+    except Exception as exc:
+        print(f"[退出][警告] 机械臂下使能失败: {exc}", flush=True)
+
+
 def _create_hand(arm=None):
     backend_model = "aero" if HAND_BACKEND == "aero" else "dh116"
     if backend_model != TOOL_HAND_MODEL:
@@ -1786,6 +1795,7 @@ def main():
     # ── 1. 连接 DOBOT 并立即上电 ──
     print("\n[1/4] 连接 DOBOT 并上电 ...")
     arm = DobotArm()
+    atexit.register(_disable_arm_on_process_exit, arm)
     arm.connect()
 
     # ── 货架层/放置/收起姿态 ──
@@ -2651,9 +2661,17 @@ def main():
                 go_to_stow_pose(arm, from_shelf_pose=layer_entry_origin == LAYER_ENTRY_SHELF)
             except Exception as e:
                 print(f"[收起姿态] 退出前收起失败/跳过: {e}")
+        # Disable the arm first. The hand SDK disconnect may block while it
+        # stops/flushes RS485, so it must not delay the robot safety command.
+        try:
+            arm.close()
+        except Exception as exc:
+            print(f"[退出][警告] 机械臂下使能失败: {exc}", flush=True)
         if not SKIP_HAND:
-            hand.disconnect()
-        arm.close()
+            try:
+                hand.disconnect()
+            except Exception as exc:
+                print(f"[退出][警告] 灵巧手断开失败: {exc}", flush=True)
         camera.release()
         print("\n已退出")
 

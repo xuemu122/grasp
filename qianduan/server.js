@@ -133,6 +133,7 @@ let chassisNavigationPromise = null;
 let chassisDebugNavigationTask = null;
 let chassisRasterCache = null;
 let chassisMapRefreshPromise = null;
+let processShutdownStarted = false;
 
 // 机器人初始位置
 const SHELF_LAYERS_FILE = process.env.SHELF_LAYERS_FILE || path.resolve(__dirname, '../dipan/shelf_layers.json');
@@ -2695,6 +2696,55 @@ server.listen(PORT, HOST, () => {
             .catch((error) => log(`⚠️ 底盘地图定时更新失败: ${error.message}`));
     }, Math.max(5000, CHASSIS_MAP_REFRESH_INTERVAL_MS));
     chassisMapRefreshTimer.unref?.();
+});
+
+async function shutdownServerOnSignal(signal) {
+    if (processShutdownStarted) return;
+    processShutdownStarted = true;
+    log(`收到 ${signal}，正在让抓取 worker 下使能并退出...`);
+    const worker = robotWorker;
+    if (worker && worker.exitCode === null) {
+        await new Promise((resolve) => {
+            let settled = false;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeout);
+                worker.off('close', finish);
+                resolve();
+            };
+            const timeout = setTimeout(() => {
+                log('抓取 worker 退出超时，发送 SIGINT 触发下使能清理');
+                worker.kill('SIGINT');
+                setTimeout(finish, 2000).unref?.();
+            }, Math.min(5000, ROBOT_RECONFIGURE_TIMEOUT_MS));
+            worker.once('close', finish);
+            worker.stdin.write('__quit__\n', (error) => {
+                if (error) {
+                    log(`无法发送 worker 退出命令，改发 SIGINT: ${error.message}`);
+                    worker.kill('SIGINT');
+                }
+            });
+        });
+    }
+    await Promise.all([
+        new Promise((resolve) => server.close(() => resolve())),
+        new Promise((resolve) => wss.close(() => resolve()))
+    ]);
+    process.exit(0);
+}
+
+process.once('SIGINT', () => {
+    shutdownServerOnSignal('SIGINT').catch((error) => {
+        log(`SIGINT 清理失败: ${error.message}`);
+        process.exit(1);
+    });
+});
+process.once('SIGTERM', () => {
+    shutdownServerOnSignal('SIGTERM').catch((error) => {
+        log(`SIGTERM 清理失败: ${error.message}`);
+        process.exit(1);
+    });
 });
 
 // ========== WebSocket 服务 ==========

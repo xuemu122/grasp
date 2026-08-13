@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import tool_geometry
+import shelf_grasp
 
 from depth_collision_guard import check_hand_path, depth_to_robot_obstacles, hand_path_hit_mask
 from dobot_arm import DobotArm
@@ -37,6 +38,22 @@ class ToolCollisionGeometryTests(unittest.TestCase):
             camera_box_min_local_m=self.box_min if include_camera else None,
             camera_box_max_local_m=self.box_max if include_camera else None,
         )
+
+    def test_arm_close_disables_robot_and_is_idempotent(self):
+        arm = DobotArm.__new__(DobotArm)
+        arm.sock = Mock()
+        arm.send = Mock(return_value="0,{},DisableRobot();")
+
+        arm.close()
+        arm.close()
+
+        arm.send.assert_called_once_with("DisableRobot()")
+        self.assertIsNone(arm.sock)
+
+    def test_startup_exit_guard_disables_arm(self):
+        arm = Mock()
+        shelf_grasp._disable_arm_on_process_exit(arm)
+        arm.close.assert_called_once_with()
 
     def test_camera_point_is_not_covered_by_hand_only(self):
         point = [[-0.10, 0.0, 0.0325]]

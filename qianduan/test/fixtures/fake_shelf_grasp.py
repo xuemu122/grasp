@@ -19,6 +19,9 @@ for raw in sys.stdin:
     if command == "__poweroff__":
         print("[前端常驻模式] 正在停止保持、断开灵巧手并关闭 DOBOT 使能", flush=True)
         raise SystemExit(0)
+    if command == "__quit__":
+        print("[前端常驻模式] worker 即将退出, 直接关闭硬件使能", flush=True)
+        raise SystemExit(0)
     if command == "__stow_pose__":
         print("[前端常驻模式] 收到底盘移动前安全收起指令", flush=True)
         print("[前端常驻模式][完成] 已到达收起姿态", flush=True)
