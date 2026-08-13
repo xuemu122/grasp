@@ -37,7 +37,26 @@ test('admin inventory scan visits configured A-D shelves and each point at layer
     const scanFile = path.join(tempDir, 'inventory_scan.json');
     const shelfLayersFile = path.join(tempDir, 'shelf_layers.json');
     fs.writeFileSync(productsFile, JSON.stringify({
-        products: [{ id: 10, name: '商品A1-1', price: 9, stock: 8, status: 1, category: '饮料' }]
+        products: [
+            { id: 10, name: '商品A1-1', price: 9, stock: 8, status: 1, category: '饮料', photo_front: '/correct-a.jpg' },
+            {
+                id: 11,
+                name: '原货位商品',
+                price: 6,
+                stock: 3,
+                status: 1,
+                category: '旧分类',
+                photo_front: '/wrong-slot.jpg',
+                shelf_zone: 'D',
+                shelf_number: 2,
+                shelf_layer: 2,
+                chassis_marker: 'old-marker',
+                location: 'D货架第2点位第2层'
+            },
+            { id: 12, name: '商品D2-2', price: 7, stock: 4, status: 1, category: '新品类', photo_front: '/correct-d.jpg' },
+            { id: 13, name: '重名商品', status: 1, photo_front: '/duplicate-1.jpg' },
+            { id: 14, name: '重名商品', status: 1, photo_front: '/duplicate-2.jpg' }
+        ]
     }));
     fs.writeFileSync(shelfLayersFile, JSON.stringify({
         layers: {
@@ -181,10 +200,41 @@ test('admin inventory scan visits configured A-D shelves and each point at layer
     );
 
     const products = await requestJson(`${baseUrl}/api/products`);
-    assert.equal(products.json.data.length, 2);
+    assert.equal(products.json.data.length, 4);
     assert.equal(products.json.data.find((product) => product.name === '商品A1-1').price, 9);
-    assert.deepEqual(products.json.data.map((product) => product.location).sort(), [
+    assert.equal(products.json.data.find((product) => product.name === '商品A1-1').photo_front, '/correct-a.jpg');
+    const newProduct = products.json.data.find((product) => product.name === '商品D2-2');
+    assert.equal(newProduct.photo_front, '/correct-d.jpg');
+    assert.equal(newProduct.category, '新品类');
+    assert.deepEqual(products.json.data.filter((product) => product.location).map((product) => product.location).sort(), [
         'A货架第1点位第1层',
         'D货架第2点位第2层'
     ].sort());
+
+    const storedProducts = JSON.parse(fs.readFileSync(productsFile, 'utf8')).products;
+    const displaced = storedProducts.find((product) => product.id === 11);
+    assert.equal(displaced.name, '原货位商品');
+    assert.equal(displaced.photo_front, '/wrong-slot.jpg');
+    assert.equal(displaced.location, '');
+    assert.equal(displaced.status, 0);
+    assert.ok(fs.readdirSync(path.join(tempDir, 'product_backups')).length >= 1);
+
+    const beforeRejectedSave = fs.readFileSync(productsFile, 'utf8');
+    const unknown = await requestJson(`${baseUrl}/api/admin/inventory-products`, {
+        method: 'POST', cookie, body: {
+            rows: [{ shelf: 'A', point: 2, layer: 1, marker: 'shelf-a-2', name: '未录入商品' }]
+        }
+    });
+    assert.equal(unknown.response.status, 400);
+    assert.match(unknown.json.message, /尚未录入/);
+    assert.equal(fs.readFileSync(productsFile, 'utf8'), beforeRejectedSave);
+
+    const ambiguous = await requestJson(`${baseUrl}/api/admin/inventory-products`, {
+        method: 'POST', cookie, body: {
+            rows: [{ shelf: 'A', point: 2, layer: 1, marker: 'shelf-a-2', name: '重名商品' }]
+        }
+    });
+    assert.equal(ambiguous.response.status, 400);
+    assert.match(ambiguous.json.message, /存在多条记录/);
+    assert.equal(fs.readFileSync(productsFile, 'utf8'), beforeRejectedSave);
 });

@@ -81,6 +81,8 @@ const CHASSIS_MAP_CACHE_DIR = process.env.CHASSIS_MAP_CACHE_DIR || path.join(pat
 const CHASSIS_MAP_SNAPSHOT_FILE = path.join(CHASSIS_MAP_CACHE_DIR, 'current.json');
 const PRODUCT_UPLOAD_DIR = process.env.PRODUCT_UPLOAD_DIR || path.join(path.dirname(PRODUCTS_DB_FILE), 'uploads');
 const PRODUCT_UPLOAD_MAX_BYTES = Number(process.env.PRODUCT_UPLOAD_MAX_BYTES || 5 * 1024 * 1024);
+const PRODUCT_BACKUP_DIR = process.env.PRODUCT_BACKUP_DIR || path.join(path.dirname(PRODUCTS_DB_FILE), 'product_backups');
+const PRODUCT_BACKUP_LIMIT = Math.max(1, Number(process.env.PRODUCT_BACKUP_LIMIT || 30));
 const ROBOT_WORKER_READY_TIMEOUT_MS = Number(process.env.ROBOT_WORKER_READY_TIMEOUT_MS || 90000);
 const ROBOT_GRAB_TIMEOUT_MS = Number(process.env.ROBOT_GRAB_TIMEOUT_MS || 120000);
 const ROBOT_STOW_TIMEOUT_MS = Number(process.env.ROBOT_STOW_TIMEOUT_MS || 120000);
@@ -433,6 +435,18 @@ function writeProductStore(store) {
 
 function writeProducts(products) {
     const store = readProductStore();
+    if (fs.existsSync(PRODUCTS_DB_FILE)) {
+        fs.mkdirSync(PRODUCT_BACKUP_DIR, { recursive: true });
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        fs.copyFileSync(PRODUCTS_DB_FILE, path.join(PRODUCT_BACKUP_DIR, `products-${stamp}.json`));
+        const backups = fs.readdirSync(PRODUCT_BACKUP_DIR)
+            .filter((name) => /^products-.*\.json$/.test(name))
+            .sort()
+            .reverse();
+        for (const oldBackup of backups.slice(PRODUCT_BACKUP_LIMIT)) {
+            fs.unlinkSync(path.join(PRODUCT_BACKUP_DIR, oldBackup));
+        }
+    }
     writeProductStore({ ...store, products });
 }
 
@@ -4756,26 +4770,59 @@ function saveInventoryScanProducts(rawRows) {
         return { name, shelf, point, layer, marker };
     });
     const products = readProducts();
-    const saved = [];
-    for (const row of rows) {
+    const assignments = rows.map((row) => {
         const slotIndex = products.findIndex((product) =>
             product.shelf_zone === row.shelf
             && Number(product.shelf_number) === row.point
             && Number(product.shelf_layer) === row.layer);
-        const nameIndex = products.findIndex((product) => String(product.name || '').trim() === row.name);
-        const index = slotIndex >= 0 ? slotIndex : nameIndex;
-        const base = index >= 0 ? products[index] : { id: nextProductId(products), status: 1, stock: 100 };
+        const nameMatches = products
+            .map((product, index) => ({ product, index }))
+            .filter(({ product }) => String(product.name || '').trim() === row.name);
+        const slotHasSameName = slotIndex >= 0
+            && String(products[slotIndex].name || '').trim() === row.name;
+        if (!slotHasSameName && nameMatches.length === 0) {
+            throw new Error(`商品“${row.name}”尚未录入，请先在商品管理中补全资料`);
+        }
+        if (!slotHasSameName && nameMatches.length > 1) {
+            throw new Error(`商品“${row.name}”存在多条记录，请先在商品管理中确认具体商品`);
+        }
+        const index = slotHasSameName
+            ? slotIndex
+            : nameMatches[0].index;
+        return { row, index, slotIndex };
+    });
+
+    const duplicateAssignment = assignments.find((assignment, index) =>
+        assignments.some((candidate, candidateIndex) =>
+            candidateIndex !== index && candidate.index === assignment.index));
+    if (duplicateAssignment) {
+        throw new Error(`商品“${products[duplicateAssignment.index].name}”不能同时分配到多个货位`);
+    }
+
+    const saved = [];
+    for (const { row, index, slotIndex } of assignments) {
+        if (slotIndex >= 0 && slotIndex !== index) {
+            products[slotIndex] = normalizeProduct({
+                ...products[slotIndex],
+                location: '',
+                chassis_marker: '',
+                shelf_number: null,
+                shelf_zone: '',
+                shelf_layer: null,
+                status: 0
+            });
+        }
+
         const product = normalizeProduct({
-            ...base,
-            name: row.name,
+            ...products[index],
             shelf_number: row.point,
             shelf_zone: row.shelf,
             shelf_layer: row.layer,
             chassis_marker: row.marker,
-            location: `${row.shelf}货架第${row.point}点位第${row.layer}层`
+            location: `${row.shelf}货架第${row.point}点位第${row.layer}层`,
+            status: 1
         });
-        if (index >= 0) products[index] = product;
-        else products.push(product);
+        products[index] = product;
         saved.push(product);
     }
     writeProducts(products);
