@@ -2699,9 +2699,17 @@ server.listen(PORT, HOST, () => {
 });
 
 async function shutdownServerOnSignal(signal) {
-    if (processShutdownStarted) return;
+    if (processShutdownStarted) {
+        log(`再次收到 ${signal}，立即退出`);
+        process.exit(130);
+    }
     processShutdownStarted = true;
     log(`收到 ${signal}，正在让抓取 worker 下使能并退出...`);
+    const forceExitTimer = setTimeout(() => {
+        log('退出清理达到 5 秒上限，强制结束服务');
+        process.exit(1);
+    }, 5000);
+    forceExitTimer.unref?.();
     const worker = robotWorker;
     if (worker && worker.exitCode === null) {
         await new Promise((resolve) => {
@@ -2716,8 +2724,8 @@ async function shutdownServerOnSignal(signal) {
             const timeout = setTimeout(() => {
                 log('抓取 worker 退出超时，发送 SIGINT 触发下使能清理');
                 worker.kill('SIGINT');
-                setTimeout(finish, 2000).unref?.();
-            }, Math.min(5000, ROBOT_RECONFIGURE_TIMEOUT_MS));
+                setTimeout(finish, 1000).unref?.();
+            }, Math.min(2000, ROBOT_RECONFIGURE_TIMEOUT_MS));
             worker.once('close', finish);
             worker.stdin.write('__quit__\n', (error) => {
                 if (error) {
@@ -2727,20 +2735,21 @@ async function shutdownServerOnSignal(signal) {
             });
         });
     }
-    await Promise.all([
-        new Promise((resolve) => server.close(() => resolve())),
-        new Promise((resolve) => wss.close(() => resolve()))
-    ]);
+    for (const client of wss.clients) client.terminate();
+    wss.close();
+    server.close();
+    server.closeAllConnections?.();
+    clearTimeout(forceExitTimer);
     process.exit(0);
 }
 
-process.once('SIGINT', () => {
+process.on('SIGINT', () => {
     shutdownServerOnSignal('SIGINT').catch((error) => {
         log(`SIGINT 清理失败: ${error.message}`);
         process.exit(1);
     });
 });
-process.once('SIGTERM', () => {
+process.on('SIGTERM', () => {
     shutdownServerOnSignal('SIGTERM').catch((error) => {
         log(`SIGTERM 清理失败: ${error.message}`);
         process.exit(1);
