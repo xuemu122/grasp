@@ -504,15 +504,25 @@ function handleSearch() {
 }
 
 // ========== 获取过滤后的商品 ==========
+// 商品是否命中关键词（支持空格分隔的多词，需全部命中）
+function productMatchesKeywords(product, keyword) {
+    const words = (keyword || '').toLowerCase().split(/\s+/).filter(Boolean);
+    if (words.length === 0) return false;
+    const fields = [product.name, product.spec, product.manufacturer, product.location]
+        .filter(Boolean)
+        .map(f => f.toLowerCase());
+    return words.every(w => fields.some(f => f.includes(w)));
+}
+
 function getFilteredProducts() {
     return products.filter(p => {
         const matchCategory = currentCategory === 'all' || p.category === currentCategory;
-        const kw = searchKeyword;
-        const matchSearch = !kw ||
-            (p.name && p.name.toLowerCase().includes(kw)) ||
-            (p.spec && p.spec.toLowerCase().includes(kw)) ||
-            (p.manufacturer && p.manufacturer.toLowerCase().includes(kw)) ||
-            (p.location && p.location.toLowerCase().includes(kw));
+        const words = searchKeyword ? searchKeyword.toLowerCase().split(/\s+/).filter(Boolean) : [];
+        const matchSearch = words.length === 0 || words.every(w =>
+            [p.name, p.spec, p.manufacturer, p.location]
+                .filter(Boolean)
+                .some(f => f.toLowerCase().includes(w))
+        );
         return matchCategory && matchSearch;
     });
 }
@@ -1314,21 +1324,51 @@ const VOICE_CATEGORY_MAP = {
     '面包': '烘焙食品', '蛋糕': '烘焙食品',
 };
 
-// 去掉口语前缀，提取核心关键词
+// 去掉口语前缀/后缀、清理标点符号，提取核心关键词
 function extractVoiceKeyword(rawText) {
-    let text = rawText.trim();
-    const prefixes = ['我想要', '我要', '给我来', '给我', '来一瓶', '来一个',
-        '我想买', '帮我拿', '帮我找', '有没有', '请给我', '帮我',
-        '我想喝', '我想吃', '我要买', '我要喝', '我要吃', '我想',
-        '拿一瓶', '拿一个', '拿', '来', '买', '要', '我'];
-    for (const p of prefixes) {
-        if (text.startsWith(p)) { text = text.slice(p.length); break; }
+    // 1) 清理所有中英文标点（语音识别常在句尾加句号"。"等）
+    let text = String(rawText || '')
+        .replace(/[，。！？、；：,.!?;:'"“”‘’（）()【】\[\]《》<>~～·\s]+/g, '')
+        .trim();
+
+    // 2) 连续剥离口语前缀（如"给我来一瓶脉动" → "脉动"），长前缀优先
+    const prefixes = [
+        '我想要', '我想买', '我想喝', '我想吃', '我要买', '我要喝', '我要吃',
+        '给我来', '帮我拿', '帮我找', '有没有', '请给我', '帮我',
+        '拿一瓶', '拿一罐', '拿一听', '拿一盒', '拿一包', '拿一个',
+        '来一瓶', '来一罐', '来一听', '来一盒', '来一包', '来一个',
+        '我要', '我想', '给我', '帮我',
+        '一瓶', '一罐', '一听', '一盒', '一包', '一个',
+        '拿瓶', '拿罐', '拿听', '拿盒', '拿包',
+        '来瓶', '来罐', '来听', '来盒', '来包',
+        '拿', '来', '买', '要', '我'];
+    let changed = true;
+    while (changed && text.length > 1) {
+        changed = false;
+        for (const p of prefixes) {
+            if (text.startsWith(p) && text.length > p.length) {
+                text = text.slice(p.length);
+                changed = true;
+                break;
+            }
+        }
     }
+
+    // 3) 连续剥离口语后缀（"脉动吧" → "脉动"）
     const suffixes = ['吧', '啊', '呀', '呢', '哦', '呗', '嘛', '好', '好了'];
-    for (const s of suffixes) {
-        if (text.endsWith(s) && text.length > 2) text = text.slice(0, -s.length);
+    changed = true;
+    while (changed && text.length > 1) {
+        changed = false;
+        for (const s of suffixes) {
+            if (text.endsWith(s) && text.length > s.length + 1) {
+                text = text.slice(0, -s.length);
+                changed = true;
+                break;
+            }
+        }
     }
-    return text.trim() || rawText.trim();
+
+    return text.trim() || String(rawText || '').trim();
 }
 
 // 匹配分类
@@ -1342,23 +1382,67 @@ function matchCategory(text) {
     return null;
 }
 
-// 处理语音命令
-function handleVoiceCommand(rawText) {
-    const keyword = extractVoiceKeyword(rawText);
-    if (!keyword) return;
-    console.log(`🎤 语音: "${rawText}" → "${keyword}"`);
+// 语音别名归一化：把识别变体/品牌简称统一成商品名称关键词
+const VOICE_ALIAS_MAP = {
+    '茶Π': '茶π', '茶派': '茶π', '茶pai': '茶π',
+    'AD钙奶': 'AD钙', 'ad钙奶': 'AD钙',
+    '娃哈哈': '哇哈哈',
+    '水溶希': '水溶C', '水溶西': '水溶C',
+    '无糖可乐': '无糖 可乐',
+    '零度可乐': '零度 可乐',
+    '外星人电解质水': '外星人电解质',
+    '电解质水': '外星人电解质',
+    '果粒橙': '果粒橙',
+};
 
-    const matchedCategory = matchCategory(keyword);
-    if (matchedCategory) {
-        currentCategory = matchedCategory;
-        searchKeyword = '';
-        const s = document.getElementById('searchInput'); if (s) s.value = '';
-        renderCategories();
-        const t = document.getElementById('currentCategoryTitle');
-        if (t) t.textContent = currentCategory === 'all' ? '全部商品' : currentCategory;
+// 归一化语音关键词（只处理一次，避免连环替换）
+function normalizeVoiceKeyword(keyword) {
+    let k = keyword;
+    for (const [alias, target] of Object.entries(VOICE_ALIAS_MAP)) {
+        if (k.includes(alias)) {
+            k = k.replace(alias, target);
+            break;
+        }
     }
-    searchKeyword = keyword.toLowerCase();
-    const s2 = document.getElementById('searchInput'); if (s2) s2.value = keyword;
+    return k;
+}
+
+// 处理语音命令：商品优先全部展示，未命中再切分类
+function handleVoiceCommand(rawText) {
+    let keyword = extractVoiceKeyword(rawText);
+    if (!keyword) return;
+    keyword = normalizeVoiceKeyword(keyword);
+    console.log(`🎤 语音: "${rawText}" → 关键词 "${keyword}"`);
+
+    const s = document.getElementById('searchInput');
+    const t = document.getElementById('currentCategoryTitle');
+
+    // 1) 商品优先：在全部商品中按关键词匹配，命中则全部展示
+    const hasProductMatch = products.some(p => productMatchesKeywords(p, keyword));
+    if (hasProductMatch) {
+        currentCategory = 'all';
+        searchKeyword = keyword.toLowerCase();
+        if (s) s.value = keyword;
+        renderCategories();
+        if (t) t.textContent = '全部商品';
+    } else {
+        // 2) 未命中商品：尝试切分类（如"碳酸饮料"、"矿泉水"）
+        const matchedCategory = matchCategory(keyword);
+        if (matchedCategory) {
+            currentCategory = matchedCategory;
+            searchKeyword = '';
+            if (s) s.value = '';
+            renderCategories();
+            if (t) t.textContent = currentCategory === 'all' ? '全部商品' : currentCategory;
+        } else {
+            // 3) 兜底：按关键词搜索
+            currentCategory = 'all';
+            searchKeyword = keyword.toLowerCase();
+            if (s) s.value = keyword;
+            renderCategories();
+            if (t) t.textContent = '全部商品';
+        }
+    }
     renderProducts();
 
     const ps = document.getElementById('productsSection');
