@@ -4,6 +4,7 @@
 import csv
 import os
 import sys
+import threading
 import time
 from ctypes import c_int
 
@@ -92,6 +93,15 @@ class LHandProGripper:
         self.dof_active = 0
         self.ok = True
         self._holding = False
+        self._command_lock = threading.Lock()
+        self._hold_lock = threading.Lock()
+        self._hold_stop = threading.Event()
+        self._hold_thread = None
+        self._hold_positions = None
+        self._hold_axes = set()
+        self._hold_max_positions = None
+        self._hold_profile = None
+        self._hold_baseline = None
 
     def _load_controller_factory(self):
         if self._controller_factory is not None:
@@ -365,6 +375,7 @@ class LHandProGripper:
         return baud_rate
 
     def disconnect(self, stop_motors=True):
+        self._stop_hold()
         self._holding = False
         controller = self.controller
         self.controller = None
@@ -399,11 +410,12 @@ class LHandProGripper:
         velocity = int(velocity or os.getenv("LHAND_FLEX_VELOCITY", "12000"))
         max_current = int(max_current or os.getenv("LHAND_FLEX_MAX_CURRENT", "600"))
         sdk = self._sdk
-        for axis, position in enumerate(positions, start=1):
-            sdk.set_target_position(axis, int(position))
-            sdk.set_position_velocity(axis, velocity)
-            sdk.set_max_current(axis, max_current)
-        sdk.move_motors(0)
+        with self._command_lock:
+            for axis, position in enumerate(positions, start=1):
+                sdk.set_target_position(axis, int(position))
+                sdk.set_position_velocity(axis, velocity)
+                sdk.set_max_current(axis, max_current)
+            sdk.move_motors(0)
         if wait_s > 0:
             time.sleep(float(wait_s))
 
@@ -420,6 +432,7 @@ class LHandProGripper:
             print("[LHandPro] 已禁用, 跳过张开")
             return False
         try:
+            self._stop_hold()
             self._holding = False
             positions = self._open_positions()
             try:
@@ -456,6 +469,7 @@ class LHandProGripper:
                 wait_s=float(os.getenv("LHAND_CLOSE_WAIT_S", "1.0")),
             )
             self._holding = True
+            self._start_hold(positions, set(range(1, self.dof_active + 1)), positions, None, None)
             print(f"[LHandPro] 固定位置抓取: {positions}")
             return True
         except Exception as exc:
@@ -471,12 +485,92 @@ class LHandProGripper:
             and self.controller.is_connected
         )
 
+    def _stop_hold(self):
+        stop_event = self._hold_stop
+        stop_event.set()
+        thread = self._hold_thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        self._hold_thread = None
+        self._hold_positions = None
+        self._hold_profile = None
+        self._hold_baseline = None
+        self._hold_axes = set()
+        self._hold_max_positions = None
+        self._hold_stop = threading.Event()
+
+    def _start_hold(self, positions, axes, max_positions, profile, baseline):
+        self._stop_hold()
+        with self._hold_lock:
+            self._hold_positions = list(positions)
+            self._hold_axes = set(axes)
+            self._hold_max_positions = list(max_positions)
+            self._hold_profile = profile
+            self._hold_baseline = list(baseline) if baseline is not None else None
+        stop_event = self._hold_stop
+        self._hold_thread = threading.Thread(
+            target=self._hold_loop,
+            args=(stop_event,),
+            name="lhandpro-grasp-hold",
+            daemon=True,
+        )
+        self._hold_thread.start()
+        hz = max(1.0, float(os.getenv("LHAND_HOLD_HZ", "15")))
+        print(f"[LHandPro] 持续保持抓取姿态 ({hz:.0f}Hz, 低负载自动补紧)")
+
+    def _hold_loop(self, stop_event):
+        period = 1.0 / max(1.0, float(os.getenv("LHAND_HOLD_HZ", "15")))
+        tighten_interval = max(0.1, float(os.getenv("LHAND_HOLD_TIGHTEN_INTERVAL_S", "0.35")))
+        tighten_step = max(1, int(os.getenv("LHAND_HOLD_TIGHTEN_STEP", "50")))
+        min_delta = float(os.getenv("LHAND_HOLD_MIN_DELTA", "60"))
+        hard_current = float(os.getenv("LHAND_FLEX_HARD_CURRENT", "750"))
+        next_tighten = time.monotonic() + tighten_interval
+        while not stop_event.wait(period):
+            try:
+                with self._hold_lock:
+                    positions = list(self._hold_positions or [])
+                    axes = set(self._hold_axes)
+                    max_positions = list(self._hold_max_positions or [])
+                    profile = self._hold_profile
+                    baseline = list(self._hold_baseline or [])
+                if not positions or self.controller is None:
+                    return
+
+                currents = [abs(value) for value in self._read_currents(1, 0.0)]
+                if time.monotonic() >= next_tighten:
+                    changed = False
+                    for axis in axes:
+                        index = axis - 1
+                        command = positions[index]
+                        if command >= max_positions[index] or currents[index] >= hard_current:
+                            continue
+                        if profile:
+                            empty = profile_current_envelope(profile, command, axis, 300)
+                        else:
+                            empty = baseline[index] if index < len(baseline) else 0.0
+                        if currents[index] - empty < min_delta:
+                            positions[index] = min(max_positions[index], command + tighten_step)
+                            changed = True
+                    next_tighten = time.monotonic() + tighten_interval
+
+                    if changed:
+                        with self._hold_lock:
+                            if self._hold_positions is not None:
+                                self._hold_positions = positions
+
+                self._command_positions(positions, wait_s=0.0)
+            except Exception as exc:
+                self._holding = False
+                print(f"[LHandPro][警告] 抓取保持失败: {exc}")
+                return
+
     def flexible_close(self):
         """Close each active axis until its current rises above the empty curve."""
         if not self.ok:
             print("[LHandPro] 已禁用, 跳过柔性抓取")
             return False
         try:
+            self._stop_hold()
             require_profile = os.getenv("LHAND_FLEX_REQUIRE_PROFILE", "1").lower() in (
                 "1", "true", "yes", "on"
             )
@@ -516,7 +610,7 @@ class LHandProGripper:
             # Fast profile: keep the old responsive cadence while retaining
             # two consecutive contact detections and the hard-current stop.
             step = max(1, int(os.getenv("LHAND_FLEX_STEP", "250")))
-            settle = max(0.025, float(os.getenv("LHAND_FLEX_SETTLE_S", "0.05")))
+            settle = max(0.015, float(os.getenv("LHAND_FLEX_SETTLE_S", "0.025")))
             samples = max(1, int(os.getenv("LHAND_FLEX_SAMPLES", "1")))
             sample_delay = max(0.0, float(os.getenv("LHAND_FLEX_SAMPLE_DELAY_S", "0")))
             threshold = float(os.getenv("LHAND_FLEX_PROFILE_DELTA", "80"))
@@ -606,6 +700,7 @@ class LHandProGripper:
                         )
                         return False
                     self._holding = True
+                    self._start_hold(values, required_axes, max_positions, profile, baseline)
                     print(
                         f"[LHandPro] 柔性抓取完成: 接触轴={sorted(contacts)} "
                         f"保持位置={values}"

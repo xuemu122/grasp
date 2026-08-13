@@ -131,6 +131,29 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         self.assertTrue(without_boxes.ok)
         self.assertFalse(with_boxes.ok)
 
+    def test_offset_hand_box_requires_its_own_dense_support(self):
+        # A few points inside the conservative thumb envelope should not stop
+        # a path when the central hand axis is clearly clear.
+        points = np.asarray(
+            [[0.08, 0.0, 0.08 + index * 0.004] for index in range(6)],
+            dtype=np.float32,
+        )
+        result = check_hand_path(
+            points,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            0.08,
+            0.01,
+            samples=2,
+            hand_boxes_local_m=hand_box_bounds(),
+            min_hit_points=4,
+            hand_box_min_hit_points=12,
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.hand_axis_hit_count, 0)
+        self.assertEqual(result.hand_box_hit_count, 6)
+
     def test_depth_guard_rotates_dh116_boxes_with_flange(self):
         rotation = np.array(
             [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],

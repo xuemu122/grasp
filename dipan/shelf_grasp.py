@@ -104,7 +104,9 @@ LOW_Z_APPROACH_SPEED = 60
 LOW_Z_GRASP_SPEED = 20
 MOTION_SETTLE_S = float(os.getenv("MOTION_SETTLE_S", "0.2"))  # 运动完成后的短缓冲
 GRASP_SETTLE_S = float(os.getenv("GRASP_SETTLE_S", "0.4"))    # 抓取前进/后退短缓冲
-HAND_CLOSE_WAIT_S = float(os.getenv("HAND_CLOSE_WAIT_S", "1.0"))
+# LHandPro/Aero start their hold loop before returning from close; only keep a
+# short confirmation window here so the arm does not pause for a full second.
+HAND_CLOSE_WAIT_S = float(os.getenv("HAND_CLOSE_WAIT_S", "0.25"))
 PLACE_TRANSITION_CP = os.getenv("PLACE_TRANSITION_CP", "60")       # 过渡点到放置点的平滑比例
 PLACE_SMOOTH_TRANSITION = os.getenv("PLACE_SMOOTH_TRANSITION", "0").lower() in ("1", "true", "yes", "on")
 PLACE_RETURN_CLEARANCE_MM = float(os.getenv("PLACE_RETURN_CLEARANCE_MM", "140"))  # 放置后回层的安全抬高量
@@ -171,6 +173,7 @@ DEPTH_GUARD_PATH_SAMPLES = int(os.getenv("DEPTH_GUARD_PATH_SAMPLES", "8"))
 # image. Require a small point cluster before stopping the arm so one sampled
 # edge pair does not cause a false alarm.
 DEPTH_GUARD_MIN_HIT_POINTS = max(1, int(os.getenv("DEPTH_GUARD_MIN_HIT_POINTS", "4")))
+DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS = max(1, int(os.getenv("DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS", "12")))
 DEPTH_GUARD_CAMERA_MIN_HIT_POINTS = max(1, int(os.getenv("DEPTH_GUARD_CAMERA_MIN_HIT_POINTS", "12")))
 DEPTH_GUARD_NOISE_FILTER_RADIUS_PX = max(0, int(os.getenv("DEPTH_GUARD_NOISE_FILTER_RADIUS_PX", "2")))
 DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT = max(1, int(os.getenv("DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT", "4")))
@@ -295,17 +298,20 @@ def _depth_guard_path_ok(
         camera_box_max_local_m=DEPTH_GUARD_CAMERA_BOX_MAX_M if DEPTH_GUARD_CAMERA_ENABLE else None,
         hand_boxes_local_m=DEPTH_GUARD_HAND_BOXES_M,
         min_hit_points=DEPTH_GUARD_MIN_HIT_POINTS,
+        hand_box_min_hit_points=DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS,
         camera_min_hit_points=DEPTH_GUARD_CAMERA_MIN_HIT_POINTS,
     )
     min_dist_mm = result.min_distance_m * 1000.0 if np.isfinite(result.min_distance_m) else float("inf")
+    axis_min_dist_mm = result.hand_axis_min_distance_m * 1000.0 if np.isfinite(result.hand_axis_min_distance_m) else float("inf")
     if not quiet:
         print(
             f"  [深度护栏] {label}: 最近 {min_dist_mm:.0f}mm, "
-            f"独立命中 手={result.hand_hit_count}/{DEPTH_GUARD_MIN_HIT_POINTS} "
+            f"独立命中 中心={result.hand_axis_hit_count}/{DEPTH_GUARD_MIN_HIT_POINTS} "
+            f"偏置盒={result.hand_box_hit_count}/{DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS} "
             f"相机={result.camera_hit_count}/{DEPTH_GUARD_CAMERA_MIN_HIT_POINTS} "
             f"(障碍点 {result.checked_points}), "
             f"模型 {_depth_guard_radius_label()}, "
-            f"长度 {hand_length_m*1000:.0f}mm"
+            f"长度 {hand_length_m*1000:.0f}mm, 中心最近 {axis_min_dist_mm:.0f}mm"
             + (
                 f", 深度对齐±{DEPTH_GUARD_DEPTH_ALIGN_TOLERANCE_M*1000:.0f}mm"
                 if DEPTH_GUARD_DEPTH_ALIGN_ENABLE and camera_depth_axis_m is not None
@@ -460,7 +466,15 @@ def _save_depth_guard_viz(
             if 0 <= u < viz.shape[1] and 0 <= v < viz.shape[0]:
                 cv2.circle(viz, (int(u), int(v)), 1, (150, 150, 150), -1)
 
-    hit_mask, min_dist, hand_hit_mask, camera_hit_mask = hand_path_hit_mask(
+    (
+        hit_mask,
+        min_dist,
+        hand_hit_mask,
+        camera_hit_mask,
+        hand_axis_hit_mask,
+        hand_box_hit_mask,
+        hand_axis_min_dist,
+    ) = hand_path_hit_mask(
         obstacle_points_m,
         np.array(start_xyz_mm, dtype=np.float32) / 1000.0,
         np.array(target_xyz_mm, dtype=np.float32) / 1000.0,
@@ -478,13 +492,18 @@ def _save_depth_guard_viz(
         camera_box_max_local_m=DEPTH_GUARD_CAMERA_BOX_MAX_M if DEPTH_GUARD_CAMERA_ENABLE else None,
         hand_boxes_local_m=DEPTH_GUARD_HAND_BOXES_M,
         return_components=True,
+        return_hand_components=True,
     )
     camera_hit_pixels = pixels[camera_hit_mask] if len(pixels) == len(camera_hit_mask) else np.zeros((0, 2), dtype=np.int32)
     for u, v in camera_hit_pixels:
         if 0 <= u < viz.shape[1] and 0 <= v < viz.shape[0]:
             cv2.circle(viz, (int(u), int(v)), 3, (255, 0, 255), -1)
-    hand_hit_pixels = pixels[hand_hit_mask] if len(pixels) == len(hand_hit_mask) else np.zeros((0, 2), dtype=np.int32)
-    for u, v in hand_hit_pixels:
+    hand_box_hit_pixels = pixels[hand_box_hit_mask] if len(pixels) == len(hand_box_hit_mask) else np.zeros((0, 2), dtype=np.int32)
+    for u, v in hand_box_hit_pixels:
+        if 0 <= u < viz.shape[1] and 0 <= v < viz.shape[0]:
+            cv2.circle(viz, (int(u), int(v)), 3, (0, 165, 255), -1)
+    hand_axis_hit_pixels = pixels[hand_axis_hit_mask] if len(pixels) == len(hand_axis_hit_mask) else np.zeros((0, 2), dtype=np.int32)
+    for u, v in hand_axis_hit_pixels:
         if 0 <= u < viz.shape[1] and 0 <= v < viz.shape[0]:
             cv2.circle(viz, (int(u), int(v)), 3, (0, 0, 255), -1)
 
@@ -527,21 +546,29 @@ def _save_depth_guard_viz(
     # images. It is still included in the 3-D collision check above; omit only
     # its self-view wireframe so the path visualization remains meaningful.
 
-    finite_min = min_dist[np.isfinite(min_dist)] if len(min_dist) else np.zeros((0,), dtype=np.float32)
-    min_mm = float(np.min(finite_min) * 1000.0) if len(finite_min) else float("inf")
+    finite_axis_min = hand_axis_min_dist[np.isfinite(hand_axis_min_dist)] if len(hand_axis_min_dist) else np.zeros((0,), dtype=np.float32)
+    axis_min_mm = float(np.min(finite_axis_min) * 1000.0) if len(finite_axis_min) else float("inf")
+    axis_hits = int(np.count_nonzero(hand_axis_hit_mask))
+    box_hits = int(np.count_nonzero(hand_box_hit_mask))
+    camera_hits = int(np.count_nonzero(camera_hit_mask))
+    blocked = (
+        axis_hits >= DEPTH_GUARD_MIN_HIT_POINTS
+        or box_hits >= DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS
+        or camera_hits >= DEPTH_GUARD_CAMERA_MIN_HIT_POINTS
+    )
     cv2.putText(
         viz,
-        f"{label} hand={int(np.count_nonzero(hand_hit_mask))}/{DEPTH_GUARD_MIN_HIT_POINTS} camera={int(np.count_nonzero(camera_hit_mask))}/{DEPTH_GUARD_CAMERA_MIN_HIT_POINTS} min={min_mm:.0f}mm model={_depth_guard_radius_label()} len={hand_length_m*1000:.0f}",
+        f"{label} axis={axis_hits}/{DEPTH_GUARD_MIN_HIT_POINTS} box={box_hits}/{DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS} camera={camera_hits}/{DEPTH_GUARD_CAMERA_MIN_HIT_POINTS} axis_min={axis_min_mm:.0f}mm model={_depth_guard_radius_label()} len={hand_length_m*1000:.0f}",
         (12, 24),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.55,
-        (0, 0, 255) if np.any(hit_mask) else (0, 255, 0),
+        (0, 0, 255) if blocked else (0, 255, 0),
         2,
     )
     safe_label = "".join(ch if ch.isalnum() else "_" for ch in str(label))
     path = f"/tmp/depth_guard_{safe_label}.jpg"
     cv2.imwrite(path, viz)
-    print(f"  [深度护栏] 可视化已保存: {path} (灰=障碍点, 红=手部命中, 紫=相机命中, 绿=排除框/目标框, 青=手部路径)")
+    print(f"  [深度护栏] 可视化已保存: {path} (灰=障碍点, 红=中心命中, 橙=偏置盒命中, 紫=相机命中, 绿=排除框/目标框, 青=手部路径)")
     return path
 
 

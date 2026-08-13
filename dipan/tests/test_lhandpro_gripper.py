@@ -232,6 +232,34 @@ class LHandProfileTests(unittest.TestCase):
             self.assertFalse(hand.flexible_close())
             self.assertFalse(hand.is_holding())
 
+    def test_flexible_close_starts_hold_and_open_stops_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "empty.csv")
+            with open(path, "w", newline="", encoding="utf-8") as output:
+                writer = csv.DictWriter(
+                    output,
+                    fieldnames=["command"] + [f"current_{axis}" for axis in range(1, 7)],
+                )
+                writer.writeheader()
+                for command in range(0, 3001, 250):
+                    writer.writerow({"command": command, **{f"current_{axis}": 100 for axis in range(1, 7)}})
+
+            hand = LHandProGripper(profile_path=path, controller_factory=FakeController)
+            with patch.dict(os.environ, {
+                "LHAND_FLEX_REQUIRED_AXES": "3,4",
+                "LHAND_FLEX_ACTIVE_AXES": "3,4",
+                "LHAND_FLEX_MAX_POSITIONS": "3000",
+                "LHAND_FLEX_STEP": "500",
+                "LHAND_FLEX_CONSECUTIVE": "1",
+                "LHAND_FLEX_MIN_CONTACTS": "2",
+            }, clear=False), patch("time.sleep"):
+                hand.connect(enable_motors=False, home_motors=False)
+                self.assertTrue(hand.flexible_close())
+                self.assertIsNotNone(hand._hold_thread)
+                self.assertTrue(hand._hold_thread.is_alive())
+                hand.open()
+            self.assertIsNone(hand._hold_thread)
+
 
 if __name__ == "__main__":
     unittest.main()

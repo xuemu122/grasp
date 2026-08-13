@@ -151,6 +151,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `DEPTH_GUARD_STRIDE`：深度点采样步长，默认 `8`；调小更密但更慢，调大更快但可能漏细杆/边缘。
 - `DEPTH_GUARD_PATH_SAMPLES`：路径采样次数，默认 `8`；运动路径长或拐得多时可调大。
 - `DEPTH_GUARD_MIN_HIT_POINTS`：手部路径触发中止所需的独立深度点数，默认 `4`；少量层板边缘/深度跳变点不会误报，连续障碍点簇仍会拦截。需要更保守时可调回 `2`，现场仍有边缘误报时可调到 `5` 或 `6`。
+- `DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS`：DH116 偏置拇指/手指和连接件外接盒触发中止所需的独立深度点数，默认 `12`；外接盒比中心胶囊保守，因此要求更完整的障碍点簇。调试图中这类命中显示为橙点。
 - `DEPTH_GUARD_MAX_DEPTH_M`：纳入障碍点的最大深度，默认 `1.20` m；货架背景太远造成误拦截时可调小。
 - `DEPTH_GUARD_EXCLUDE_MARGIN_PX`：检测框外扩排除范围，默认 `32` px；如果货物边缘被误当货架可继续调大。
 - `DEPTH_GUARD_SELF_MASK_ENABLE`：自手部深度点剔除开关，默认开启；用于过滤深度相机看到的当前灵巧手/手指，避免把自己的手当障碍。
@@ -165,6 +166,15 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `DEPTH_GUARD_BYPASS_ENABLE`：对齐路径自动绕行开关，默认开启；直达被深度护栏挡住时会尝试上抬/侧绕中间点。
 - `DEPTH_GUARD_BYPASS_LIFTS_MM`：绕行上抬候选，默认 `60,100,140` mm。
 - `DEPTH_GUARD_BYPASS_SIDE_MM`：绕行侧向候选，默认 `60,-60` mm。
+
+LHandPro 抓取保持参数：
+
+- `LHAND_HOLD_HZ`：抓取姿态后台重发频率，默认 `15` Hz；用于维持位置控制，不需要频繁提高。
+- `LHAND_HOLD_TIGHTEN_INTERVAL_S`：保持期间检测低负载并补紧的周期，默认 `0.35` s。
+- `LHAND_HOLD_TIGHTEN_STEP`：每次补紧的位置步长，默认 `50`；物体较软或抓后变松时可调大，出现抖动时调小。
+- `LHAND_HOLD_MIN_DELTA`：相对空载电流低于该值才补紧，默认 `60`；用于避免持续顶压。
+- `LHAND_FLEX_SETTLE_S`：柔性闭合每步等待，默认 `0.025` s；现场通信不稳定时可适当调大。
+- `HAND_CLOSE_WAIT_S`：闭合成功后确认保持状态的等待时间，默认 `0.25` s；需要兼容较慢控制器时可调回 `1.0` s。
 
 深度护栏拦截动作时会自动保存调试图到 `/tmp/depth_guard_*.jpg`：灰点为参与判断的深度障碍点，红点为命中碰撞半径的点，绿框为检测排除框/当前目标框，青线为手部检查线。
 
