@@ -301,9 +301,7 @@ function handleWSMessage(msg) {
         awake = false;
         splash.classList.remove('hidden');
         // 停止语音播报
-        if ('speechSynthesis' in window) {
-            window.speechSynthesis.cancel();
-        }
+        stopSpeak();
         if (idleTimer) {
             clearTimeout(idleTimer);
             idleTimer = null;
@@ -1517,7 +1515,40 @@ window.addEventListener('beforeunload', () => {
 });
 
 // ========== 通用语音播报 ==========
+// 预生成音频映射：文案 -> 音频文件。
+// Android 系统 WebView 不支持 speechSynthesis 语音合成，一体机上必须走 mp3 播放。
+const VOICE_AUDIO_MAP = {
+    '欢迎光临，请点单!': 'audio/welcome.mp3',
+    '请扫码支付。': 'audio/pay.mp3',
+    '请等待机器人取货。': 'audio/wait.mp3',
+    '出货完成，请核对商品是否已经全部取出，欢迎下次光临！': 'audio/done.mp3',
+    '机器人取货失败，费用已原路退还。': 'audio/failed.mp3',
+};
+let voiceAudio = null;
+
+// 停止语音播报（mp3 与 speechSynthesis 一并停止）
+function stopSpeak() {
+    if (voiceAudio) {
+        try {
+            voiceAudio.pause();
+            voiceAudio.currentTime = 0;
+        } catch (e) { /* ignore */ }
+    }
+    if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+    }
+}
+
+// 播放语音：优先播放预生成的 mp3；未配置音频的文本兜底走 Web Speech API
 function speakText(text) {
+    const src = VOICE_AUDIO_MAP[text];
+    if (src) {
+        if (!voiceAudio) voiceAudio = new Audio();
+        voiceAudio.pause();
+        voiceAudio.src = src + '?v=1';
+        voiceAudio.play().catch(e => console.warn('语音播报播放失败:', e));
+        return;
+    }
     if (!('speechSynthesis' in window)) return;
     // 取消当前正在播放的语音，避免重叠
     window.speechSynthesis.cancel();
