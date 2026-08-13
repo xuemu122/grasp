@@ -118,9 +118,35 @@ def depth_to_robot_obstacles(
     u = grid_x[valid].astype(np.float32)
     v = grid_y[valid].astype(np.float32)
     z = depth_m[valid]
-    x = (u - float(transformer.cx)) * z / float(transformer.fx)
-    y = (v - float(transformer.cy)) * z / float(transformer.fy)
-    cam_pts = np.stack([x, y, z, np.ones_like(z)], axis=1)
+
+    # Keep obstacle projection identical to grasp-point projection.  The
+    # normal hand-eye transformer may apply calibrated lens/perspective
+    # compensation (currently on the image Y axis); rebuilding the pinhole
+    # equations here made the guard drift increasingly for off-centre targets.
+    pixel_to_camera = getattr(transformer, "pixel_to_camera", None)
+    if callable(pixel_to_camera):
+        try:
+            cam_xyz = np.asarray(pixel_to_camera(u, v, z), dtype=np.float32)
+            if cam_xyz.shape == (len(z), 3):
+                cam_pts = np.concatenate(
+                    [cam_xyz, np.ones((len(z), 1), dtype=np.float32)], axis=1
+                )
+            else:
+                raise ValueError("unexpected pixel_to_camera shape")
+        except (TypeError, ValueError):
+            # Existing lightweight test/dummy transformers often implement
+            # only scalar conversion; retain a compatible scalar fallback.
+            cam_pts = np.asarray(
+                [pixel_to_camera(float(px), float(py), float(pz)) for px, py, pz in zip(u, v, z)],
+                dtype=np.float32,
+            )
+            cam_pts = np.concatenate(
+                [cam_pts.reshape(-1, 3), np.ones((len(z), 1), dtype=np.float32)], axis=1
+            )
+    else:
+        x = (u - float(transformer.cx)) * z / float(transformer.fx)
+        y = (v - float(transformer.cy)) * z / float(transformer.fy)
+        cam_pts = np.stack([x, y, z, np.ones_like(z)], axis=1)
 
     pose = tuple(float(x) for x in flange_pose_mm)
     T_base_flange = np.eye(4, dtype=np.float32)

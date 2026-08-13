@@ -212,6 +212,36 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         )
         self.assertEqual(len(points), 1)
 
+    def test_depth_obstacles_use_transformer_pixel_projection(self):
+        """Off-centre obstacle Y must follow the same calibrated projection as grasp points."""
+        depth = np.zeros((32, 32), dtype=np.uint16)
+        depth[8, 24] = 500
+
+        def pixel_to_camera(u, v, z):
+            # Deliberately exaggerate the calibrated vertical correction so a
+            # pinhole-only implementation is distinguishable in this test.
+            return np.array([(u - 16.0) * z / 100.0, (v - 16.0) * z / 200.0, z])
+
+        camera = SimpleNamespace(_depth_scale=0.001)
+        transformer = SimpleNamespace(
+            cx=16.0,
+            cy=16.0,
+            fx=100.0,
+            fy=100.0,
+            pixel_to_camera=pixel_to_camera,
+            T_flange_to_cam=np.eye(4, dtype=np.float32),
+            _rpy_to_rot=lambda *_args: np.eye(3, dtype=np.float32),
+        )
+        points = depth_to_robot_obstacles(
+            depth,
+            camera,
+            transformer,
+            [0, 0, 0, 0, 0, 0],
+            stride=8,
+        )
+        self.assertEqual(len(points), 1)
+        self.assertAlmostEqual(float(points[0, 1]), -0.020, places=6)
+
     def test_camera_box_is_centered_at_palm_root(self):
         self.assertAlmostEqual(self.box_min[0], -0.15)
         self.assertAlmostEqual(self.box_max[0], -0.09)
