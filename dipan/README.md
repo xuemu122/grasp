@@ -67,6 +67,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `TARGET_DEPTH_REFINE_MAX_DELTA_M`：目标深度重采样允许偏离融合深度的最大值，默认 `0.08` m；超过则认为可能采到背景并跳过校正。
 - `MOTION_SETTLE_S`：普通运动完成后的短缓冲，默认 `0.2` 秒。
 - `GRASP_SETTLE_S`：抓取前进、闭手前、后退后的缓冲，默认 `0.4` 秒。
+- `PRE_CLOSE_LEFT_SHIFT_M`：商品向前探入手心后、灵巧手闭合前，机械臂沿相机画面左侧单独平移的距离，默认 `0.003` m；用于让商品在闭合前更居中。
 - `HAND_CLOSE_WAIT_S`：灵巧手闭合后等待物体稳定的时间，默认 `1.0` 秒。
 - `HAND_BACKEND`：灵巧手后端，默认 `lhandpro_dobot`；通过 Nova 末端 RS485 使用新手。旧 Aero 硬件可显式设为 `aero`回退。
 - `LHAND_DOBOT_BAUD`：Nova 末端 RS485 波特率，默认 `115200`。
@@ -106,7 +107,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `PERSPECTIVE_COMP_GAIN`：透视补偿强度，默认 `2.0`。
 - `PERSPECTIVE_COMP_MIN_SCALE`：透视补偿最小缩放，默认 `0.65`。
 - `GRASP_APPROACH_BACKOFF_M`：抓取前固定退距，默认 `0.15` m；对齐位会放在抓取位后方这个距离，避免从观察位保留过长探入路径。
-- `SIDE_GRASP_MIN_HEIGHT_M` / `SIDE_GRASP_MAX_HEIGHT_M`：侧面抓取点离物体底部的允许区间，默认 `0.065..0.11` m。
+- `SIDE_GRASP_MIN_HEIGHT_M` / `SIDE_GRASP_MAX_HEIGHT_M`：侧面抓取点离物体底部的允许区间，默认 `0.070..0.11` m。
 - `SIDE_GRASP_LOWER_SHIFT_M`：在原侧抓选点基础上向瓶底方向下移的距离，默认 `0.015` m；下移后仍受 `SIDE_GRASP_MIN_HEIGHT_M` 限制，最低离底高度不变。
 - `LAYER_Z_TOLERANCE_M`：当前层世界 Z 过滤容差，默认 `0.16` m；如果误识别上一层会被剔除，现场层高/标定偏差大时可调大。
 - `SHELF_BOARD_FILTER_ENABLE`：是否启用基于当前深度帧的层板识别过滤，默认开启。识别不到可靠上下层板时自动回退旧的 ROI/Z 过滤。
@@ -151,7 +152,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `DEPTH_GUARD_STRIDE`：深度点采样步长，默认 `8`；调小更密但更慢，调大更快但可能漏细杆/边缘。
 - `DEPTH_GUARD_PATH_SAMPLES`：路径采样次数，默认 `8`；运动路径长或拐得多时可调大。
 - `DEPTH_GUARD_MIN_HIT_POINTS`：手部路径触发中止所需的独立深度点数，默认 `4`；少量层板边缘/深度跳变点不会误报，连续障碍点簇仍会拦截。需要更保守时可调回 `2`，现场仍有边缘误报时可调到 `5` 或 `6`。
-- `DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS`：DH116 偏置拇指/手指和连接件外接盒触发中止所需的独立深度点数，默认 `12`；外接盒比中心胶囊保守，因此要求更完整的障碍点簇。调试图中这类命中显示为橙点。
+- `DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS`：DH116 偏置拇指/手指和连接件外接盒触发中止所需的独立深度点数，默认 `16`；外接盒比中心胶囊保守，因此要求更完整的障碍点簇。调试图中这类命中显示为橙点。
 - `DEPTH_GUARD_MAX_DEPTH_M`：纳入障碍点的最大深度，默认 `1.20` m；货架背景太远造成误拦截时可调小。
 - `DEPTH_GUARD_TARGET_DEPTH_MARGIN_M`：相对当前目标深度允许纳入护栏的后方余量，默认 `0.06` m；更远的后层板/背板点会被忽略。
 - 深度护栏会复用当前层识别出的 `row_min..row_max`，只生成上下层板之间的障碍点；上下层板本体和层外点不会参与探入碰撞判定。

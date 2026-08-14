@@ -88,7 +88,7 @@ HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.10, 0.006, 0.008)
+SIDE_GRASP_OFFSET_M = (-0.10, 0.003, 0.008)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.035)
 
@@ -99,6 +99,7 @@ TOP_J6_DEG = 8.3
 APPROACH_LIFT_M = 0.00    # 对齐位额外抬高量, 当前不抬高
 GRASP_ADVANCE_M = 0.06    # 抓取时沿手指方向前进 4cm
 LOW_Z_GRASP_ADVANCE_M = 0.035  # 第4层低位空间更紧, 只探入 3.5cm
+PRE_CLOSE_LEFT_SHIFT_M = float(os.getenv("PRE_CLOSE_LEFT_SHIFT_M", "0.003"))
 GRASP_APPROACH_BACKOFF_M = float(os.getenv("GRASP_APPROACH_BACKOFF_M", "0.15"))  # 抓取前沿手指方向后退对齐
 TOP_APPROACH_BACKOFF_M = 0.15  # 上面抓时先在抓取轴线上退 15cm 再直线前进
 LOW_Z_APPROACH_SPEED = 60
@@ -174,7 +175,7 @@ DEPTH_GUARD_PATH_SAMPLES = int(os.getenv("DEPTH_GUARD_PATH_SAMPLES", "8"))
 # image. Require a small point cluster before stopping the arm so one sampled
 # edge pair does not cause a false alarm.
 DEPTH_GUARD_MIN_HIT_POINTS = max(1, int(os.getenv("DEPTH_GUARD_MIN_HIT_POINTS", "4")))
-DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS = max(1, int(os.getenv("DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS", "12")))
+DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS = max(1, int(os.getenv("DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS", "16")))
 DEPTH_GUARD_CAMERA_MIN_HIT_POINTS = max(1, int(os.getenv("DEPTH_GUARD_CAMERA_MIN_HIT_POINTS", "12")))
 DEPTH_GUARD_NOISE_FILTER_RADIUS_PX = max(0, int(os.getenv("DEPTH_GUARD_NOISE_FILTER_RADIUS_PX", "2")))
 DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT = max(1, int(os.getenv("DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT", "4")))
@@ -2331,6 +2332,11 @@ def main():
             # 抓取: 沿手指方向前进一小段探入
             grasp_pt = flange_pt + grasp_advance_m * fz_dir
 
+            # Camera-left direction is used for the separate centering nudge
+            # after the product has entered the palm and before hand closure.
+            camera_x_dir = R_f @ transformer.T_flange_to_cam[:3, 0]
+            camera_left_dir = -camera_x_dir / max(float(np.linalg.norm(camera_x_dir)), 1e-9)
+
             # 对齐: 固定退到抓取点后方, 避免从观察位保留过长探入距离。
             approach_pt = axis_aligned_approach_m(
                 np.array(flange_pose[:3]) / 1000.0,
@@ -2423,7 +2429,12 @@ def main():
                  approach_to_grasp_mm = np.linalg.norm(
                      np.array([gx + offset_x - (ax + offset_x), gy + offset_y - (ay + offset_y), gz + offset_z - (az + offset_z)])
                  )
-                 print(f"  对齐→抓取直线: {approach_to_grasp_mm:.0f}mm, 过抓前进: {grasp_advance_m*1000:.0f}mm" + (" (第4层低位)" if low_z_grasp else ""))
+                 print(
+                     f"  对齐→抓取直线: {approach_to_grasp_mm:.0f}mm, "
+                     f"过抓前进: {grasp_advance_m*1000:.0f}mm, "
+                     f"入掌后左移: {PRE_CLOSE_LEFT_SHIFT_M*1000:.0f}mm"
+                     + (" (第4层低位)" if low_z_grasp else "")
+                 )
                  print(f"  指尖世界: ({wx*1000:.0f}, {wy*1000:.0f}, {wz*1000:.0f})mm")
                  print(f"  法兰(对齐): X={ax+offset_x:+.0f}({offset_x:+5.0f})  "
                        f"Y={ay+offset_y:+.0f}({offset_y:+5.0f})  "
@@ -2632,6 +2643,32 @@ def main():
                 else:
                     arm.go_home()
                 worker_fail("探入路径被深度护栏拒绝")
+                continue
+            time.sleep(GRASP_SETTLE_S)
+
+            # Product is now inside the palm. Nudge left in camera-image
+            # coordinates to center it, then close the dexterous hand.
+            pre_close_target = (
+                np.array([gx + offset_x, gy + offset_y, gz + offset_z], dtype=np.float32)
+                + camera_left_dir.astype(np.float32) * (PRE_CLOSE_LEFT_SHIFT_M * 1000.0)
+            )
+            print(
+                f"  [抓前居中] 入掌后向画面左侧移动 "
+                f"{PRE_CLOSE_LEFT_SHIFT_M*1000:.0f}mm"
+            )
+            if not arm.movel(
+                float(pre_close_target[0]),
+                float(pre_close_target[1]),
+                float(pre_close_target[2]),
+                speed=grasp_speed,
+                allow_low_z=allow_low_z,
+            ):
+                print("  [中止] 抓前左移失败/报警, 本次不闭手")
+                if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
+                    go_to_layer(arm, _current_layer_idx)
+                else:
+                    arm.go_home()
+                worker_fail("抓前左移失败")
                 continue
             time.sleep(GRASP_SETTLE_S)
 
