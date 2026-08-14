@@ -88,7 +88,7 @@ HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.10, 0.003, 0.008)
+SIDE_GRASP_OFFSET_M = (-0.12, 0.003, 0.008)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.035)
 
@@ -99,7 +99,7 @@ TOP_J6_DEG = 8.3
 APPROACH_LIFT_M = 0.00    # 对齐位额外抬高量, 当前不抬高
 GRASP_ADVANCE_M = 0.06    # 抓取时沿手指方向前进 4cm
 LOW_Z_GRASP_ADVANCE_M = 0.035  # 第4层低位空间更紧, 只探入 3.5cm
-PRE_CLOSE_LEFT_SHIFT_M = float(os.getenv("PRE_CLOSE_LEFT_SHIFT_M", "0.006"))
+PRE_CLOSE_LEFT_SHIFT_M = float(os.getenv("PRE_CLOSE_LEFT_SHIFT_M", "0.009"))
 GRASP_APPROACH_BACKOFF_M = float(os.getenv("GRASP_APPROACH_BACKOFF_M", "0.15"))  # 抓取前沿手指方向后退对齐
 TOP_APPROACH_BACKOFF_M = 0.15  # 上面抓时先在抓取轴线上退 15cm 再直线前进
 LOW_Z_APPROACH_SPEED = 60
@@ -461,6 +461,7 @@ def _save_depth_guard_viz(
     axis_min_m=None,
     axis_max_m=None,
     flange_rotation_m=None,
+    failure_reason=None,
 ):
     if image is None or obstacle_points_m is None or obstacle_pixels is None:
         return None
@@ -571,6 +572,16 @@ def _save_depth_guard_viz(
         (0, 0, 255) if blocked else (0, 255, 0),
         2,
     )
+    if failure_reason:
+        cv2.putText(
+            viz,
+            str(failure_reason),
+            (12, 48),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 165, 255),
+            2,
+        )
     safe_label = "".join(ch if ch.isalnum() else "_" for ch in str(label))
     path = f"/tmp/depth_guard_{safe_label}.jpg"
     cv2.imwrite(path, viz)
@@ -619,10 +630,31 @@ def _movel_with_depth_guard(
         axis_max_m=axis_max_m,
         flange_rotation_m=flange_rotation_m,
     )
+    direct_motion_failed = False
     if direct_ok:
         if arm.movel(float(target[0]), float(target[1]), float(target[2]), speed=speed, allow_low_z=allow_low_z):
             return True
+        direct_motion_failed = True
         print(f"  [深度绕行] {label}: 直达 MovL 失败, 尝试中间点绕行")
+        _save_depth_guard_viz(
+            label,
+            viz_image,
+            obstacle_points_m,
+            obstacle_pixels,
+            target_bbox,
+            exclude_bboxes,
+            start,
+            target,
+            hand_dir_m,
+            hand_length_m,
+            transformer,
+            observation_flange_pose,
+            camera_depth_axis_m,
+            axis_min_m,
+            axis_max_m,
+            flange_rotation_m,
+            failure_reason="MovL rejected after depth check passed",
+        )
     else:
         _save_depth_guard_viz(
             label,
@@ -644,7 +676,10 @@ def _movel_with_depth_guard(
         )
 
     if not (DEPTH_GUARD_BYPASS_ENABLE and allow_bypass):
-        print(f"  [深度护栏][中止] {label} 无可用绕行, 不发动作")
+        if direct_motion_failed:
+            print(f"  [运动拒绝][中止] {label}: 深度检查已通过, 但直达 MovL 失败且不允许绕行")
+        else:
+            print(f"  [深度护栏][中止] {label} 无可用绕行, 不发动作")
         return False
 
     candidates = []
@@ -2637,12 +2672,12 @@ def main():
                 axis_max_m=depth_axis_max_m,
                 flange_rotation_m=R_f,
             ):
-                print("  [中止] 深度护栏拒绝探入路径, 本次不闭手")
+                print("  [中止] 探入路径运动失败或被深度护栏拒绝, 本次不闭手")
                 if _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
                     go_to_layer(arm, _current_layer_idx)
                 else:
                     arm.go_home()
-                worker_fail("探入路径被深度护栏拒绝")
+                worker_fail("探入路径运动失败/深度护栏拒绝")
                 continue
             time.sleep(GRASP_SETTLE_S)
 

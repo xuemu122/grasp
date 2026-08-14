@@ -55,6 +55,35 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         shelf_grasp._disable_arm_on_process_exit(arm)
         arm.close.assert_called_once_with()
 
+    def test_movel_failure_saves_path_viz_after_depth_check_passes(self):
+        arm = Mock()
+        arm.get_pose.return_value = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        arm.movel.return_value = False
+        obstacle_points = np.asarray([[0.2, 0.2, 0.2]], dtype=np.float32)
+        obstacle_pixels = np.asarray([[10, 10]], dtype=np.int32)
+
+        with (
+            patch.object(shelf_grasp, "_depth_guard_path_ok", return_value=True),
+            patch.object(shelf_grasp, "_save_depth_guard_viz") as save_viz,
+        ):
+            result = shelf_grasp._movel_with_depth_guard(
+                arm,
+                "探入路径",
+                obstacle_points,
+                (100.0, 0.0, 0.0),
+                np.asarray([0.0, 0.0, 1.0], dtype=np.float32),
+                allow_bypass=False,
+                viz_image=np.zeros((24, 24, 3), dtype=np.uint8),
+                obstacle_pixels=obstacle_pixels,
+            )
+
+        self.assertFalse(result)
+        save_viz.assert_called_once()
+        self.assertEqual(
+            save_viz.call_args.kwargs["failure_reason"],
+            "MovL rejected after depth check passed",
+        )
+
     def test_camera_point_is_not_covered_by_hand_only(self):
         point = [[-0.10, 0.0, 0.0325]]
         self.assertTrue(self.check_depth_path(point, include_camera=False).ok)
