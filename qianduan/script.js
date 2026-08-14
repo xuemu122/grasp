@@ -302,6 +302,8 @@ function handleWSMessage(msg) {
         splash.classList.remove('hidden');
         // 停止语音播报
         stopSpeak();
+        // 取消语音筛选计时器
+        cancelVoiceResetTimer();
         if (idleTimer) {
             clearTimeout(idleTimer);
             idleTimer = null;
@@ -486,6 +488,8 @@ function bindSearch() {
     if (!input) return;
     input.addEventListener('input', (e) => {
         searchKeyword = e.target.value.trim().toLowerCase();
+        // 用户手动搜索时取消自动回全部商品，避免打断输入
+        cancelVoiceResetTimer();
         renderProducts();
     });
     input.addEventListener('keydown', (e) => {
@@ -889,6 +893,8 @@ function syncModalViewport() {
 }
 
 function openModalOverlay() {
+    // 弹窗（支付/抓取）打开时取消自动回全部商品
+    cancelVoiceResetTimer();
     const overlay = document.getElementById('modalOverlay');
     syncModalViewport();
     overlay.style.display = 'flex';
@@ -1405,6 +1411,65 @@ function normalizeVoiceKeyword(keyword) {
     return k;
 }
 
+// ========== 语音筛选后无操作自动回到全部商品 ==========
+const VOICE_RESET_MS = 10000; // 10 秒无操作回到全部商品
+let voiceFilterTimer = null;
+let voiceFilterBound = false;
+
+function onVoiceFilterActivity() {
+    // 弹窗（支付/抓取中）打开时不再计时
+    const overlay = document.getElementById('modalOverlay');
+    if (overlay && overlay.style.display === 'flex') {
+        cancelVoiceResetTimer();
+        return;
+    }
+    if (voiceFilterTimer) clearTimeout(voiceFilterTimer);
+    voiceFilterTimer = setTimeout(backToAllProducts, VOICE_RESET_MS);
+}
+
+function cancelVoiceResetTimer() {
+    if (voiceFilterTimer) {
+        clearTimeout(voiceFilterTimer);
+        voiceFilterTimer = null;
+    }
+    if (voiceFilterBound) {
+        voiceFilterBound = false;
+        document.removeEventListener('mousedown', onVoiceFilterActivity);
+        document.removeEventListener('touchstart', onVoiceFilterActivity);
+        document.removeEventListener('keydown', onVoiceFilterActivity);
+        document.removeEventListener('scroll', onVoiceFilterActivity);
+    }
+}
+
+function backToAllProducts() {
+    voiceFilterTimer = null;
+    // 弹窗（支付/抓取）打开时不打断流程
+    const overlay = document.getElementById('modalOverlay');
+    if (overlay && overlay.style.display === 'flex') {
+        cancelVoiceResetTimer();
+        return;
+    }
+    cancelVoiceResetTimer();
+    currentCategory = 'all';
+    searchKeyword = '';
+    const s = document.getElementById('searchInput'); if (s) s.value = '';
+    const t = document.getElementById('currentCategoryTitle'); if (t) t.textContent = '全部商品';
+    renderCategories();
+    renderProducts();
+}
+
+function startVoiceResetTimer() {
+    cancelVoiceResetTimer();
+    if (!voiceFilterBound) {
+        voiceFilterBound = true;
+        document.addEventListener('mousedown', onVoiceFilterActivity);
+        document.addEventListener('touchstart', onVoiceFilterActivity, { passive: true });
+        document.addEventListener('keydown', onVoiceFilterActivity);
+        document.addEventListener('scroll', onVoiceFilterActivity, { passive: true });
+    }
+    voiceFilterTimer = setTimeout(backToAllProducts, VOICE_RESET_MS);
+}
+
 // 处理语音命令：商品优先全部展示，未命中再切分类
 function handleVoiceCommand(rawText) {
     let keyword = extractVoiceKeyword(rawText);
@@ -1442,6 +1507,9 @@ function handleVoiceCommand(rawText) {
         }
     }
     renderProducts();
+
+    // 语音筛选后启动 10 秒无操作自动回到全部商品
+    startVoiceResetTimer();
 
     const ps = document.getElementById('productsSection');
     if (ps) ps.scrollIntoView({ behavior: 'smooth', block: 'start' });
