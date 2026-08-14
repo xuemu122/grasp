@@ -645,6 +645,46 @@ class LHandProGripper:
                 f"samples={samples} threshold={threshold:.0f}"
             )
 
+            def accept_firm_grip(actual, currents, reason):
+                confirm_delta = float(os.getenv("LHAND_FLEX_TIMEOUT_ACCEPT_DELTA", "50"))
+                firm_axes = set(contacts)
+                for axis in required_axes:
+                    index = axis - 1
+                    command = actual[index]
+                    if command < min_position:
+                        continue
+                    empty_current = (
+                        profile_current_envelope(profile, command, axis, profile_window)
+                        if profile
+                        else baseline[index]
+                    )
+                    if currents[index] - empty_current >= confirm_delta:
+                        firm_axes.add(axis)
+                if len(firm_axes) < min_contacts:
+                    return False
+
+                hold_values = list(actual)
+                for axis in firm_axes:
+                    index = axis - 1
+                    hold_values[index] = min(
+                        max_positions[index],
+                        hold_values[index] + extra_close,
+                    )
+                self._command_positions(hold_values, wait_s=settle)
+                self._holding = True
+                self._start_hold(
+                    hold_values,
+                    firm_axes,
+                    max_positions,
+                    profile,
+                    baseline,
+                )
+                print(
+                    f"[LHandPro] 柔性抓取确认: {reason}, "
+                    f"有效接触轴={sorted(firm_axes)}, 保持位置={hold_values}"
+                )
+                return True
+
             # In continuous mode every active motor receives its final travel
             # target once and moves without intermediate stops. The loop only
             # monitors actual position/current and locks a contacted axis.
@@ -731,6 +771,8 @@ class LHandProGripper:
                 if all(axis in locked for axis in required_axes):
                     self._command_positions(values, wait_s=settle)
                     if len(contacts) < min_contacts:
+                        if accept_firm_grip(actual_positions, currents, "到位后二次电流确认"):
+                            return True
                         print(
                             f"[LHandPro] 柔性抓取失败: 接触轴={sorted(contacts)}, "
                             f"到上限未接触轴={sorted(at_max)}, 要求至少 {min_contacts}"
@@ -744,6 +786,8 @@ class LHandProGripper:
                     )
                     return True
 
+            if accept_firm_grip(actual_positions, currents, "检测超时后二次电流确认"):
+                return True
             print(f"[LHandPro] 柔性抓取失败: 达到最大步数 {max_steps}")
             return False
         except Exception as exc:
@@ -763,7 +807,7 @@ class LHandProGripper:
         sample_delay_s=0.01,
         safety_current=750,
     ):
-        """Sweep an unloaded hand and atomically write its current envelope CSV."""
+        """Sweep unloaded flex axes while keeping the thumb-side axis open."""
         if maximum < start or step <= 0:
             raise ValueError("录制范围或步长无效")
         path = os.path.abspath(os.path.expanduser(output_path or self.profile_path))
@@ -773,8 +817,21 @@ class LHandProGripper:
         rows = []
         try:
             self._holding = False
+            fixed_positions = self._open_positions()
+            sweep_axes = _parse_int_set(
+                os.getenv("LHAND_PROFILE_SWEEP_AXES"),
+                ",".join(str(axis) for axis in range(2, self.dof_active + 1)),
+                1,
+                self.dof_active,
+            )
+            print(
+                f"[LHandPro][空载] 扫描轴={sorted(sweep_axes)}, "
+                f"固定张开位置={fixed_positions}"
+            )
             for command in commands:
-                positions = [command] * self.dof_active
+                positions = list(fixed_positions)
+                for axis in sweep_axes:
+                    positions[axis - 1] = command
                 self._command_positions(positions, wait_s=settle_s)
                 currents = [abs(value) for value in self._read_currents(samples, sample_delay_s)]
                 if any(value >= float(safety_current) for value in currents):

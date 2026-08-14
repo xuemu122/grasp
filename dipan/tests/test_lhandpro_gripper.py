@@ -19,6 +19,7 @@ class FakeSDK:
         self.homing = False
         self.homing_status_reads = 0
         self.events = []
+        self.position_commands = []
         self.rs485_baudrate = 500000
 
     def _get_scalar(self, suffix, c_type, operation, *args):
@@ -76,7 +77,7 @@ class FakeSDK:
         pass
 
     def move_motors(self, axis):
-        pass
+        self.position_commands.append(tuple(self.positions))
 
     def stop_motors(self, axis):
         self.stopped = True
@@ -231,6 +232,28 @@ class LHandProfileTests(unittest.TestCase):
             hand.connect(enable_motors=False, home_motors=False)
             self.assertFalse(hand.flexible_close())
             self.assertFalse(hand.is_holding())
+
+    def test_empty_profile_keeps_axis_one_at_open_position(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "empty.csv")
+            hand = LHandProGripper(
+                profile_path=path,
+                controller_factory=FakeController,
+            )
+            hand.connect(enable_motors=False, home_motors=False)
+            with patch.dict(os.environ, {}, clear=True), patch("time.sleep"):
+                hand.record_empty_profile(
+                    output_path=path,
+                    start=0,
+                    maximum=500,
+                    step=250,
+                    samples=1,
+                )
+            commands = FakeController.latest.sdk_handle.position_commands
+            self.assertTrue(commands)
+            self.assertTrue(all(command[0] == 9000 for command in commands))
+            rows = load_empty_profile(path)
+            self.assertEqual(len(rows), 3)
 
     def test_flexible_close_starts_hold_and_open_stops_it(self):
         with tempfile.TemporaryDirectory() as directory:
