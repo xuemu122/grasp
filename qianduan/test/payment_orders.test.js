@@ -236,4 +236,45 @@ test('free payment order is persisted, completed and refundable', async (t) => {
     assert.equal(duplicatePartialFailure.json.data.refundId, partialFailure.json.data.refundId);
     const productsAfterDuplicatePartialFailure = await (await fetch(`${base}/api/products`)).json();
     assert.equal(productsAfterDuplicatePartialFailure.data.find((product) => product.id === 1).stock, 4);
+
+    const pendingStore = JSON.parse(fs.readFileSync(ordersFile, 'utf8'));
+    const pendingPartial = pendingStore.orders.find((item) => item.orderId === partialPrepared.json.orderId);
+    pendingPartial.status = 'PARTIAL_REFUNDING';
+    pendingPartial.paymentStatus = 'PARTIAL_REFUNDING';
+    pendingPartial.refundStatus = 'PROCESSING';
+    fs.writeFileSync(ordersFile, JSON.stringify(pendingStore, null, 2));
+    const blockedRemainingRefund = await postJson(
+        `${base}/api/admin/orders/${partialPrepared.json.orderId}/refund`,
+        { reason: '处理中不应重复退款' },
+        { Cookie: cookie }
+    );
+    assert.equal(blockedRemainingRefund.response.status, 409);
+    assert.match(blockedRemainingRefund.json.message, /仍在处理中/);
+
+    pendingPartial.status = 'PARTIALLY_COMPLETED';
+    pendingPartial.paymentStatus = 'PARTIALLY_REFUNDED';
+    pendingPartial.refundStatus = 'SUCCESS';
+    fs.writeFileSync(ordersFile, JSON.stringify(pendingStore, null, 2));
+    const remainingRefund = await postJson(
+        `${base}/api/admin/orders/${partialPrepared.json.orderId}/refund`,
+        { reason: '退还剩余已交付商品' },
+        { Cookie: cookie }
+    );
+    assert.equal(remainingRefund.response.status, 200);
+    assert.equal(remainingRefund.json.data.status, 'REFUNDED');
+    assert.equal(remainingRefund.json.data.paymentStatus, 'REFUNDED');
+    assert.equal(remainingRefund.json.data.refundedAmount, 16);
+    assert.equal(remainingRefund.json.data.remainingRefundAmount, 0);
+    assert.equal(remainingRefund.json.data.refundAmount, 8);
+    assert.equal(remainingRefund.json.data.refundHistory.length, 2);
+    assert.notEqual(
+        remainingRefund.json.data.refundHistory[0].refundRequestId,
+        remainingRefund.json.data.refundHistory[1].refundRequestId
+    );
+    assert.deepEqual(
+        remainingRefund.json.data.refundHistory.map((entry) => entry.refundAmount),
+        [8, 8]
+    );
+    const productsAfterRemainingRefund = await (await fetch(`${base}/api/products`)).json();
+    assert.equal(productsAfterRemainingRefund.data.find((product) => product.id === 1).stock, 5);
 });

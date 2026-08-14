@@ -43,7 +43,12 @@ class PaymentClient {
                     const text = Buffer.concat(chunks).toString('utf8');
                     let data;
                     try { data = text ? JSON.parse(text) : {}; }
-                    catch { reject(new Error(`支付 API 返回非 JSON (${res.statusCode})`)); return; }
+                    catch {
+                        const error = new Error(`支付 API 返回非 JSON (${res.statusCode})`);
+                        error.paymentResultUnknown = true;
+                        reject(error);
+                        return;
+                    }
                     if (res.statusCode < 200 || res.statusCode >= 300 || data.code === 1 || data.success === false) {
                         reject(new Error(data.message || data.msg || `支付 API 请求失败 (${res.statusCode})`));
                         return;
@@ -52,7 +57,10 @@ class PaymentClient {
                 });
             });
             req.once('timeout', () => req.destroy(new Error('支付 API 请求超时')));
-            req.once('error', reject);
+            req.once('error', (error) => {
+                error.paymentResultUnknown = true;
+                reject(error);
+            });
             if (payload) req.write(payload);
             req.end();
         });

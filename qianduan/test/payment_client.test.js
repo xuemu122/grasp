@@ -5,15 +5,15 @@ const test = require('node:test');
 const { PaymentClient } = require('../payment_client');
 
 test('partial refund sends an explicit amount contract', async (t) => {
-    let captured = null;
+    const captured = [];
     const server = http.createServer((req, res) => {
         const chunks = [];
         req.on('data', (chunk) => chunks.push(chunk));
         req.on('end', () => {
-            captured = {
+            captured.push({
                 body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
                 idempotencyKey: req.headers['idempotency-key']
-            };
+            });
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ code: 0, data: { refundId: 'RF-PARTIAL', refundStatus: 'SUCCESS' } }));
         });
@@ -29,8 +29,8 @@ test('partial refund sends an explicit amount contract', async (t) => {
     });
 
     assert.equal(result.refundStatus, 'SUCCESS');
-    assert.equal(captured.idempotencyKey, 'REFUND-UNIT-2');
-    assert.deepEqual(captured.body, {
+    assert.equal(captured[0].idempotencyKey, 'REFUND-UNIT-2');
+    assert.deepEqual(captured[0].body, {
         orderId: 'PAY-1',
         reason: '第二瓶失败',
         refundRequestId: 'REFUND-UNIT-2',
@@ -39,4 +39,13 @@ test('partial refund sends an explicit amount contract', async (t) => {
         totalAmount: 16,
         amount: { refund: 800, total: 1600, currency: 'CNY' }
     });
+
+    await client.refund('PAY-1', '退还剩余金额', 'REFUND-UNIT-3', {
+        refundAmount: 8,
+        totalAmount: 16
+    });
+    assert.equal(captured[1].idempotencyKey, 'REFUND-UNIT-3');
+    assert.equal(captured[1].body.refundRequestId, 'REFUND-UNIT-3');
+    assert.equal(captured[1].body.refundAmount, 8);
+    assert.notEqual(captured[0].idempotencyKey, captured[1].idempotencyKey);
 });

@@ -46,6 +46,7 @@ test('REFUNDING order is reconciled and inventory is restored once', async (t) =
         orderId,
         externalOrderId: 'PAY-REFUND-RECOVERY',
         items: [{ id: 1, name: '测试商品', qty: 1 }],
+        totalAmount: 1,
         paymentMode: 'lyorder',
         paymentStatus: 'REFUNDING',
         status: 'REFUNDING',

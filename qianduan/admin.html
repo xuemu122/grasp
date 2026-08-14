@@ -1583,18 +1583,23 @@
                     return;
                 }
                 body.innerHTML = json.data.map((order) => {
-                    const refundFinished = ['REFUNDED', 'PARTIALLY_REFUNDED'].includes(order.paymentStatus)
-                        || order.refundStatus === 'SUCCESS' || Boolean(order.refundedAt || order.partiallyRefundedAt);
+                    const refundedAmount = Number(order.refundedAmount || 0);
+                    const remainingRefundAmount = Number(order.remainingRefundAmount ?? Math.max(0, Number(order.totalAmount || 0) - refundedAmount));
+                    const refundFinished = order.paymentStatus === 'REFUNDED' || remainingRefundAmount <= 0.001;
                     const refundInProgress = ['REFUNDING', 'PARTIAL_REFUNDING'].includes(order.paymentStatus)
                         || ['PROCESSING', 'PENDING'].includes(order.refundStatus);
                     const statusLabel = adminOrderStatusLabels[order.status] || order.status;
                     const paymentLabel = order.refundStatus === 'FAIL'
-                        ? '退款失败（仍已支付）'
+                        ? (refundedAmount > 0 ? `已退 ¥${refundedAmount.toFixed(2)}，剩余退款失败` : '退款失败（仍已支付）')
                         : (order.paymentStatusLabel || adminPaymentStatusLabels[order.paymentStatus] || order.paymentStatus || '-');
                     const items = (order.items || []).map((item) => `${esc(item.name)} × ${item.qty}`).join('<br>');
-                    const canRefund = !refundFinished && !refundInProgress
-                        && ['PAID', 'COMPLETED', 'FAILED'].includes(order.status)
-                        && order.paymentStatus === 'PAID';
+                    const canRefund = !refundFinished && !refundInProgress && (
+                        (['PAID', 'COMPLETED', 'PARTIALLY_COMPLETED', 'FAILED'].includes(order.status) && order.paymentStatus === 'PAID')
+                        || (order.status === 'PARTIALLY_COMPLETED' && order.paymentStatus === 'PARTIALLY_REFUNDED')
+                    );
+                    const refundButtonLabel = refundedAmount > 0
+                        ? `退剩余 ¥${remainingRefundAmount.toFixed(2)}`
+                        : '退款';
                     return `<tr>
                         <td><strong>${esc(order.orderId)}</strong><br><small>${esc(order.paymentMode || '')}</small></td>
                         <td class="order-items-summary">${items || '-'}</td>
@@ -1602,7 +1607,7 @@
                         <td>${esc(paymentLabel)}</td>
                         <td><span class="status-badge ${order.status === 'REFUNDED' ? 'off' : (order.status === 'COMPLETED' ? 'on' : 'warn')}" title="${esc(statusLabel)}">${esc(statusLabel)}</span></td>
                         <td>${esc(adminOrderTime(order.createdAt))}</td>
-                        <td class="actions"><button class="btn btn-primary btn-sm" type="button" onclick="showAdminOrderDetail('${esc(order.orderId)}')">详情</button>${canRefund ? `<button class="btn btn-danger btn-sm" type="button" onclick="refundAdminOrder('${esc(order.orderId)}')">退款</button>` : ''}</td>
+                        <td class="actions"><button class="btn btn-primary btn-sm" type="button" onclick="showAdminOrderDetail('${esc(order.orderId)}')">详情</button>${canRefund ? `<button class="btn btn-danger btn-sm" type="button" onclick="refundAdminOrder('${esc(order.orderId)}', ${remainingRefundAmount})">${refundButtonLabel}</button>` : ''}</td>
                     </tr>`;
                 }).join('');
             } catch (error) {
@@ -1617,14 +1622,20 @@
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '订单读取失败');
                 const order = json.data;
                 const items = (order.items || []).map((item) => `${item.name} × ${item.qty}`).join('、');
-                alert(`订单号：${order.orderId}\n商品：${items}\n金额：¥${Number(order.totalAmount || 0).toFixed(2)}\n状态：${adminOrderStatusLabels[order.status] || order.status}\n支付：${order.paymentStatusLabel || adminPaymentStatusLabels[order.paymentStatus] || order.paymentStatus}\n创建：${adminOrderTime(order.createdAt)}`);
+                const refundSummary = Number(order.refundedAmount || 0) > 0
+                    ? `\n已退款：¥${Number(order.refundedAmount).toFixed(2)}\n剩余可退：¥${Number(order.remainingRefundAmount || 0).toFixed(2)}`
+                    : '';
+                alert(`订单号：${order.orderId}\n商品：${items}\n金额：¥${Number(order.totalAmount || 0).toFixed(2)}${refundSummary}\n状态：${adminOrderStatusLabels[order.status] || order.status}\n支付：${order.paymentStatusLabel || adminPaymentStatusLabels[order.paymentStatus] || order.paymentStatus}\n创建：${adminOrderTime(order.createdAt)}`);
             } catch (error) {
                 showToast(error.message, 'error');
             }
         }
 
-        async function refundAdminOrder(orderId) {
-            const reason = window.prompt('请输入退款原因', '管理员退款');
+        async function refundAdminOrder(orderId, remainingAmount = null) {
+            const amountHint = Number.isFinite(Number(remainingAmount))
+                ? `（本次 ¥${Number(remainingAmount).toFixed(2)}）`
+                : '';
+            const reason = window.prompt(`请输入退款原因${amountHint}`, '管理员退款');
             if (reason === null) return;
             try {
                 const res = await adminFetch(`/api/admin/orders/${encodeURIComponent(orderId)}/refund`, {
