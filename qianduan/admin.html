@@ -552,6 +552,8 @@
         let inventoryConfigDraft = [];
         let inventoryConfigDirty = false;
         let inventoryConfigDirtyShelves = new Set();
+        let inventoryResultDraft = new Map();
+        let inventoryResultDirty = false;
         let inventoryScanTimer = null;
         let chassisDebugNavigationTimer = null;
         let adminOrderPage = 1;
@@ -1372,6 +1374,7 @@
         function renderInventoryScanResults() {
             const body = document.getElementById('inventoryScanResultBody');
             if (!body) return;
+            if (inventoryResultDirty) captureInventoryResultDraft();
             const results = [...(inventoryScanData.task?.results || [])].sort((a, b) =>
                 String(a.shelf).localeCompare(String(b.shelf), 'zh-CN') || Number(a.point || 0) - Number(b.point || 0) || a.layer - b.layer);
             if (!results.length) {
@@ -1381,22 +1384,48 @@
             }
             const shelfOptions = (selected) => inventoryShelfOptions(String(selected || '').toUpperCase());
             body.innerHTML = results.map((row, index) => {
+                const resultKey = inventoryResultKey(row);
+                const draft = inventoryResultDraft.get(resultKey);
+                const selectedShelf = draft?.shelf || row.shelf;
+                const selectedPoint = Number(draft?.point ?? row.point ?? 1);
+                const selectedLayer = Number(draft?.layer ?? row.layer ?? 1);
+                const selectedMarker = draft?.marker ?? row.marker;
+                const selectedName = draft?.name ?? row.dominant_name;
                 const candidates = (row.candidates || []).map((item) => `${item.name} ${item.count}件`).join('、');
-                return `<tr class="inventory-result-row" data-index="${index}">
-                    <td><select class="form-select" data-field="shelf" onchange="updateInventoryResultZone(this)">${shelfOptions(row.shelf)}</select></td>
-                    <td><select class="form-select" data-field="point"><option value="1"${Number(row.point || 1) === 1 ? ' selected' : ''}>点位1</option><option value="2"${Number(row.point || 1) === 2 ? ' selected' : ''}>点位2</option><option value="3"${Number(row.point || 1) === 3 ? ' selected' : ''}>点位3</option><option value="4"${Number(row.point || 1) === 4 ? ' selected' : ''}>点位4</option><option value="5"${Number(row.point || 1) === 5 ? ' selected' : ''}>点位5</option><option value="6"${Number(row.point || 1) === 6 ? ' selected' : ''}>点位6</option></select></td>
-                    <td><select class="form-select" data-field="layer"><option value="1"${row.layer === 1 ? ' selected' : ''}>第1层</option><option value="2"${row.layer === 2 ? ' selected' : ''}>第2层</option></select></td>
+                return `<tr class="inventory-result-row" data-index="${index}" data-result-key="${esc(resultKey)}">
+                    <td><select class="form-select" data-field="shelf" onchange="markInventoryResultDirty()">${shelfOptions(selectedShelf)}</select></td>
+                    <td><select class="form-select" data-field="point" onchange="markInventoryResultDirty()"><option value="1"${selectedPoint === 1 ? ' selected' : ''}>点位1</option><option value="2"${selectedPoint === 2 ? ' selected' : ''}>点位2</option><option value="3"${selectedPoint === 3 ? ' selected' : ''}>点位3</option><option value="4"${selectedPoint === 4 ? ' selected' : ''}>点位4</option><option value="5"${selectedPoint === 5 ? ' selected' : ''}>点位5</option><option value="6"${selectedPoint === 6 ? ' selected' : ''}>点位6</option></select></td>
+                    <td><select class="form-select" data-field="layer" onchange="markInventoryResultDirty()"><option value="1"${selectedLayer === 1 ? ' selected' : ''}>第1层</option><option value="2"${selectedLayer === 2 ? ' selected' : ''}>第2层</option></select></td>
                     <td title="${esc(candidates)}"><strong>${esc(row.dominant_name) || '未识别'}</strong></td>
                     <td>${Number(row.count) || 0} / ${Number(row.total) || 0}</td>
-                    <td><select class="form-select" data-field="marker">${inventoryMarkerOptions(row.marker)}</select></td>
-                    <td><input class="form-input" data-field="name" value="${esc(row.dominant_name)}" placeholder="填写商品名称"></td>
+                    <td><select class="form-select" data-field="marker" onchange="markInventoryResultDirty()">${inventoryMarkerOptions(selectedMarker)}</select></td>
+                    <td><input class="form-input" data-field="name" value="${esc(selectedName)}" placeholder="填写商品名称" oninput="markInventoryResultDirty()"></td>
                 </tr>`;
             }).join('');
             document.getElementById('saveInventoryProductsButton').disabled = false;
         }
 
-        function updateInventoryResultZone(select) {
-            select.closest('tr').querySelector('[data-field="shelf"]')?.setAttribute('aria-label', `${select.value}货架`);
+        function inventoryResultKey(row) {
+            return `${String(row.shelf || '').toUpperCase()}:${Number(row.point || 0)}:${Number(row.layer || 0)}`;
+        }
+
+        function captureInventoryResultDraft() {
+            const nextDraft = new Map(inventoryResultDraft);
+            document.querySelectorAll('.inventory-result-row').forEach((row) => {
+                nextDraft.set(row.dataset.resultKey, {
+                    shelf: row.querySelector('[data-field="shelf"]').value,
+                    point: Number(row.querySelector('[data-field="point"]').value),
+                    layer: Number(row.querySelector('[data-field="layer"]').value),
+                    marker: row.querySelector('[data-field="marker"]').value,
+                    name: row.querySelector('[data-field="name"]').value
+                });
+            });
+            inventoryResultDraft = nextDraft;
+        }
+
+        function markInventoryResultDirty() {
+            inventoryResultDirty = true;
+            captureInventoryResultDraft();
         }
 
         function updateInventoryScanControls() {
@@ -1459,6 +1488,8 @@
                 const res = await adminFetch('/api/admin/inventory-scan/start', { method: 'POST' });
                 const json = await readAdminJson(res, '巡架启动接口返回了无效数据');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '巡架识别启动失败');
+                inventoryResultDraft = new Map();
+                inventoryResultDirty = false;
                 showToast('巡架识别已启动', 'success');
                 await loadInventoryScan();
             } catch (error) {
@@ -1480,6 +1511,7 @@
         }
 
         async function saveInventoryProducts() {
+            captureInventoryResultDraft();
             const rows = [...document.querySelectorAll('.inventory-result-row')].map((row) => ({
                 shelf: row.querySelector('[data-field="shelf"]').value,
                 point: Number(row.querySelector('[data-field="point"]').value),
@@ -1499,6 +1531,7 @@
                 });
                 const json = await readAdminJson(res, '巡架商品保存接口返回了无效数据');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '扫描商品信息保存失败');
+                inventoryResultDirty = false;
                 showToast(json.message, 'success');
                 await Promise.all([loadProducts(), loadCategories()]);
             } catch (error) {
