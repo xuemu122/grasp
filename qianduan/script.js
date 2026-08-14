@@ -295,7 +295,7 @@ function handleWSMessage(msg) {
 
     let awake = false;
     let idleTimer = null;
-    const IDLE_TIMEOUT = 30000; // 30秒无操作返回待机页
+    const IDLE_TIMEOUT = 120000; // 120秒无操作返回待机页
 
     function goToSleep() {
         awake = false;
