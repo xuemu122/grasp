@@ -37,7 +37,7 @@ ALLOW_NO_DEPTH_GRASP = os.getenv("ALLOW_NO_DEPTH_GRASP", "0").lower() in ("1", "
 FORCE_SIDE_GRASP = os.getenv("FORCE_SIDE_GRASP", "1").lower() in ("1", "true", "yes", "on")
 # Use the midpoint of the selected vertical bbox edge.  This preserves the
 # side-grasp geometry while avoiding the old height shift toward the shelf.
-EDGE_MIDPOINT_GRASP_ENABLE = os.getenv("EDGE_MIDPOINT_GRASP_ENABLE", "1").lower() in ("1", "true", "yes", "on")
+EDGE_MIDPOINT_GRASP_ENABLE = os.getenv("EDGE_MIDPOINT_GRASP_ENABLE", "0").lower() in ("1", "true", "yes", "on")
 
 
 def side_grasp_bottom_clearance_m(det, grip_pixel, fy):

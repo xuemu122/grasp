@@ -97,7 +97,7 @@ TOP_J6_DEG = 8.3
 
 # 抓取执行参数: 对齐位 -> 沿手指方向前进抓取 -> 后退。
 APPROACH_LIFT_M = 0.00    # 对齐位额外抬高量, 当前不抬高
-GRASP_ADVANCE_M = 0.04    # 抓取时沿手指方向前进 4cm
+GRASP_ADVANCE_M = 0.06    # 抓取时沿手指方向前进 4cm
 LOW_Z_GRASP_ADVANCE_M = 0.035  # 第4层低位空间更紧, 只探入 3.5cm
 GRASP_APPROACH_BACKOFF_M = float(os.getenv("GRASP_APPROACH_BACKOFF_M", "0.15"))  # 抓取前沿手指方向后退对齐
 TOP_APPROACH_BACKOFF_M = 0.15  # 上面抓时先在抓取轴线上退 15cm 再直线前进

@@ -154,7 +154,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS`：DH116 偏置拇指/手指和连接件外接盒触发中止所需的独立深度点数，默认 `12`；外接盒比中心胶囊保守，因此要求更完整的障碍点簇。调试图中这类命中显示为橙点。
 - `DEPTH_GUARD_MAX_DEPTH_M`：纳入障碍点的最大深度，默认 `1.20` m；货架背景太远造成误拦截时可调小。
 - `DEPTH_GUARD_TARGET_DEPTH_MARGIN_M`：相对当前目标深度允许纳入护栏的后方余量，默认 `0.06` m；更远的后层板/背板点会被忽略。
-- `EDGE_MIDPOINT_GRASP_ENABLE`：是否使用所选检测框侧边竖线的中点作为抓取点，默认开启；右侧目标使用 `(x2, (y1+y2)/2)`。设为 `0` 可恢复旧的侧抓高度偏移策略。
+- `EDGE_MIDPOINT_GRASP_ENABLE`：是否使用所选检测框侧边竖线的中点作为抓取点，默认关闭；当前恢复使用原侧抓选点，即侧边中点向瓶底方向下移并限制安全高度。设为 `1` 可使用严格的边线中点。
 - `DEPTH_GUARD_EXCLUDE_MARGIN_PX`：检测框外扩排除范围，默认 `32` px；如果货物边缘被误当货架可继续调大。
 - `DEPTH_GUARD_SELF_MASK_ENABLE`：自手部深度点剔除开关，默认开启；用于过滤深度相机看到的当前灵巧手/手指，避免把自己的手当障碍。
 - `DEPTH_GUARD_SELF_MASK_RADIUS_M`：自手部剔除半径，默认约 `0.0725` m；如果红点仍贴在手指上可略调大，如果误删近处层板可调小。
@@ -171,10 +171,10 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 
 LHandPro 抓取保持参数：
 
-- `LHAND_HOLD_HZ`：抓取姿态后台重发频率，默认 `15` Hz；用于维持位置控制，不需要频繁提高。
-- `LHAND_HOLD_TIGHTEN_INTERVAL_S`：保持期间检测低负载并补紧的周期，默认 `0.35` s。
-- `LHAND_HOLD_TIGHTEN_STEP`：每次补紧的位置步长，默认 `50`；物体较软或抓后变松时可调大，出现抖动时调小。
-- `LHAND_HOLD_MIN_DELTA`：相对空载电流低于该值才补紧，默认 `60`；用于避免持续顶压。
+- `LHAND_HOLD_HZ`：抓取姿态后台重发频率，默认 `20` Hz；用于维持位置控制。
+- `LHAND_HOLD_TIGHTEN_INTERVAL_S`：保持期间检测低负载并补紧的周期，默认 `0.12` s。
+- `LHAND_HOLD_TIGHTEN_STEP`：每次补紧的位置步长，默认 `100`；物体较软或抓后变松时可调大，出现抖动时调小。
+- `LHAND_HOLD_MIN_DELTA`：相对空载电流低于该值才补紧，默认 `80`；与初次接触阈值保持一致，避免抓住后夹持力偏低。
 - `LHAND_FLEX_STEP`：柔性闭合每轮位置增量，默认 `500`；减小会更细腻但更慢，增大可更快但不宜超过现场空载曲线采样跨度太多。
 - `LHAND_FLEX_CONTINUOUS`：连续柔性闭合模式，默认开启；一次下发闭合上限并在运动中监测电流，接触后立即锁定该轴，避免逐步闭合的卡顿。设为 `0` 可恢复离散步进模式。
 - `LHAND_FLEX_SETTLE_S`：柔性闭合每步等待，默认 `0.015` s；现场通信不稳定时可适当调大。

@@ -515,14 +515,14 @@ class LHandProGripper:
             daemon=True,
         )
         self._hold_thread.start()
-        hz = max(1.0, float(os.getenv("LHAND_HOLD_HZ", "15")))
+        hz = max(1.0, float(os.getenv("LHAND_HOLD_HZ", "20")))
         print(f"[LHandPro] 持续保持抓取姿态 ({hz:.0f}Hz, 低负载自动补紧)")
 
     def _hold_loop(self, stop_event):
-        period = 1.0 / max(1.0, float(os.getenv("LHAND_HOLD_HZ", "15")))
-        tighten_interval = max(0.1, float(os.getenv("LHAND_HOLD_TIGHTEN_INTERVAL_S", "0.35")))
-        tighten_step = max(1, int(os.getenv("LHAND_HOLD_TIGHTEN_STEP", "50")))
-        min_delta = float(os.getenv("LHAND_HOLD_MIN_DELTA", "60"))
+        period = 1.0 / max(1.0, float(os.getenv("LHAND_HOLD_HZ", "20")))
+        tighten_interval = max(0.05, float(os.getenv("LHAND_HOLD_TIGHTEN_INTERVAL_S", "0.12")))
+        tighten_step = max(1, int(os.getenv("LHAND_HOLD_TIGHTEN_STEP", "100")))
+        min_delta = float(os.getenv("LHAND_HOLD_MIN_DELTA", "80"))
         hard_current = float(os.getenv("LHAND_FLEX_HARD_CURRENT", "750"))
         next_tighten = time.monotonic() + tighten_interval
         while not stop_event.wait(period):
