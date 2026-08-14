@@ -127,6 +127,15 @@ class StallingController(FakeController):
         self.sdk_handle.get_now_current = lambda _axis: 100
 
 
+class StaleFeedbackController(FakeController):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.sdk_handle.get_now_position = (
+            lambda axis: 9000 if axis == 1 else 0
+        )
+        self.sdk_handle.get_now_current = lambda _axis: 100
+
+
 class LHandProfileTests(unittest.TestCase):
     def test_default_open_pose_lowers_thumb_side_axis(self):
         hand = LHandProGripper(controller_factory=FakeController)
@@ -322,6 +331,33 @@ class LHandProfileTests(unittest.TestCase):
                 hand.connect(enable_motors=False, home_motors=False)
                 self.assertTrue(hand.flexible_close())
                 self.assertTrue(hand.is_holding())
+                hand.open()
+
+    def test_feedback_timeout_keeps_closing_and_enters_hold(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "empty.csv")
+            with open(path, "w", newline="", encoding="utf-8") as output:
+                writer = csv.DictWriter(
+                    output,
+                    fieldnames=["command"] + [f"current_{axis}" for axis in range(1, 7)],
+                )
+                writer.writeheader()
+                for command in range(0, 3001, 250):
+                    writer.writerow({"command": command, **{f"current_{axis}": 100 for axis in range(1, 7)}})
+
+            hand = LHandProGripper(profile_path=path, controller_factory=StaleFeedbackController)
+            environment = {
+                "LHAND_FLEX_REQUIRED_AXES": "3,4",
+                "LHAND_FLEX_ACTIVE_AXES": "3,4",
+                "LHAND_FLEX_MAX_POSITIONS": "3000",
+                "LHAND_FLEX_MAX_STEPS": "2",
+                "LHAND_FLEX_MIN_CONTACTS": "2",
+            }
+            with patch.dict(os.environ, environment, clear=False), patch("time.sleep"):
+                hand.connect(enable_motors=False, home_motors=False)
+                self.assertTrue(hand.flexible_close())
+                self.assertTrue(hand.is_holding())
+                self.assertEqual(hand._hold_positions[2:4], [3000, 3000])
                 hand.open()
 
 

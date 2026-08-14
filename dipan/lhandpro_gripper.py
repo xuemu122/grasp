@@ -624,7 +624,7 @@ class LHandProGripper:
                 len(required_axes), int(os.getenv("LHAND_FLEX_MIN_CONTACTS", "2"))
             ))
             hard_current = float(os.getenv("LHAND_FLEX_HARD_CURRENT", "750"))
-            max_steps = max(1, int(os.getenv("LHAND_FLEX_MAX_STEPS", "120")))
+            max_steps = max(1, int(os.getenv("LHAND_FLEX_MAX_STEPS", "300")))
             continuous = os.getenv("LHAND_FLEX_CONTINUOUS", "1").lower() in (
                 "1", "true", "yes", "on"
             )
@@ -687,6 +687,30 @@ class LHandProGripper:
                 print(
                     f"[LHandPro] 柔性抓取确认: {reason}, "
                     f"有效接触轴={sorted(firm_axes)}, 保持位置={hold_values}"
+                )
+                return True
+
+            def keep_closing_unverified(reason):
+                # Current/position feedback can remain stale even though the
+                # hand has physically closed. Keep every unconfirmed axis on
+                # its close target and let the hold loop continue tightening;
+                # do not turn a feedback timeout into an automatic release.
+                hold_values = list(values)
+                for axis in active_axes:
+                    if axis not in locked:
+                        hold_values[axis - 1] = max_positions[axis - 1]
+                self._command_positions(hold_values, wait_s=settle)
+                self._holding = True
+                self._start_hold(
+                    hold_values,
+                    active_axes,
+                    max_positions,
+                    profile,
+                    baseline,
+                )
+                print(
+                    f"[LHandPro][未确认但继续] {reason}; "
+                    f"保持闭合并继续放置, 保持位置={hold_values}"
                 )
                 return True
 
@@ -791,10 +815,10 @@ class LHandProGripper:
                         if accept_firm_grip(actual_positions, currents, "到位后二次电流确认"):
                             return True
                         print(
-                            f"[LHandPro] 柔性抓取失败: 接触轴={sorted(contacts)}, "
+                            f"[LHandPro] 柔性抓取未确认: 接触轴={sorted(contacts)}, "
                             f"到上限未接触轴={sorted(at_max)}, 要求至少 {min_contacts}"
                         )
-                        return False
+                        return keep_closing_unverified("到达闭合上限但接触检测不足")
                     self._holding = True
                     self._start_hold(values, required_axes, max_positions, profile, baseline)
                     print(
@@ -806,11 +830,11 @@ class LHandProGripper:
             if accept_firm_grip(actual_positions, currents, "检测超时后二次电流确认"):
                 return True
             print(
-                f"[LHandPro] 柔性抓取失败: 达到最大步数 {max_steps}, "
+                f"[LHandPro] 柔性抓取未确认: 达到最大步数 {max_steps}, "
                 f"位置={actual_positions}, 电流={[round(value) for value in currents]}, "
                 f"停滞计数={stall_counts}"
             )
-            return False
+            return keep_closing_unverified("达到最大步数且接触检测不足")
         except Exception as exc:
             self.ok = False
             self._holding = False

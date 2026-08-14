@@ -88,7 +88,7 @@ HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.12, 0.003, 0.008)
+SIDE_GRASP_OFFSET_M = (-0.095, 0.004, 0.008)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.035)
 
@@ -99,7 +99,7 @@ TOP_J6_DEG = 8.3
 APPROACH_LIFT_M = 0.00    # 对齐位额外抬高量, 当前不抬高
 GRASP_ADVANCE_M = 0.06    # 抓取时沿手指方向前进 4cm
 LOW_Z_GRASP_ADVANCE_M = 0.035  # 第4层低位空间更紧, 只探入 3.5cm
-PRE_CLOSE_LEFT_SHIFT_M = float(os.getenv("PRE_CLOSE_LEFT_SHIFT_M", "0.009"))
+PRE_CLOSE_LEFT_SHIFT_M = float(os.getenv("PRE_CLOSE_LEFT_SHIFT_M", "0.010"))
 GRASP_APPROACH_BACKOFF_M = float(os.getenv("GRASP_APPROACH_BACKOFF_M", "0.15"))  # 抓取前沿手指方向后退对齐
 TOP_APPROACH_BACKOFF_M = 0.15  # 上面抓时先在抓取轴线上退 15cm 再直线前进
 LOW_Z_APPROACH_SPEED = 60
@@ -2707,7 +2707,8 @@ def main():
                 continue
             time.sleep(GRASP_SETTLE_S)
 
-            # 4. 抓取 (动作二) 并等待握紧。闭手失败只能安全退回，不能进入放置流程。
+            # 4. 抓取 (动作二) 并等待握紧。反馈未确认时 LHandPro 会继续保持闭合；
+            # 只有过流、通信等真正的执行失败才进入安全退回。
             grasp_succeeded = SKIP_HAND
             if not SKIP_HAND:
                 if HAND_GRASP_MODE in ("flex", "flexible", "current"):
@@ -2744,8 +2745,8 @@ def main():
                         continue
                 else:
                     arm.go_home()
-                if hand is not None and hand.ok:
-                    hand.open()
+                # Keep the last finger command on a genuine close failure as
+                # well. The next grasp attempt opens explicitly before entry.
                 worker_fail("灵巧手闭合/保持失败")
                 continue
 
