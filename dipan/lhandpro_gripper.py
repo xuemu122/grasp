@@ -522,7 +522,7 @@ class LHandProGripper:
         period = 1.0 / max(1.0, float(os.getenv("LHAND_HOLD_HZ", "20")))
         tighten_interval = max(0.05, float(os.getenv("LHAND_HOLD_TIGHTEN_INTERVAL_S", "0.12")))
         tighten_step = max(1, int(os.getenv("LHAND_HOLD_TIGHTEN_STEP", "100")))
-        min_delta = float(os.getenv("LHAND_HOLD_MIN_DELTA", "80"))
+        min_delta = float(os.getenv("LHAND_HOLD_MIN_DELTA", "100"))
         hard_current = float(os.getenv("LHAND_FLEX_HARD_CURRENT", "750"))
         next_tighten = time.monotonic() + tighten_interval
         while not stop_event.wait(period):
@@ -618,7 +618,7 @@ class LHandProGripper:
             fallback_delta = float(os.getenv("LHAND_FLEX_BASELINE_DELTA", "120"))
             profile_window = max(0, int(os.getenv("LHAND_FLEX_PROFILE_WINDOW", "300")))
             consecutive = max(1, int(os.getenv("LHAND_FLEX_CONSECUTIVE", "1")))
-            extra_close = max(0, int(os.getenv("LHAND_FLEX_EXTRA_CLOSE", "150")))
+            extra_close = max(0, int(os.getenv("LHAND_FLEX_EXTRA_CLOSE", "300")))
             min_position = int(os.getenv("LHAND_FLEX_MIN_POSITION", "1000"))
             min_contacts = max(1, min(
                 len(required_axes), int(os.getenv("LHAND_FLEX_MIN_CONTACTS", "2"))

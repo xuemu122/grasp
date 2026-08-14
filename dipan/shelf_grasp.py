@@ -181,6 +181,9 @@ DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT = max(1, int(os.getenv("DEPTH_GUARD_NOISE_F
 DEPTH_GUARD_NOISE_FILTER_TOLERANCE_M = float(os.getenv("DEPTH_GUARD_NOISE_FILTER_TOLERANCE_M", "0.025"))
 DEPTH_GUARD_MAX_DEPTH_M = float(os.getenv("DEPTH_GUARD_MAX_DEPTH_M", "1.20"))
 DEPTH_GUARD_TARGET_DEPTH_MARGIN_M = float(os.getenv("DEPTH_GUARD_TARGET_DEPTH_MARGIN_M", "0.06"))
+DEPTH_GUARD_SHELF_ROW_INSET_PX = max(0, int(os.getenv("DEPTH_GUARD_SHELF_ROW_INSET_PX", "8")))
+DEPTH_GUARD_TARGET_ROW_TOP_MARGIN_PX = max(0, int(os.getenv("DEPTH_GUARD_TARGET_ROW_TOP_MARGIN_PX", "32")))
+DEPTH_GUARD_TARGET_ROW_BOTTOM_MARGIN_PX = max(0, int(os.getenv("DEPTH_GUARD_TARGET_ROW_BOTTOM_MARGIN_PX", "8")))
 DEPTH_GUARD_EXCLUDE_MARGIN_PX = int(os.getenv("DEPTH_GUARD_EXCLUDE_MARGIN_PX", "32"))
 DEPTH_GUARD_SELF_MASK_ENABLE = os.getenv("DEPTH_GUARD_SELF_MASK_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 DEPTH_GUARD_SELF_MASK_RADIUS_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_RADIUS_M", str(DEPTH_GUARD_HAND_RADIUS_M + 0.02)))
@@ -2346,6 +2349,17 @@ def main():
             depth_observation_flange_pose = tuple(flange_pose)
             depth_guard_camera_depth_axis = _camera_depth_axis_m(transformer, depth_observation_flange_pose)
             depth_guard_exclude_bboxes = _unique_bboxes(detections)
+            if shelf_board_bounds and shelf_board_bounds.get("row_min") is not None:
+                depth_guard_row_min = shelf_board_bounds["row_min"] + DEPTH_GUARD_SHELF_ROW_INSET_PX
+                depth_guard_row_max = shelf_board_bounds["row_max"] - DEPTH_GUARD_SHELF_ROW_INSET_PX
+                depth_guard_row_source = "layer"
+            else:
+                depth_guard_row_min = max(0, float(target.bbox[1]) - DEPTH_GUARD_TARGET_ROW_TOP_MARGIN_PX)
+                depth_guard_row_max = min(
+                    best_depth.shape[0] - 1,
+                    float(target.bbox[3]) + DEPTH_GUARD_TARGET_ROW_BOTTOM_MARGIN_PX,
+                )
+                depth_guard_row_source = "target"
             if DEPTH_GUARD_ENABLE:
                 depth_obstacles_m, depth_obstacles_px = depth_to_robot_obstacles(
                     best_depth,
@@ -2356,6 +2370,8 @@ def main():
                     max_depth_m=DEPTH_GUARD_MAX_DEPTH_M,
                     target_depth_m=target.depth_m,
                     target_depth_margin_m=DEPTH_GUARD_TARGET_DEPTH_MARGIN_M,
+                    include_row_min_px=depth_guard_row_min,
+                    include_row_max_px=depth_guard_row_max,
                     exclude_bbox=None,
                     exclude_bboxes=depth_guard_exclude_bboxes,
                     exclude_margin_px=DEPTH_GUARD_EXCLUDE_MARGIN_PX,
@@ -2385,6 +2401,7 @@ def main():
                     f"(stride={DEPTH_GUARD_STRIDE}, max_depth={DEPTH_GUARD_MAX_DEPTH_M:.2f}m, "
                     f"噪点滤波={DEPTH_GUARD_NOISE_FILTER_RADIUS_PX}px/{DEPTH_GUARD_NOISE_FILTER_MIN_SUPPORT}点±{DEPTH_GUARD_NOISE_FILTER_TOLERANCE_M*1000:.0f}mm, "
                     f"排除框={len(depth_guard_exclude_bboxes)}, 外扩={DEPTH_GUARD_EXCLUDE_MARGIN_PX}px, "
+                    f"层内行={depth_guard_row_min:.0f}..{depth_guard_row_max:.0f}({depth_guard_row_source}), "
                     f"自手部={'on' if DEPTH_GUARD_SELF_MASK_ENABLE else 'off'} "
                     f"r=掌{DEPTH_GUARD_SELF_MASK_RADIUS_M*1000:.0f}/指{DEPTH_GUARD_SELF_MASK_FINGER_RADIUS_M*1000:.0f}mm, "
                     f"深度对齐={'on' if DEPTH_GUARD_DEPTH_ALIGN_ENABLE else 'off'} "

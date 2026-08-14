@@ -261,6 +261,32 @@ class ToolCollisionGeometryTests(unittest.TestCase):
         self.assertEqual(len(points), 1)
         self.assertEqual(pixels.tolist(), [[8, 8]])
 
+    def test_depth_obstacles_exclude_shelf_board_rows(self):
+        depth = np.zeros((24, 24), dtype=np.uint16)
+        depth[0, 8] = 400
+        depth[8, 8] = 400
+        depth[16, 8] = 400
+        camera = SimpleNamespace(_depth_scale=0.001)
+        transformer = SimpleNamespace(
+            cx=0.0,
+            cy=0.0,
+            fx=100.0,
+            fy=100.0,
+            T_flange_to_cam=np.eye(4, dtype=np.float32),
+            _rpy_to_rot=lambda *_args: np.eye(3, dtype=np.float32),
+        )
+        _, pixels = depth_to_robot_obstacles(
+            depth,
+            camera,
+            transformer,
+            [0, 0, 0, 0, 0, 0],
+            stride=8,
+            include_row_min_px=4,
+            include_row_max_px=12,
+            return_pixels=True,
+        )
+        self.assertEqual(pixels.tolist(), [[8, 8]])
+
     def test_depth_obstacles_use_transformer_pixel_projection(self):
         """Off-centre obstacle Y must follow the same calibrated projection as grasp points."""
         depth = np.zeros((32, 32), dtype=np.uint16)

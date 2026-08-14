@@ -107,7 +107,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `PERSPECTIVE_COMP_MIN_SCALE`：透视补偿最小缩放，默认 `0.65`。
 - `GRASP_APPROACH_BACKOFF_M`：抓取前固定退距，默认 `0.15` m；对齐位会放在抓取位后方这个距离，避免从观察位保留过长探入路径。
 - `SIDE_GRASP_MIN_HEIGHT_M` / `SIDE_GRASP_MAX_HEIGHT_M`：侧面抓取点离物体底部的允许区间，默认 `0.065..0.11` m。
-- `SIDE_GRASP_LOWER_SHIFT_M`：在原侧抓选点基础上向瓶底方向下移的距离，默认 `0.01` m；下移后仍夹紧在上述区间内。
+- `SIDE_GRASP_LOWER_SHIFT_M`：在原侧抓选点基础上向瓶底方向下移的距离，默认 `0.015` m；下移后仍受 `SIDE_GRASP_MIN_HEIGHT_M` 限制，最低离底高度不变。
 - `LAYER_Z_TOLERANCE_M`：当前层世界 Z 过滤容差，默认 `0.16` m；如果误识别上一层会被剔除，现场层高/标定偏差大时可调大。
 - `SHELF_BOARD_FILTER_ENABLE`：是否启用基于当前深度帧的层板识别过滤，默认开启。识别不到可靠上下层板时自动回退旧的 ROI/Z 过滤。
 - `SHELF_BOARD_SAMPLE_STRIDE`：层板识别的深度采样步长，默认 `4` px；调小可提高稀疏/断裂层板的识别率，但会增加计算量。
@@ -154,6 +154,9 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS`：DH116 偏置拇指/手指和连接件外接盒触发中止所需的独立深度点数，默认 `12`；外接盒比中心胶囊保守，因此要求更完整的障碍点簇。调试图中这类命中显示为橙点。
 - `DEPTH_GUARD_MAX_DEPTH_M`：纳入障碍点的最大深度，默认 `1.20` m；货架背景太远造成误拦截时可调小。
 - `DEPTH_GUARD_TARGET_DEPTH_MARGIN_M`：相对当前目标深度允许纳入护栏的后方余量，默认 `0.06` m；更远的后层板/背板点会被忽略。
+- 深度护栏会复用当前层识别出的 `row_min..row_max`，只生成上下层板之间的障碍点；上下层板本体和层外点不会参与探入碰撞判定。
+- `DEPTH_GUARD_SHELF_ROW_INSET_PX`：动态层板边界向层内额外收缩的像素数，默认 `8`；用于排除有厚度的层板前沿。
+- `DEPTH_GUARD_TARGET_ROW_TOP_MARGIN_PX` / `DEPTH_GUARD_TARGET_ROW_BOTTOM_MARGIN_PX`：没有可靠层板边界时，按目标框生成护栏行范围的上下余量，默认 `32/8` px；较小的下余量用于排除目标下方层板。
 - `EDGE_MIDPOINT_GRASP_ENABLE`：是否使用所选检测框侧边竖线的中点作为抓取点，默认关闭；当前恢复使用原侧抓选点，即侧边中点向瓶底方向下移并限制安全高度。设为 `1` 可使用严格的边线中点。
 - `DEPTH_GUARD_EXCLUDE_MARGIN_PX`：检测框外扩排除范围，默认 `32` px；如果货物边缘被误当货架可继续调大。
 - `DEPTH_GUARD_SELF_MASK_ENABLE`：自手部深度点剔除开关，默认开启；用于过滤深度相机看到的当前灵巧手/手指，避免把自己的手当障碍。
@@ -174,7 +177,8 @@ LHandPro 抓取保持参数：
 - `LHAND_HOLD_HZ`：抓取姿态后台重发频率，默认 `20` Hz；用于维持位置控制。
 - `LHAND_HOLD_TIGHTEN_INTERVAL_S`：保持期间检测低负载并补紧的周期，默认 `0.12` s。
 - `LHAND_HOLD_TIGHTEN_STEP`：每次补紧的位置步长，默认 `100`；物体较软或抓后变松时可调大，出现抖动时调小。
-- `LHAND_HOLD_MIN_DELTA`：相对空载电流低于该值才补紧，默认 `80`；与初次接触阈值保持一致，避免抓住后夹持力偏低。
+- `LHAND_HOLD_MIN_DELTA`：相对空载电流低于该值才补紧，默认 `100`；高于初次接触阈值，抓住后会维持更牢的夹持力。
+- `LHAND_FLEX_EXTRA_CLOSE`：检测到接触后额外闭合的位置量，默认 `300`；仍受每轴闭合上限和硬电流保护限制。
 - `LHAND_FLEX_STEP`：柔性闭合每轮位置增量，默认 `500`；减小会更细腻但更慢，增大可更快但不宜超过现场空载曲线采样跨度太多。
 - `LHAND_FLEX_CONTINUOUS`：连续柔性闭合模式，默认开启；一次下发闭合上限并在运动中监测电流，接触后立即锁定该轴，避免逐步闭合的卡顿。设为 `0` 可恢复离散步进模式。
 - `LHAND_FLEX_SETTLE_S`：柔性闭合每步等待，默认 `0.015` s；现场通信不稳定时可适当调大。
