@@ -67,7 +67,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `TARGET_DEPTH_REFINE_MAX_DELTA_M`：目标深度重采样允许偏离融合深度的最大值，默认 `0.08` m；超过则认为可能采到背景并跳过校正。
 - `MOTION_SETTLE_S`：普通运动完成后的短缓冲，默认 `0.2` 秒。
 - `GRASP_SETTLE_S`：抓取前进、闭手前、后退后的缓冲，默认 `0.4` 秒。
-- `PRE_CLOSE_LEFT_SHIFT_M`：商品向前探入手心后、灵巧手闭合前，机械臂沿相机画面左侧单独平移的距离，默认 `0.003` m；用于让商品在闭合前更居中。
+- `PRE_CLOSE_LEFT_SHIFT_M`：商品向前探入手心后、灵巧手闭合前，机械臂沿相机画面左侧单独平移的距离，默认 `0.006` m；用于让商品在闭合前更居中。
 - `HAND_CLOSE_WAIT_S`：灵巧手闭合后等待物体稳定的时间，默认 `1.0` 秒。
 - `HAND_BACKEND`：灵巧手后端，默认 `lhandpro_dobot`；通过 Nova 末端 RS485 使用新手。旧 Aero 硬件可显式设为 `aero`回退。
 - `LHAND_DOBOT_BAUD`：Nova 末端 RS485 波特率，默认 `115200`。
