@@ -113,6 +113,20 @@ class FakeController:
         self.is_connected = False
 
 
+class StallingController(FakeController):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        original_set_target = self.sdk_handle.set_target_position
+
+        def set_target_position(axis, position):
+            if axis in (3, 4):
+                position = min(int(position), 1500)
+            original_set_target(axis, position)
+
+        self.sdk_handle.set_target_position = set_target_position
+        self.sdk_handle.get_now_current = lambda _axis: 100
+
+
 class LHandProfileTests(unittest.TestCase):
     def test_default_open_pose_lowers_thumb_side_axis(self):
         hand = LHandProGripper(controller_factory=FakeController)
@@ -282,6 +296,33 @@ class LHandProfileTests(unittest.TestCase):
                 self.assertTrue(hand._hold_thread.is_alive())
                 hand.open()
             self.assertIsNone(hand._hold_thread)
+
+    def test_stalled_fingers_are_accepted_as_a_firm_grip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "empty.csv")
+            with open(path, "w", newline="", encoding="utf-8") as output:
+                writer = csv.DictWriter(
+                    output,
+                    fieldnames=["command"] + [f"current_{axis}" for axis in range(1, 7)],
+                )
+                writer.writeheader()
+                for command in range(0, 3001, 250):
+                    writer.writerow({"command": command, **{f"current_{axis}": 100 for axis in range(1, 7)}})
+
+            hand = LHandProGripper(profile_path=path, controller_factory=StallingController)
+            environment = {
+                "LHAND_FLEX_REQUIRED_AXES": "3,4",
+                "LHAND_FLEX_ACTIVE_AXES": "3,4",
+                "LHAND_FLEX_MAX_POSITIONS": "3000",
+                "LHAND_FLEX_MAX_STEPS": "6",
+                "LHAND_FLEX_STALL_POLLS": "3",
+                "LHAND_FLEX_MIN_CONTACTS": "2",
+            }
+            with patch.dict(os.environ, environment, clear=False), patch("time.sleep"):
+                hand.connect(enable_motors=False, home_motors=False)
+                self.assertTrue(hand.flexible_close())
+                self.assertTrue(hand.is_holding())
+                hand.open()
 
 
 if __name__ == "__main__":

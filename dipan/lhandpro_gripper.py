@@ -637,6 +637,8 @@ class LHandProGripper:
             locked = {}
             contacts = set()
             at_max = set()
+            stall_counts = {axis: 0 for axis in required_axes}
+            previous_actual = None
             print(
                 f"[LHandPro] 柔性抓取开始: active={sorted(active_axes)} "
                 f"required={sorted(required_axes)} "
@@ -647,6 +649,7 @@ class LHandProGripper:
 
             def accept_firm_grip(actual, currents, reason):
                 confirm_delta = float(os.getenv("LHAND_FLEX_TIMEOUT_ACCEPT_DELTA", "50"))
+                stall_polls = max(1, int(os.getenv("LHAND_FLEX_STALL_POLLS", "5")))
                 firm_axes = set(contacts)
                 for axis in required_axes:
                     index = axis - 1
@@ -659,6 +662,8 @@ class LHandProGripper:
                         else baseline[index]
                     )
                     if currents[index] - empty_current >= confirm_delta:
+                        firm_axes.add(axis)
+                    if stall_counts.get(axis, 0) >= stall_polls:
                         firm_axes.add(axis)
                 if len(firm_axes) < min_contacts:
                     return False
@@ -709,6 +714,18 @@ class LHandProGripper:
                     int(self._sdk.get_now_position(axis))
                     for axis in range(1, self.dof_active + 1)
                 ]
+                stall_tolerance = max(0, int(os.getenv("LHAND_FLEX_STALL_TOLERANCE", "20")))
+                stall_max_margin = max(1, int(os.getenv("LHAND_FLEX_STALL_MAX_MARGIN", "200")))
+                if previous_actual is not None:
+                    for axis in required_axes:
+                        index = axis - 1
+                        stalled = (
+                            actual_positions[index] >= min_position
+                            and actual_positions[index] < max_positions[index] - stall_max_margin
+                            and abs(actual_positions[index] - previous_actual[index]) <= stall_tolerance
+                        )
+                        stall_counts[axis] = stall_counts[axis] + 1 if stalled else 0
+                previous_actual = actual_positions
                 if any(current >= hard_current for current in currents):
                     hot_axes = [index + 1 for index, current in enumerate(currents) if current >= hard_current]
                     self._sdk.stop_motors(0)
@@ -788,7 +805,11 @@ class LHandProGripper:
 
             if accept_firm_grip(actual_positions, currents, "检测超时后二次电流确认"):
                 return True
-            print(f"[LHandPro] 柔性抓取失败: 达到最大步数 {max_steps}")
+            print(
+                f"[LHandPro] 柔性抓取失败: 达到最大步数 {max_steps}, "
+                f"位置={actual_positions}, 电流={[round(value) for value in currents]}, "
+                f"停滞计数={stall_counts}"
+            )
             return False
         except Exception as exc:
             self.ok = False
