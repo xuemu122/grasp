@@ -25,6 +25,7 @@ let catalogRefreshPromise = null;
 let robotConnectionProbe = null;
 let wsReconnectTimer = null;
 let wsHeartbeatTimer = null;
+let wsDisconnectStatusTimer = null;
 let wsGeneration = 0;
 let wsConnectedAt = 0;
 let wsLastPongAt = 0;
@@ -32,6 +33,10 @@ let wsLastPongAt = 0;
 const WS_CONNECT_TIMEOUT_MS = 8000;
 const WS_HEARTBEAT_INTERVAL_MS = 15000;
 const WS_STALE_TIMEOUT_MS = 45000;
+const WS_DISCONNECT_GRACE_MS = 5000;
+const WS_ACTION_PROBE_TIMEOUT_MS = 5000;
+const WS_ACTION_RECONNECT_TIMEOUT_MS = 8000;
+const WS_BACKGROUND_PROBE_TIMEOUT_MS = 5000;
 
 function settleRobotConnectionProbe(connected) {
     if (!robotConnectionProbe) return;
@@ -42,7 +47,7 @@ function settleRobotConnectionProbe(connected) {
     probe.resolve(connected);
 }
 
-function verifyRobotConnection(timeoutMs = 1500) {
+function verifyRobotConnection(timeoutMs = WS_ACTION_PROBE_TIMEOUT_MS) {
     if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve(false);
     if (robotConnectionProbe && robotConnectionProbe.socket === ws) return robotConnectionProbe.promise;
 
@@ -65,6 +70,44 @@ function verifyRobotConnection(timeoutMs = 1500) {
         resetWebSocketConnection(socket, generation, 0);
     }
     return promise;
+}
+
+function clearDisconnectedStatusTimer() {
+    if (wsDisconnectStatusTimer) clearTimeout(wsDisconnectStatusTimer);
+    wsDisconnectStatusTimer = null;
+}
+
+function scheduleDisconnectedStatus() {
+    if (wsDisconnectStatusTimer) return;
+    wsDisconnectStatusTimer = setTimeout(() => {
+        wsDisconnectStatusTimer = null;
+        if (!wsConnected) updateConnectionStatus('disconnected');
+    }, WS_DISCONNECT_GRACE_MS);
+}
+
+function waitForReconnect(timeoutMs = WS_ACTION_RECONNECT_TIMEOUT_MS) {
+    ensureWebSocketConnection();
+    const deadline = Date.now() + timeoutMs;
+    return new Promise((resolve) => {
+        const check = () => {
+            if (wsConnected && ws && ws.readyState === WebSocket.OPEN) {
+                resolve(true);
+                return;
+            }
+            if (Date.now() >= deadline) {
+                resolve(false);
+                return;
+            }
+            setTimeout(check, 200);
+        };
+        check();
+    });
+}
+
+async function verifyRobotConnectionForAction() {
+    if (await verifyRobotConnection(WS_ACTION_PROBE_TIMEOUT_MS)) return true;
+    if (!(await waitForReconnect())) return false;
+    return verifyRobotConnection(WS_ACTION_PROBE_TIMEOUT_MS);
 }
 
 function scheduleWebSocketReconnect(delayMs = 3000) {
@@ -99,7 +142,7 @@ function resetWebSocketConnection(socket, generation, delayMs = 0) {
             console.error('关闭失效 WebSocket 失败:', error);
         }
     }
-    updateConnectionStatus('disconnected');
+    scheduleDisconnectedStatus();
     scheduleWebSocketReconnect(delayMs);
 }
 
@@ -110,7 +153,7 @@ function startWebSocketHeartbeat(socket, generation) {
             stopWebSocketHeartbeat();
             return;
         }
-        verifyRobotConnection(2500).then((connected) => {
+        verifyRobotConnection(WS_BACKGROUND_PROBE_TIMEOUT_MS).then((connected) => {
             if (!connected) resetWebSocketConnection(socket, generation, 0);
         });
     }, WS_HEARTBEAT_INTERVAL_MS);
@@ -135,7 +178,7 @@ function ensureWebSocketConnection() {
             resetWebSocketConnection(socket, wsGeneration, 0);
             return;
         }
-        verifyRobotConnection(2500).then((connected) => {
+        verifyRobotConnection(WS_BACKGROUND_PROBE_TIMEOUT_MS).then((connected) => {
             if (!connected && ws === socket) {
                 resetWebSocketConnection(socket, wsGeneration, 0);
             }
@@ -170,6 +213,7 @@ function connectWebSocket() {
     socket.onopen = () => {
         if (ws !== socket || wsGeneration !== generation) return;
         clearTimeout(connectTimeout);
+        clearDisconnectedStatusTimer();
         wsConnected = true;
         wsConnectedAt = Date.now();
         wsLastPongAt = wsConnectedAt;
@@ -190,8 +234,8 @@ function connectWebSocket() {
     socket.onclose = () => {
         if (ws !== socket || wsGeneration !== generation) return;
         clearTimeout(connectTimeout);
-        logWS('❌ 与后端断开连接，3秒后重连...');
-        resetWebSocketConnection(socket, generation, 3000);
+        logWS('❌ 与后端短暂断开，正在重连...');
+        resetWebSocketConnection(socket, generation, 0);
     };
 
     socket.onerror = () => {
@@ -736,7 +780,11 @@ async function submitOrder() {
     const items = getCartItems();
     if (items.length === 0) return;
 
-    if (!(await verifyRobotConnection())) {
+    const btnSubmit = document.getElementById('btnSubmit');
+    btnSubmit.disabled = true;
+    btnSubmit.textContent = '正在确认连接...';
+
+    if (!(await verifyRobotConnectionForAction())) {
         alert('后端未连接，暂时无法下单');
         syncOrderButton();
         return;
@@ -747,7 +795,6 @@ async function submitOrder() {
         return;
     }
 
-    const btnSubmit = document.getElementById('btnSubmit');
     btnSubmit.disabled = true;
     btnSubmit.textContent = '⏳ 提交中...';
 
@@ -770,7 +817,7 @@ async function submitOrder() {
         return;
     }
 
-    if (!(await verifyRobotConnection())) {
+    if (!(await verifyRobotConnectionForAction())) {
         if (prepared.paymentRequired) {
             try {
                 await fetch(graspApi(`/orders/${encodeURIComponent(prepared.orderId)}/cancel-payment`), {
@@ -810,7 +857,7 @@ async function submitOrder() {
         }
     }
 
-    if (!(await verifyRobotConnection())) {
+    if (!(await verifyRobotConnectionForAction())) {
         alert('⚠️ 后端服务未连接，请先启动后端！\n\n在终端执行: node server.js');
         await requestAutomaticRefund(orderId, prepared.completionToken, '支付成功后机器人连接断开，订单未开始');
         currentOrderId = null;
