@@ -430,34 +430,28 @@ class LHandProGripper:
             time.sleep(float(wait_s))
 
     def _command_open_positions(self, positions, wait_s=0.0):
-        """Release all axes on one common progress trajectory."""
-        velocity = max(1, int(os.getenv("LHAND_OPEN_MAX_VELOCITY", "20000")))
+        """Release all axes with one continuous broadcast motion."""
+        velocities = None
         try:
             actual = [
                 int(self._sdk.get_now_position(axis))
                 for axis in range(1, self.dof_active + 1)
             ]
-            duration = max(0.2, float(os.getenv("LHAND_OPEN_SYNC_DURATION_S", "1.0")))
-            step_s = max(0.02, float(os.getenv("LHAND_OPEN_TRAJECTORY_STEP_S", "0.05")))
-            steps = max(1, int(round(duration / step_s)))
+            duration = max(0.1, float(os.getenv("LHAND_OPEN_SYNC_DURATION_S", "1.0")))
+            max_velocity = max(1, int(os.getenv("LHAND_OPEN_MAX_VELOCITY", "20000")))
+            min_velocity = max(1, int(os.getenv("LHAND_OPEN_MIN_VELOCITY", "1000")))
+            velocities = []
+            for current, target in zip(actual, positions):
+                distance = abs(int(target) - int(current))
+                matched = int(round(distance / duration)) if distance else min_velocity
+                velocities.append(max(min_velocity, min(max_velocity, matched)))
             print(
-                f"[LHandPro] 同步张开轨迹: 目标={list(positions)} "
-                f"时长={duration:.2f}s 步数={steps} 速度={velocity}"
+                f"[LHandPro] 同步张开: 目标={list(positions)} "
+                f"速度={velocities} (单次全轴连续广播)"
             )
-            for step in range(1, steps + 1):
-                progress = step / steps
-                waypoint = [
-                    int(round(current + (int(target) - current) * progress))
-                    for current, target in zip(actual, positions)
-                ]
-                self._command_positions(waypoint, wait_s=0.0, velocity=velocity)
-                time.sleep(duration / steps)
-            # Always finish with the exact endpoint before position polling.
-            self._command_positions(positions, wait_s=wait_s, velocity=velocity)
-            return
         except Exception as exc:
-            print(f"[LHandPro][张开] 无法建立同步轨迹，回退单次全轴广播: {exc}")
-        self._command_positions(positions, wait_s=wait_s, velocity=velocity)
+            print(f"[LHandPro][张开] 无法读取各轴位置，使用统一速度: {exc}")
+        self._command_positions(positions, wait_s=wait_s, velocities=velocities)
 
     def _read_currents(self, samples=1, delay_s=0.0):
         rows = []
