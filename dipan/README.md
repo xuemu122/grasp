@@ -192,6 +192,8 @@ LHandPro 抓取保持参数：
 - `LHAND_FLEX_START_WAIT_S`：闭合前张开姿态稳定等待，默认 `0.03` s。
 - `LHAND_OPEN_RETRIES`：放置/换单时张开位置未到位的重发次数，默认 `3`。
 - `LHAND_OPEN_POSITION_TOLERANCE`：张开位置校验容差，默认 `300` 个位置单位。
+- `LHAND_OPEN_SYNC_DURATION_S`：放置时各轴同步张开的目标时长，默认 `0.5` s；根据每轴剩余行程分别设速后再一次性广播。
+- `LHAND_OPEN_MAX_VELOCITY` / `LHAND_OPEN_MIN_VELOCITY`：同步张开速度上下限，默认 `20000/1000`；只影响张开，不影响抓取闭合速度。
 - `LHAND_PROFILE_SWEEP_AXES`：录制空载曲线时参与扫位的轴，默认 `2,3,4,5,6`；轴1保持 `LHAND_OPEN_POSITIONS` 的张开位置不动。
 - `HAND_CLOSE_WAIT_S`：闭合成功后确认保持状态的等待时间，默认 `0.25` s；需要兼容较慢控制器时可调回 `1.0` s。
 

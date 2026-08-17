@@ -404,20 +404,54 @@ class LHandProGripper:
             os.getenv("LHAND_FLEX_MAX_POSITIONS"), self.dof_active, 9000
         )
 
-    def _command_positions(self, positions, wait_s=0.0, velocity=None, max_current=None):
+    def _command_positions(
+        self,
+        positions,
+        wait_s=0.0,
+        velocity=None,
+        max_current=None,
+        velocities=None,
+    ):
         if len(positions) != self.dof_active:
             raise ValueError(f"位置数量应为 {self.dof_active}, 实际 {len(positions)}")
+        if velocities is not None and len(velocities) != self.dof_active:
+            raise ValueError(f"速度数量应为 {self.dof_active}, 实际 {len(velocities)}")
         velocity = int(velocity or os.getenv("LHAND_FLEX_VELOCITY", "12000"))
         max_current = int(max_current or os.getenv("LHAND_FLEX_MAX_CURRENT", "600"))
         sdk = self._sdk
         with self._command_lock:
             for axis, position in enumerate(positions, start=1):
                 sdk.set_target_position(axis, int(position))
-                sdk.set_position_velocity(axis, velocity)
+                axis_velocity = velocity if velocities is None else int(velocities[axis - 1])
+                sdk.set_position_velocity(axis, axis_velocity)
                 sdk.set_max_current(axis, max_current)
             sdk.move_motors(0)
         if wait_s > 0:
             time.sleep(float(wait_s))
+
+    def _command_open_positions(self, positions, wait_s=0.0):
+        """Broadcast an open pose with per-axis speeds matched by travel time."""
+        velocities = None
+        try:
+            actual = [
+                int(self._sdk.get_now_position(axis))
+                for axis in range(1, self.dof_active + 1)
+            ]
+            duration = max(0.1, float(os.getenv("LHAND_OPEN_SYNC_DURATION_S", "0.5")))
+            max_velocity = max(1, int(os.getenv("LHAND_OPEN_MAX_VELOCITY", "20000")))
+            min_velocity = max(1, int(os.getenv("LHAND_OPEN_MIN_VELOCITY", "1000")))
+            velocities = []
+            for current, target in zip(actual, positions):
+                distance = abs(int(target) - int(current))
+                if distance == 0:
+                    velocities.append(min_velocity)
+                else:
+                    matched = int(round(distance / duration))
+                    velocities.append(max(min_velocity, min(max_velocity, matched)))
+            print(f"[LHandPro] 同步张开: 目标={list(positions)} 速度={velocities}")
+        except Exception as exc:
+            print(f"[LHandPro][张开] 无法读取当前位置，使用统一速度: {exc}")
+        self._command_positions(positions, wait_s=wait_s, velocities=velocities)
 
     def _read_currents(self, samples=1, delay_s=0.0):
         rows = []
@@ -440,13 +474,13 @@ class LHandProGripper:
             tolerance = max(0, int(os.getenv("LHAND_OPEN_POSITION_TOLERANCE", "300")))
             for attempt in range(retries):
                 try:
-                    self._command_positions(positions, wait_s=wait_s)
+                    self._command_open_positions(positions, wait_s=wait_s)
                 except Exception as exc:
                     if getattr(exc, "error_code", None) != 11:
                         raise
                     print("[LHandPro][恢复] SDK 仍报告未回零，重新执行回零后再试一次")
                     self.home()
-                    self._command_positions(positions, wait_s=wait_s)
+                    self._command_open_positions(positions, wait_s=wait_s)
 
                 try:
                     actual = [
@@ -910,7 +944,7 @@ class LHandProGripper:
                 )
         finally:
             try:
-                self._command_positions(self._open_positions(), wait_s=0.8)
+                self._command_open_positions(self._open_positions(), wait_s=0.8)
             except Exception as exc:
                 print(f"[LHandPro][警告] 录制结束后张开失败: {exc}")
 
