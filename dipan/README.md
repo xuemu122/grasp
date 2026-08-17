@@ -154,7 +154,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `DEPTH_GUARD_MIN_HIT_POINTS`：手部路径触发中止所需的独立深度点数，默认 `4`；少量层板边缘/深度跳变点不会误报，连续障碍点簇仍会拦截。需要更保守时可调回 `2`，现场仍有边缘误报时可调到 `5` 或 `6`。
 - `DEPTH_GUARD_HAND_BOX_MIN_HIT_POINTS`：DH116 偏置拇指/手指和连接件外接盒触发中止所需的独立深度点数，默认 `16`；外接盒比中心胶囊保守，因此要求更完整的障碍点簇。调试图中这类命中显示为橙点。
 - `DEPTH_GUARD_MAX_DEPTH_M`：纳入障碍点的最大深度，默认 `1.20` m；货架背景太远造成误拦截时可调小。
-- `DEPTH_GUARD_TARGET_DEPTH_MARGIN_M`：相对当前目标深度允许纳入护栏的后方余量，默认 `0.06` m；更远的后层板/背板点会被忽略。
+- `DEPTH_GUARD_TARGET_DEPTH_MARGIN_M`：相对当前目标深度允许纳入护栏的后方余量，默认 `0.025` m；更远的后层板/背板点会被忽略，避免把约 10cm 外的背景纳入路径检查。
 - 深度护栏会复用当前层识别出的 `row_min..row_max`，只生成上下层板之间的障碍点；上下层板本体和层外点不会参与探入碰撞判定。
 - `DEPTH_GUARD_SHELF_ROW_INSET_PX`：动态层板边界向层内额外收缩的像素数，默认 `8`；用于排除有厚度的层板前沿。
 - `DEPTH_GUARD_TARGET_ROW_TOP_MARGIN_PX` / `DEPTH_GUARD_TARGET_ROW_BOTTOM_MARGIN_PX`：没有可靠层板边界时，按目标框生成护栏行范围的上下余量，默认 `32/8` px；较小的下余量用于排除目标下方层板。
@@ -165,7 +165,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `DEPTH_GUARD_SELF_MASK_LENGTH_M`：自手部剔除长度，默认 `0.25` m；通常等于法兰到指尖长度。
 - `DEPTH_GUARD_SELF_MASK_BACKOFF_M`：自手部剔除从法兰向后覆盖的长度，默认 `0.03` m；用于覆盖手掌根部/安装件附近的深度点。
 - `DEPTH_GUARD_DEPTH_ALIGN_ENABLE`：相机深度一致性过滤开关，默认开启；碰撞点除了要靠近手部胶囊，还要和路径最近点在相机深度方向上对齐，用于过滤透视造成的近邻误判。
-- `DEPTH_GUARD_DEPTH_ALIGN_TOLERANCE_M`：相机深度一致性容差，默认 `0.035` m；如果层板确实有距离但仍被红点拦截可略调小/保持，若真实障碍漏检则调大或关闭深度对齐。
+- `DEPTH_GUARD_DEPTH_ALIGN_TOLERANCE_M`：相机深度一致性容差，默认 `0.025` m；如果层板确实有距离但仍被红点拦截可略调小/保持，若真实障碍漏检则调大或关闭深度对齐。
 - `DEPTH_GUARD_AXIS_WINDOW_ENABLE`：探入路径轴向窗口开关，默认开启；只检查法兰附近到指尖前方一点的障碍，忽略指尖/目标后方的层板后缘或背景点。
 - `DEPTH_GUARD_FINGERTIP_FRONT_MARGIN_M`：指尖前方仍纳入检查的长度，默认 `0.005` m；红点在目标后方/层板后方时可调小到 `0`，担心指尖前方障碍漏检时调大。
 - `DEPTH_GUARD_FLANGE_BACK_MARGIN_M`：法兰后方仍纳入检查的长度，默认 `0.03` m；用于覆盖手掌根部附近。

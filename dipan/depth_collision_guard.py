@@ -36,7 +36,7 @@ def depth_to_robot_obstacles(
     min_depth_m: float = 0.08,
     max_depth_m: float = 1.20,
     target_depth_m: Optional[float] = None,
-    target_depth_margin_m: float = 0.06,
+    target_depth_margin_m: float = 0.025,
     include_row_min_px: Optional[float] = None,
     include_row_max_px: Optional[float] = None,
     exclude_bbox: Optional[Tuple[float, float, float, float]] = None,
