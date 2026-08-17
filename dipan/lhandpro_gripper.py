@@ -743,16 +743,20 @@ class LHandProGripper:
                     )
                 self._command_positions(hold_values, wait_s=settle)
                 self._holding = True
+                # Once the minimum number of contact axes is firm, keep every
+                # active axis under the hold loop. Unconfirmed axes continue
+                # closing in the background instead of blocking placement.
                 self._start_hold(
                     hold_values,
-                    firm_axes,
+                    active_axes,
                     max_positions,
                     profile,
                     baseline,
                 )
                 print(
                     f"[LHandPro] 柔性抓取确认: {reason}, "
-                    f"有效接触轴={sorted(firm_axes)}, 保持位置={hold_values}"
+                    f"有效接触轴={sorted(firm_axes)}, 后台保持轴={sorted(active_axes)}, "
+                    f"保持位置={hold_values}"
                 )
                 return True
 
@@ -875,6 +879,9 @@ class LHandProGripper:
                     print(f"[LHandPro] 柔性锁定: {', '.join(events)}")
                 if continuous and target_changed:
                     self._command_positions(values, wait_s=0.0)
+                if len(contacts) >= min_contacts:
+                    if accept_firm_grip(actual_positions, currents, "达到最少接触轴"):
+                        return True
                 if all(axis in locked for axis in required_axes):
                     self._command_positions(values, wait_s=settle)
                     if len(contacts) < min_contacts:
