@@ -435,22 +435,39 @@ class LHandProGripper:
             self._stop_hold()
             self._holding = False
             positions = self._open_positions()
-            try:
-                self._command_positions(
-                    positions,
-                    wait_s=float(os.getenv("LHAND_OPEN_WAIT_S", "0.8")),
+            wait_s = float(os.getenv("LHAND_OPEN_WAIT_S", "0.8"))
+            retries = max(1, int(os.getenv("LHAND_OPEN_RETRIES", "3")))
+            tolerance = max(0, int(os.getenv("LHAND_OPEN_POSITION_TOLERANCE", "300")))
+            for attempt in range(retries):
+                try:
+                    self._command_positions(positions, wait_s=wait_s)
+                except Exception as exc:
+                    if getattr(exc, "error_code", None) != 11:
+                        raise
+                    print("[LHandPro][恢复] SDK 仍报告未回零，重新执行回零后再试一次")
+                    self.home()
+                    self._command_positions(positions, wait_s=wait_s)
+
+                try:
+                    actual = [
+                        int(self._sdk.get_now_position(axis))
+                        for axis in range(1, self.dof_active + 1)
+                    ]
+                except Exception as exc:
+                    print(f"[LHandPro][张开校验] 无法读取位置，按指令完成处理: {exc}")
+                    actual = None
+                if actual is None or all(
+                    abs(actual[index] - int(target)) <= tolerance
+                    for index, target in enumerate(positions)
+                ):
+                    print("[LHandPro] 张开")
+                    return True
+                print(
+                    f"[LHandPro][张开校验] 位置未到位，重发张开 "
+                    f"({attempt + 1}/{retries}) 目标={positions} 实际={actual}"
                 )
-            except Exception as exc:
-                if getattr(exc, "error_code", None) != 11:
-                    raise
-                print("[LHandPro][恢复] SDK 仍报告未回零，重新执行回零后再试一次")
-                self.home()
-                self._command_positions(
-                    positions,
-                    wait_s=float(os.getenv("LHAND_OPEN_WAIT_S", "0.8")),
-                )
-            print("[LHandPro] 张开")
-            return True
+            print("[LHandPro][张开失败] 重发后仍有手指未到张开位置")
+            return False
         except Exception as exc:
             self.ok = False
             print(f"[LHandPro] 张开失败, 已禁用灵巧手: {exc}")
@@ -558,6 +575,8 @@ class LHandProGripper:
                             if self._hold_positions is not None:
                                 self._hold_positions = positions
 
+                if stop_event.is_set():
+                    return
                 self._command_positions(positions, wait_s=0.0)
             except Exception as exc:
                 self._holding = False

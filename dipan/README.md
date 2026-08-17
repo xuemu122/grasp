@@ -190,6 +190,8 @@ LHandPro 抓取保持参数：
 - `LHAND_FLEX_STALL_TOLERANCE`：停滞判定允许的每轮位置变化，默认 `20`。
 - `LHAND_FLEX_STALL_MAX_MARGIN`：停滞位置必须距离配置闭合上限至少多少，默认 `200`；避免把正常到达闭合上限误判为夹住物体。
 - `LHAND_FLEX_START_WAIT_S`：闭合前张开姿态稳定等待，默认 `0.03` s。
+- `LHAND_OPEN_RETRIES`：放置/换单时张开位置未到位的重发次数，默认 `3`。
+- `LHAND_OPEN_POSITION_TOLERANCE`：张开位置校验容差，默认 `300` 个位置单位。
 - `LHAND_PROFILE_SWEEP_AXES`：录制空载曲线时参与扫位的轴，默认 `2,3,4,5,6`；轴1保持 `LHAND_OPEN_POSITIONS` 的张开位置不动。
 - `HAND_CLOSE_WAIT_S`：闭合成功后确认保持状态的等待时间，默认 `0.25` s；需要兼容较慢控制器时可调回 `1.0` s。
 
