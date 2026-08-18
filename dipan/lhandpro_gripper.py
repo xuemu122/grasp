@@ -437,7 +437,7 @@ class LHandProGripper:
                 int(self._sdk.get_now_position(axis))
                 for axis in range(1, self.dof_active + 1)
             ]
-            duration = max(0.1, float(os.getenv("LHAND_OPEN_SYNC_DURATION_S", "1.0")))
+            duration = max(0.1, float(os.getenv("LHAND_OPEN_SYNC_DURATION_S", "0.5")))
             max_velocity = max(1, int(os.getenv("LHAND_OPEN_MAX_VELOCITY", "20000")))
             min_velocity = max(1, int(os.getenv("LHAND_OPEN_MIN_VELOCITY", "1000")))
             velocities = []
@@ -554,7 +554,9 @@ class LHandProGripper:
         stop_event.set()
         thread = self._hold_thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
-            thread.join(timeout=1.0)
+            # A late tightening broadcast can overwrite the first release
+            # command. Wait until the hold loop has fully exited.
+            thread.join()
         self._hold_thread = None
         self._hold_positions = None
         self._hold_profile = None
