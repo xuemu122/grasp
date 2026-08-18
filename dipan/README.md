@@ -107,7 +107,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `PERSPECTIVE_COMP_GAIN`：透视补偿强度，默认 `2.0`。
 - `PERSPECTIVE_COMP_MIN_SCALE`：透视补偿最小缩放，默认 `0.65`。
 - `GRASP_APPROACH_BACKOFF_M`：抓取前固定退距，默认 `0.15` m；对齐位会放在抓取位后方这个距离，避免从观察位保留过长探入路径。
-- `SIDE_GRASP_MIN_HEIGHT_M` / `SIDE_GRASP_MAX_HEIGHT_M`：侧面抓取点离物体底部的允许区间，默认 `0.070..0.11` m。
+- `SIDE_GRASP_MIN_HEIGHT_M` / `SIDE_GRASP_MAX_HEIGHT_M`：侧面抓取点离物体底部的允许区间，默认 `0.075..0.11` m。
 - `SIDE_GRASP_LOWER_SHIFT_M`：在原侧抓选点基础上向瓶底方向下移的距离，默认 `0.015` m；下移后仍受 `SIDE_GRASP_MIN_HEIGHT_M` 限制，最低离底高度不变。
 - `LAYER_Z_TOLERANCE_M`：当前层世界 Z 过滤容差，默认 `0.16` m；如果误识别上一层会被剔除，现场层高/标定偏差大时可调大。
 - `SHELF_BOARD_FILTER_ENABLE`：是否启用基于当前深度帧的层板识别过滤，默认开启。识别不到可靠上下层板时自动回退旧的 ROI/Z 过滤。

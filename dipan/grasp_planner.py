@@ -8,7 +8,7 @@ import numpy as np
 
 TARGET_ROI_Y_MIN = int(os.getenv("TARGET_ROI_Y_MIN", "85"))
 TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "430"))
-SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv("SIDE_GRASP_MIN_HEIGHT_M", "0.070"))
+SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv("SIDE_GRASP_MIN_HEIGHT_M", "0.075"))
 SIDE_GRASP_MAX_HEIGHT_M = float(os.getenv("SIDE_GRASP_MAX_HEIGHT_M", "0.11"))
 SIDE_GRASP_LOW_TARGET_HEIGHT_M = float(os.getenv("SIDE_GRASP_LOW_TARGET_HEIGHT_M", "0.068"))
 SIDE_GRASP_LOWER_SHIFT_M = float(os.getenv("SIDE_GRASP_LOWER_SHIFT_M", "0.015"))
