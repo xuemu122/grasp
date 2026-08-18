@@ -824,10 +824,25 @@ class LHandProGripper:
                 previous_actual = actual_positions
                 if any(current >= hard_current for current in currents):
                     hot_axes = [index + 1 for index, current in enumerate(currents) if current >= hard_current]
+                    hot_contact_axes = {
+                        axis
+                        for axis in hot_axes
+                        if axis in required_axes
+                        and actual_positions[axis - 1] >= min_position
+                    }
+                    if len(hot_contact_axes) >= min_contacts:
+                        contacts.update(hot_contact_axes)
+                        if accept_firm_grip(
+                            actual_positions,
+                            currents,
+                            f"硬电流接触轴={sorted(hot_contact_axes)}",
+                        ):
+                            return True
                     self._sdk.stop_motors(0)
                     print(
                         f"[LHandPro] 柔性抓取安全停止: 轴 {hot_axes} 电流达到 "
-                        f"{hard_current:.0f}‰"
+                        f"{hard_current:.0f}‰, 有效接触轴={sorted(hot_contact_axes)} "
+                        f"不足 {min_contacts}"
                     )
                     return False
 

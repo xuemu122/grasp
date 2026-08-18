@@ -136,6 +136,18 @@ class StaleFeedbackController(FakeController):
         self.sdk_handle.get_now_current = lambda _axis: 100
 
 
+class HardContactController(FakeController):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        def get_now_current(axis):
+            if axis in (4, 6) and self.sdk_handle.positions[axis - 1] >= 1000:
+                return 800
+            return 100
+
+        self.sdk_handle.get_now_current = get_now_current
+
+
 class LHandProfileTests(unittest.TestCase):
     def test_default_open_pose_lowers_thumb_side_axis(self):
         hand = LHandProGripper(controller_factory=FakeController)
@@ -218,6 +230,32 @@ class LHandProfileTests(unittest.TestCase):
             with patch.dict(os.environ, environment, clear=False), patch("time.sleep"):
                 self.assertTrue(hand.flexible_close())
             self.assertTrue(hand.is_holding())
+
+    def test_two_hard_current_axes_are_accepted_as_object_contact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "empty.csv")
+            with open(path, "w", newline="", encoding="utf-8") as output:
+                writer = csv.DictWriter(
+                    output,
+                    fieldnames=["command"] + [f"current_{axis}" for axis in range(1, 7)],
+                )
+                writer.writeheader()
+                for command in range(0, 3001, 250):
+                    writer.writerow({"command": command, **{f"current_{axis}": 100 for axis in range(1, 7)}})
+
+            hand = LHandProGripper(profile_path=path, controller_factory=HardContactController)
+            environment = {
+                "LHAND_FLEX_REQUIRED_AXES": "4,6",
+                "LHAND_FLEX_ACTIVE_AXES": "4,6",
+                "LHAND_FLEX_MAX_POSITIONS": "3000",
+                "LHAND_FLEX_MIN_CONTACTS": "2",
+                "LHAND_FLEX_HARD_CURRENT": "750",
+            }
+            with patch.dict(os.environ, environment, clear=False), patch("time.sleep"):
+                hand.connect(enable_motors=False, home_motors=False)
+                self.assertTrue(hand.flexible_close())
+            self.assertTrue(hand.is_holding())
+            self.assertFalse(HardContactController.latest.sdk_handle.stopped)
 
     def test_flexible_close_keeps_thumb_side_axis_open_by_default(self):
         with tempfile.TemporaryDirectory() as directory:
