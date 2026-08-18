@@ -76,6 +76,21 @@ def _parse_float_list_env(name, default):
     return values or tuple(default)
 
 
+def _shrink_box_bounds(boxes, shrink_m):
+    """Inset depth-guard boxes without changing shared tool geometry."""
+    shrink = max(0.0, float(shrink_m))
+    if shrink <= 0.0:
+        return tuple(boxes)
+    result = []
+    for box_min, box_max in boxes:
+        lo = np.asarray(box_min, dtype=np.float32)
+        hi = np.asarray(box_max, dtype=np.float32)
+        center = (lo + hi) * 0.5
+        half = np.maximum((hi - lo) * 0.5 - shrink, 0.001)
+        result.append((tuple(center - half), tuple(center + half)))
+    return tuple(result)
+
+
 # ============================================================
 # 参数
 # ============================================================
@@ -156,6 +171,7 @@ TARGET_DEPTH_REFINE_MAX_DELTA_M = float(os.getenv("TARGET_DEPTH_REFINE_MAX_DELTA
 DEPTH_GUARD_ENABLE = os.getenv("DEPTH_GUARD_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 DEPTH_GUARD_STRIDE = int(os.getenv("DEPTH_GUARD_STRIDE", "8"))
 DEPTH_GUARD_CLEARANCE_M = float(os.getenv("DEPTH_GUARD_CLEARANCE_M", "0.002"))
+DEPTH_GUARD_HAND_BOX_SHRINK_M = float(os.getenv("DEPTH_GUARD_HAND_BOX_SHRINK_M", "0.005"))
 DEPTH_GUARD_CAMERA_ENABLE = os.getenv("DEPTH_GUARD_CAMERA_ENABLE", "0").lower() in ("1", "true", "yes", "on")
 DEPTH_GUARD_CAMERA_CLEARANCE_M = float(os.getenv("DEPTH_GUARD_CAMERA_CLEARANCE_M", str(DEPTH_GUARD_CLEARANCE_M)))
 DEPTH_GUARD_SELF_MASK_CAMERA_PADDING_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_CAMERA_PADDING_M", "0.01"))
@@ -167,7 +183,10 @@ DEPTH_GUARD_SELF_CAMERA_BOX_MIN_M, DEPTH_GUARD_SELF_CAMERA_BOX_MAX_M = camera_bo
 )
 DEPTH_GUARD_HAND_RADIUS_M = float(os.getenv("DEPTH_GUARD_HAND_RADIUS_M", str(HAND_W_Y * 0.5 + DEPTH_GUARD_CLEARANCE_M)))
 DEPTH_GUARD_FINGER_RADIUS_M = float(os.getenv("DEPTH_GUARD_FINGER_RADIUS_M", str(HAND_FINGER_THICKNESS_M * 0.5 + DEPTH_GUARD_CLEARANCE_M)))
-DEPTH_GUARD_HAND_BOXES_M = hand_box_bounds(DEPTH_GUARD_CLEARANCE_M)
+DEPTH_GUARD_HAND_BOXES_M = _shrink_box_bounds(
+    hand_box_bounds(DEPTH_GUARD_CLEARANCE_M),
+    DEPTH_GUARD_HAND_BOX_SHRINK_M,
+)
 DEPTH_GUARD_SELF_HAND_BOXES_M = hand_box_bounds(DEPTH_GUARD_SELF_MASK_CAMERA_PADDING_M)
 DEPTH_GUARD_APPROACH_LENGTH_M = float(os.getenv("DEPTH_GUARD_APPROACH_LENGTH_M", "0.08"))
 DEPTH_GUARD_PATH_SAMPLES = int(os.getenv("DEPTH_GUARD_PATH_SAMPLES", "8"))
@@ -1848,6 +1867,7 @@ def main():
         )
     else:
         print("  相机碰撞盒: 暂不建模（连接件长托板仍参与碰撞检查）")
+    print(f"  深度护栏偏置盒内收: {DEPTH_GUARD_HAND_BOX_SHRINK_M*1000:.0f}mm")
     print(f"  灵巧手型号: {TOOL_HAND_MODEL}, 后端: {HAND_BACKEND}, 手势模式: {HAND_GRASP_MODE}")
     if HAND_BACKEND in ("lhandpro_dobot", "dobot_modbus", "tool_rs485"):
         print(

@@ -692,6 +692,7 @@ class LHandProGripper:
                 len(required_axes), int(os.getenv("LHAND_FLEX_MIN_CONTACTS", "2"))
             ))
             hard_current = float(os.getenv("LHAND_FLEX_HARD_CURRENT", "750"))
+            hard_consecutive = max(1, int(os.getenv("LHAND_FLEX_HARD_CURRENT_CONSECUTIVE", "3")))
             max_steps = max(1, int(os.getenv("LHAND_FLEX_MAX_STEPS", "300")))
             continuous = os.getenv("LHAND_FLEX_CONTINUOUS", "1").lower() in (
                 "1", "true", "yes", "on"
@@ -706,6 +707,7 @@ class LHandProGripper:
             contacts = set()
             at_max = set()
             stall_counts = {axis: 0 for axis in required_axes}
+            hard_counts = {axis: 0 for axis in active_axes}
             previous_actual = None
             print(
                 f"[LHandPro] 柔性抓取开始: active={sorted(active_axes)} "
@@ -822,29 +824,53 @@ class LHandProGripper:
                         )
                         stall_counts[axis] = stall_counts[axis] + 1 if stalled else 0
                 previous_actual = actual_positions
-                if any(current >= hard_current for current in currents):
-                    hot_axes = [index + 1 for index, current in enumerate(currents) if current >= hard_current]
-                    hot_contact_axes = {
-                        axis
-                        for axis in hot_axes
-                        if axis in required_axes
-                        and actual_positions[axis - 1] >= min_position
-                    }
-                    if len(hot_contact_axes) >= min_contacts:
-                        contacts.update(hot_contact_axes)
-                        if accept_firm_grip(
-                            actual_positions,
-                            currents,
-                            f"硬电流接触轴={sorted(hot_contact_axes)}",
-                        ):
-                            return True
-                    self._sdk.stop_motors(0)
-                    print(
-                        f"[LHandPro] 柔性抓取安全停止: 轴 {hot_axes} 电流达到 "
-                        f"{hard_current:.0f}‰, 有效接触轴={sorted(hot_contact_axes)} "
-                        f"不足 {min_contacts}"
+                for axis in active_axes:
+                    hard_counts[axis] = (
+                        hard_counts[axis] + 1
+                        if currents[axis - 1] >= hard_current
+                        else 0
                     )
-                    return False
+                hot_axes = {
+                    axis for axis in active_axes
+                    if hard_counts[axis] >= hard_consecutive
+                }
+                if hot_axes:
+                    unsafe_hot_axes = {
+                        axis for axis in hot_axes
+                        if actual_positions[axis - 1] < min_position
+                    }
+                    if unsafe_hot_axes:
+                        self._sdk.stop_motors(0)
+                        print(
+                            f"[LHandPro] 柔性抓取安全停止: 轴 {sorted(unsafe_hot_axes)} "
+                            f"连续 {hard_consecutive} 次达到 {hard_current:.0f}‰, "
+                            f"位置={actual_positions} 电流={[round(value) for value in currents]}"
+                        )
+                        return False
+
+                    # A motor that reaches the hard current after it has
+                    # entered the closing range is a contact, not necessarily
+                    # a fault. Lock only that motor and let the other fingers
+                    # continue toward their targets.
+                    hot_contact_axes = hot_axes & required_axes
+                    hot_target_changed = False
+                    for axis in hot_axes:
+                        index = axis - 1
+                        contacts.add(axis) if axis in required_axes else None
+                        locked[axis] = actual_positions[index]
+                        values[index] = actual_positions[index]
+                        hot_target_changed = True
+                    print(
+                        f"[LHandPro] 柔性锁定: 硬电流轴={sorted(hot_axes)}, "
+                        f"有效接触轴={sorted(hot_contact_axes)}, 连续={hard_consecutive}"
+                    )
+                    if len(contacts) >= min_contacts and accept_firm_grip(
+                        actual_positions, currents,
+                        f"硬电流接触轴={sorted(hot_contact_axes)}",
+                    ):
+                        return True
+                    if hot_target_changed:
+                        self._command_positions(values, wait_s=0.0)
 
                 events = []
                 target_changed = False

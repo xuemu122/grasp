@@ -145,6 +145,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `HAND_PALM_LENGTH_M`：Nova 法兰经连接件到掌心前端的长度，默认约 `0.1555` m；之后到指尖的部分按手指建模。
 - `HAND_FINGER_THICKNESS_M`：手指厚度，默认 `0.03` m。
 - `DEPTH_GUARD_CLEARANCE_M`：深度护栏额外安全余量，默认 `0.002` m。
+- `DEPTH_GUARD_HAND_BOX_SHRINK_M`：仅对深度护栏的手部偏置盒向内收缩，默认 `0.005` m；不影响 URDF 自碰撞模型和手部点云遮罩。
 - `DEPTH_GUARD_HAND_RADIUS_M`：掌心段安全半径，默认约 `0.045` m；等于 86mm 掌心宽度的一半再加 2mm 余量。偏置拇指、连接件和相机托板由独立盒体覆盖。
 - `DEPTH_GUARD_FINGER_RADIUS_M`：手指段安全半径，默认约 `0.017` m；等于 30mm 手指厚度的一半再加 2mm 余量。
 - `DEPTH_GUARD_SELF_MASK_RADIUS_M` / `DEPTH_GUARD_SELF_MASK_FINGER_RADIUS_M`：从深度障碍点里排除相机看到的自己手，默认约 `0.07` m；只影响“删自己手”，不影响路径碰撞半径。
@@ -181,6 +182,7 @@ LHandPro 抓取保持参数：
 - `LHAND_HOLD_MIN_DELTA`：相对空载电流低于该值才补紧，默认 `100`；高于初次接触阈值，抓住后会维持更牢的夹持力。
 - `LHAND_FLEX_EXTRA_CLOSE`：检测到接触后额外闭合的位置量，默认 `300`；仍受每轴闭合上限和硬电流保护限制。
 - `LHAND_FLEX_HARD_CURRENT`：柔性抓取硬电流阈值，默认 `750`‰；至少达到最少接触轴数且轴已进入闭合区时按夹住商品进入保持，否则仍安全停止并判失败。
+- `LHAND_FLEX_HARD_CURRENT_CONSECUTIVE`：硬电流连续采样次数，默认 `3`；过滤单帧电流尖峰，持续过流仍按接触/异常处理。
 - `LHAND_FLEX_STEP`：柔性闭合每轮位置增量，默认 `500`；减小会更细腻但更慢，增大可更快但不宜超过现场空载曲线采样跨度太多。
 - `LHAND_FLEX_CONTINUOUS`：连续柔性闭合模式，默认开启；一次下发闭合上限并在运动中监测电流，接触后立即锁定该轴，避免逐步闭合的卡顿。设为 `0` 可恢复离散步进模式。
 - `LHAND_FLEX_SETTLE_S`：柔性闭合每步等待，默认 `0.015` s；现场通信不稳定时可适当调大。
