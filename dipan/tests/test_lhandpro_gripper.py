@@ -20,6 +20,8 @@ class FakeSDK:
         self.homing_status_reads = 0
         self.events = []
         self.position_commands = []
+        self.position_read_count = 0
+        self.velocity_commands = []
         self.rs485_baudrate = 500000
 
     def _get_scalar(self, suffix, c_type, operation, *args):
@@ -65,13 +67,14 @@ class FakeSDK:
         return 0
 
     def get_now_position(self, axis):
+        self.position_read_count += 1
         return self.positions[axis - 1]
 
     def set_target_position(self, axis, position):
         self.positions[axis - 1] = position
 
     def set_position_velocity(self, axis, velocity):
-        pass
+        self.velocity_commands.append((axis, velocity))
 
     def set_max_current(self, axis, current):
         pass
@@ -181,6 +184,16 @@ class LHandProfileTests(unittest.TestCase):
             hand.connect(enable_motors=False, home_motors=False)
             self.assertTrue(hand.open())
         self.assertEqual(FakeController.latest.sdk_handle.positions, [9000, 0, 0, 0, 0, 0])
+
+    def test_default_open_uses_one_broadcast_without_feedback_reads(self):
+        hand = LHandProGripper(controller_factory=FakeController)
+        hand.connect(enable_motors=False, home_motors=False)
+        sdk = FakeController.latest.sdk_handle
+        with patch.dict(os.environ, {"LHAND_OPEN_VERIFY": "0"}, clear=False), patch("time.sleep"):
+            self.assertTrue(hand.open())
+        self.assertEqual(sdk.position_read_count, 0)
+        self.assertEqual(sdk.position_commands, [(9000, 0, 0, 0, 0, 0)])
+        self.assertEqual(sdk.velocity_commands, [(axis, 12000) for axis in range(1, 7)])
 
     def test_hold_does_not_rebroadcast_an_unchanged_target_before_refresh(self):
         hand = LHandProGripper(controller_factory=FakeController)

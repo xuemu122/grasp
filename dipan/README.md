@@ -188,6 +188,8 @@ LHandPro 抓取保持参数：
 - `LHAND_LATENCY_DEBUG`：输出灵巧手广播和 TCP/RS485 透传时延，默认关闭；设为 `1` 后可区分 SDK 调用、Nova 60000 转发等待和手端响应等待。
 - `LHAND_TCP_RESPONSE_TIMEOUT_S`：Nova 60000 透传等待手端响应的单帧超时，默认 `0.6` s；Nova 的长反馈帧可能被拆分发送，`0.3` s 容易在第二段到达前误报超时。诊断时日志会打印实际使用值，持续接近该值仍需排查转发或总线。
 - `LHAND_TCP_TX_CHUNK_BYTES` / `LHAND_TCP_TX_CHUNK_DELAY_S`：TCP 发送分块和分块间延迟，默认 `4096/0`；正常应保持默认，只有抓包定位分包问题时才调整。
+- `LHAND_OPEN_WAIT_S`：单次全轴张开命令后的最短等待，默认 `1.0` s；默认不读取六轴反馈，以免 Nova 的长状态回包堵住张开位置帧。实际等待会至少覆盖最长轴的预计行程。
+- `LHAND_OPEN_VERIFY`：张开后是否逐轴读取位置进行校验，默认关闭。仅在单独排障时设为 `1`；该模式会产生大量 `0xd0/0xda` 状态帧，末端 TCP-485 不宜用于正常放置流程。
 
 通信时延排查：TCP 末端 RS485 模式启动时设置 `LHAND_LATENCY_DEBUG=1 LHAND_HEX_DEBUG=1` 并保存 worker 日志。`[LHandPro][时延]` 是一次上层广播总耗时；`[LHandPro/TCP485][时延]` 中 `tx` 是本机写入 Nova 60000，`rx_wait` 是发送完成到手端响应，`total` 是单帧总耗时。如果 `tx` 正常而 `rx_wait` 接近 `timeout`，问题在 Nova 转发/手端总线；如果单帧正常而上层总耗时大，问题在多帧控制方式或 SDK 调用数量；如果是 USB-RS485 直连，只能从上层日志得到 SDK 调用耗时，需用 RS485 分析仪或串口抓包器测线上 TX/RX 时间。
 - `LHAND_FLEX_STEP`：柔性闭合每轮位置增量，默认 `500`；减小会更细腻但更慢，增大可更快但不宜超过现场空载曲线采样跨度太多。
@@ -204,8 +206,8 @@ LHandPro 抓取保持参数：
 - `LHAND_OPEN_POSITION_TOLERANCE`：张开位置校验容差，默认 `300` 个位置单位。
 - `LHAND_OPEN_TIMEOUT_S`：一次全轴张开等待全部关节到位的总超时，默认 `4.0` s。
 - `LHAND_OPEN_POLL_S`：张开位置轮询间隔，默认 `0.05` s。
-- `LHAND_OPEN_SYNC_DURATION_S`：放置时各轴同步张开的目标时长，默认 `0.5` s；根据每轴剩余行程匹配速度后一次性广播。
-- `LHAND_OPEN_MAX_VELOCITY` / `LHAND_OPEN_MIN_VELOCITY`：同步张开速度上下限，默认 `20000/1000`；只影响张开，不影响抓取闭合速度。
+- `LHAND_OPEN_VELOCITY`：张开统一速度，默认继承 `LHAND_FLEX_VELOCITY=12000`；所有轴用同一速度和一次六轴位置帧同时起动，行为与连续闭合一致。
+- `LHAND_OPEN_SETTLE_MARGIN_S`：最长预计行程之外的等待余量，默认 `0.20` s；用于覆盖电机实际加减速差异。
 - `LHAND_PROFILE_SWEEP_AXES`：录制空载曲线时参与扫位的轴，默认 `2,3,4,5,6`；轴1保持 `LHAND_OPEN_POSITIONS` 的张开位置不动。
 - `HAND_CLOSE_WAIT_S`：闭合成功后确认保持状态的等待时间，默认 `0.25` s；需要兼容较慢控制器时可调回 `1.0` s。
 

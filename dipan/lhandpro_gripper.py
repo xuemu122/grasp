@@ -93,8 +93,12 @@ class LHandProGripper:
         self.dof_active = 0
         self.ok = True
         self._holding = False
-        self._command_lock = threading.Lock()
+        # Position broadcasts and feedback requests share one half-duplex
+        # TCP-to-RS485 bus. An RLock lets open() reserve the bus for its whole
+        # release window while _command_positions keeps its normal locking.
+        self._command_lock = threading.RLock()
         self._hold_lock = threading.Lock()
+        self._feedback_paused = threading.Event()
         self._hold_stop = threading.Event()
         self._hold_thread = None
         self._hold_positions = None
@@ -102,6 +106,7 @@ class LHandProGripper:
         self._hold_max_positions = None
         self._hold_profile = None
         self._hold_baseline = None
+        self._last_command_positions = None
         self._latency_debug = os.getenv("LHAND_LATENCY_DEBUG", "0").lower() in (
             "1", "true", "yes", "on"
         )
@@ -431,6 +436,7 @@ class LHandProGripper:
                 sdk.set_position_velocity(axis, axis_velocity)
                 sdk.set_max_current(axis, max_current)
             sdk.move_motors(0)
+            self._last_command_positions = [int(position) for position in positions]
         if self._latency_debug:
             print(
                 f"[LHandPro][时延] 广播 positions={list(positions)} "
@@ -441,33 +447,42 @@ class LHandProGripper:
             time.sleep(float(wait_s))
 
     def _command_open_positions(self, positions, wait_s=0.0):
-        """Release all axes with one continuous broadcast motion."""
-        velocities = None
-        try:
-            actual = [
-                int(self._sdk.get_now_position(axis))
-                for axis in range(1, self.dof_active + 1)
-            ]
-            duration = max(0.1, float(os.getenv("LHAND_OPEN_SYNC_DURATION_S", "0.5")))
-            max_velocity = max(1, int(os.getenv("LHAND_OPEN_MAX_VELOCITY", "20000")))
-            min_velocity = max(1, int(os.getenv("LHAND_OPEN_MIN_VELOCITY", "1000")))
-            velocities = []
-            for current, target in zip(actual, positions):
-                distance = abs(int(target) - int(current))
-                matched = int(round(distance / duration)) if distance else min_velocity
-                velocities.append(max(min_velocity, min(max_velocity, matched)))
-            print(
-                f"[LHandPro] 同步张开: 目标={list(positions)} "
-                f"速度={velocities} (单次全轴连续广播)"
-            )
-        except Exception as exc:
-            print(f"[LHandPro][张开] 无法读取各轴位置，使用统一速度: {exc}")
-        self._command_positions(positions, wait_s=wait_s, velocities=velocities)
+        """Release all axes with the same continuous position command."""
+        # Match continuous grasp: all axes receive one common speed and one
+        # shared position frame. Per-axis velocity matching looked synchronous
+        # on paper, but real motor load/acceleration differences made fingers
+        # visibly start at different times.
+        velocity = max(1, int(os.getenv(
+            "LHAND_OPEN_VELOCITY", os.getenv("LHAND_FLEX_VELOCITY", "12000")
+        )))
+        previous = list(self._last_command_positions or [0] * self.dof_active)
+        if len(previous) != self.dof_active:
+            previous = [0] * self.dof_active
+        longest_travel_s = max(
+            (abs(int(target) - int(current)) / float(velocity)
+             for current, target in zip(previous, positions)),
+            default=0.0,
+        )
+        minimum_wait_s = max(
+            1.0,
+            longest_travel_s + max(0.0, float(os.getenv("LHAND_OPEN_SETTLE_MARGIN_S", "0.20"))),
+        )
+        effective_wait_s = max(float(wait_s), minimum_wait_s)
+        print(
+            f"[LHandPro] 同步张开: 目标={list(positions)} 统一速度={velocity} "
+            f"等待={effective_wait_s:.2f}s (单次全轴连续广播)"
+        )
+        self._command_positions(positions, wait_s=effective_wait_s, velocity=velocity)
 
     def _read_currents(self, samples=1, delay_s=0.0):
         rows = []
         for sample_index in range(max(1, int(samples))):
-            rows.append([float(self._sdk.get_now_current(axis)) for axis in range(1, self.dof_active + 1)])
+            # Never interleave a long status response with a position frame.
+            with self._command_lock:
+                rows.append([
+                    float(self._sdk.get_now_current(axis))
+                    for axis in range(1, self.dof_active + 1)
+                ])
             if sample_index + 1 < max(1, int(samples)) and delay_s > 0:
                 time.sleep(float(delay_s))
         return [sum(row[index] for row in rows) / len(rows) for index in range(self.dof_active)]
@@ -477,10 +492,23 @@ class LHandProGripper:
             print("[LHandPro] 已禁用, 跳过张开")
             return False
         try:
+            # Stop new hold feedback before reserving the bus for release.
+            self._feedback_paused.set()
             self._stop_hold()
             self._holding = False
             positions = self._open_positions()
-            settle_s = max(0.0, float(os.getenv("LHAND_OPEN_WAIT_S", "0.8")))
+            settle_s = max(0.0, float(os.getenv("LHAND_OPEN_WAIT_S", "1.0")))
+            verify = os.getenv("LHAND_OPEN_VERIFY", "0").lower() in (
+                "1", "true", "yes", "on"
+            )
+            if not verify:
+                with self._command_lock:
+                    self._command_open_positions(positions, wait_s=settle_s)
+                print("[LHandPro] 张开 (单次全轴连续广播)")
+                return True
+
+            self._feedback_paused.clear()
+
             timeout_s = max(
                 settle_s,
                 float(os.getenv("LHAND_OPEN_TIMEOUT_S", "4.0")),
@@ -536,6 +564,7 @@ class LHandProGripper:
         if not self.ok:
             return False
         try:
+            self._feedback_paused.clear()
             positions = _parse_int_vector(
                 os.getenv("LHAND_GRASP_POSITIONS"), self.dof_active, 7500
             )
@@ -613,6 +642,8 @@ class LHandProGripper:
         last_command_at = time.monotonic()
         while not stop_event.wait(period):
             try:
+                if self._feedback_paused.is_set():
+                    continue
                 with self._hold_lock:
                     positions = list(self._hold_positions or [])
                     axes = set(self._hold_axes)
@@ -666,6 +697,7 @@ class LHandProGripper:
             print("[LHandPro] 已禁用, 跳过柔性抓取")
             return False
         try:
+            self._feedback_paused.clear()
             self._stop_hold()
             require_profile = os.getenv("LHAND_FLEX_REQUIRE_PROFILE", "1").lower() in (
                 "1", "true", "yes", "on"
