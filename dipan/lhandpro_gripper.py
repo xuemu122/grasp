@@ -502,8 +502,17 @@ class LHandProGripper:
                 "1", "true", "yes", "on"
             )
             if not verify:
-                with self._command_lock:
-                    self._command_open_positions(positions, wait_s=settle_s)
+                transport = self.controller
+                reserve = getattr(transport, "begin_motion_exclusive", None)
+                release = getattr(transport, "end_motion_exclusive", None)
+                if callable(reserve):
+                    reserve("张开")
+                try:
+                    with self._command_lock:
+                        self._command_open_positions(positions, wait_s=settle_s)
+                finally:
+                    if callable(release):
+                        release("张开")
                 print("[LHandPro] 张开 (单次全轴连续广播)")
                 return True
 

@@ -97,7 +97,10 @@ def _build_tcp_controller(host, port, debug=False):
             self.tcp_socket = None
             self._tcp_stop = threading.Event()
             self._tcp_reader = None
-            self._tcp_send_lock = threading.Lock()
+            # One physical half-duplex Nova TCP-to-RS485 channel. Use an RLock
+            # so a high-level motion reservation can keep feedback requests
+            # out while its own SDK callback sends a position frame.
+            self._tcp_send_lock = threading.RLock()
             self._tcp_debug = bool(debug)
             self._tcp_latency_debug = self._tcp_debug or os.getenv(
                 "LHAND_LATENCY_DEBUG", "0"
@@ -208,6 +211,22 @@ def _build_tcp_controller(host, port, debug=False):
         def send_rs485_frame(self, data):
             """Send a protocol-specific frame outside the SDK command builder."""
             return self._rs485_send_callback(bytes(data))
+
+        def begin_motion_exclusive(self, label="motion"):
+            """Block new feedback frames until ``end_motion_exclusive``.
+
+            Acquiring the transport lock first also drains an already active
+            feedback transaction, avoiding a late 0xD0 response ahead of a
+            release-position acknowledgement.
+            """
+            self._tcp_send_lock.acquire()
+            if self._tcp_debug:
+                print(f"[LHandPro/TCP485] 总线独占开始: {label}")
+
+        def end_motion_exclusive(self, label="motion"):
+            if self._tcp_debug:
+                print(f"[LHandPro/TCP485] 总线独占结束: {label}")
+            self._tcp_send_lock.release()
 
         def _receive_loop(self):
             sock = self.tcp_socket
