@@ -148,6 +148,18 @@ class HardContactController(FakeController):
         self.sdk_handle.get_now_current = get_now_current
 
 
+class TwoCycleStopEvent:
+    def __init__(self):
+        self.calls = 0
+
+    def wait(self, _timeout):
+        self.calls += 1
+        return self.calls > 1
+
+    def is_set(self):
+        return self.calls > 1
+
+
 class LHandProfileTests(unittest.TestCase):
     def test_default_open_pose_lowers_thumb_side_axis(self):
         hand = LHandProGripper(controller_factory=FakeController)
@@ -169,6 +181,21 @@ class LHandProfileTests(unittest.TestCase):
             hand.connect(enable_motors=False, home_motors=False)
             self.assertTrue(hand.open())
         self.assertEqual(FakeController.latest.sdk_handle.positions, [9000, 0, 0, 0, 0, 0])
+
+    def test_hold_does_not_rebroadcast_an_unchanged_target_before_refresh(self):
+        hand = LHandProGripper(controller_factory=FakeController)
+        hand.connect(enable_motors=False, home_motors=False)
+        hand._hold_positions = [9000, 2500, 2500, 2500, 2500, 2500]
+        hand._hold_axes = set()
+        hand._hold_max_positions = [9000] * 6
+        hand._hold_profile = None
+        hand._hold_baseline = [100] * 6
+        with patch.dict(os.environ, {
+            "LHAND_HOLD_RESEND_INTERVAL_S": "60",
+            "LHAND_HOLD_HZ": "100",
+        }, clear=False):
+            hand._hold_loop(TwoCycleStopEvent())
+        self.assertEqual(FakeController.latest.sdk_handle.position_commands, [])
 
     def test_changes_hand_baud_without_motor_enable(self):
         hand = LHandProGripper(controller_factory=FakeController)

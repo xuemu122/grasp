@@ -159,7 +159,7 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `DEPTH_GUARD_TARGET_DEPTH_MARGIN_M`：相对当前目标深度允许纳入护栏的后方余量，默认 `0.025` m；更远的后层板/背板点会被忽略，避免把约 10cm 外的背景纳入路径检查。
 - 深度护栏会复用当前层识别出的 `row_min..row_max`，只生成上下层板之间的障碍点；上下层板本体和层外点不会参与探入碰撞判定。
 - `DEPTH_GUARD_SHELF_ROW_INSET_PX`：动态层板边界向层内额外收缩的像素数，默认 `8`；用于排除有厚度的层板前沿。
-- `DEPTH_GUARD_TARGET_ROW_TOP_MARGIN_PX` / `DEPTH_GUARD_TARGET_ROW_BOTTOM_MARGIN_PX`：没有可靠层板边界时，按目标框生成护栏行范围的上下余量，默认 `32/8` px；较小的下余量用于排除目标下方层板。
+- `DEPTH_GUARD_TARGET_ROW_TOP_MARGIN_PX` / `DEPTH_GUARD_TARGET_ROW_BOTTOM_MARGIN_PX`：没有可靠层板边界时，按目标框生成护栏行范围的上下余量，默认 `32/0` px；回退模式不越过目标框底边，避免把紧贴瓶底的当前层层板纳入偏置手部盒的碰撞判断。若需检查目标正下方空间，可显式增大下余量。
 - `EDGE_MIDPOINT_GRASP_ENABLE`：是否使用所选检测框侧边竖线的中点作为抓取点，默认关闭；当前恢复使用原侧抓选点，即侧边中点向瓶底方向下移并限制安全高度。设为 `1` 可使用严格的边线中点。
 - `DEPTH_GUARD_EXCLUDE_MARGIN_PX`：检测框外扩排除范围，默认 `32` px；如果货物边缘被误当货架可继续调大。
 - `DEPTH_GUARD_SELF_MASK_ENABLE`：自手部深度点剔除开关，默认开启；用于过滤深度相机看到的当前灵巧手/手指，避免把自己的手当障碍。
@@ -177,15 +177,16 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 
 LHandPro 抓取保持参数：
 
-- `LHAND_HOLD_HZ`：抓取姿态后台重发频率，默认 `20` Hz；用于维持位置控制。
-- `LHAND_HOLD_TIGHTEN_INTERVAL_S`：保持期间检测低负载并补紧的周期，默认 `0.12` s。
+- `LHAND_HOLD_HZ`：抓取姿态后台电流检测频率，默认 `5` Hz。电机收到位置目标后会自行持续保持，后台不再把未变化的目标按 20Hz 重复塞入末端 485。
+- `LHAND_HOLD_RESEND_INTERVAL_S`：保持目标未变化时的保底重发周期，默认 `1.0` s；设为 `0` 可只在需要补紧时发送。目标变化会立即发送，不受此值影响。
+- `LHAND_HOLD_TIGHTEN_INTERVAL_S`：保持期间检测低负载并补紧的周期，默认 `0.20` s。
 - `LHAND_HOLD_TIGHTEN_STEP`：每次补紧的位置步长，默认 `100`；物体较软或抓后变松时可调大，出现抖动时调小。
 - `LHAND_HOLD_MIN_DELTA`：相对空载电流低于该值才补紧，默认 `100`；高于初次接触阈值，抓住后会维持更牢的夹持力。
 - `LHAND_FLEX_EXTRA_CLOSE`：检测到接触后额外闭合的位置量，默认 `300`；仍受每轴闭合上限和硬电流保护限制。
 - `LHAND_FLEX_HARD_CURRENT`：柔性抓取硬电流阈值，默认 `750`‰；至少达到最少接触轴数且轴已进入闭合区时按夹住商品进入保持，否则仍安全停止并判失败。
 - `LHAND_FLEX_HARD_CURRENT_CONSECUTIVE`：硬电流连续采样次数，默认 `3`；过滤单帧电流尖峰，持续过流仍按接触/异常处理。
 - `LHAND_LATENCY_DEBUG`：输出灵巧手广播和 TCP/RS485 透传时延，默认关闭；设为 `1` 后可区分 SDK 调用、Nova 60000 转发等待和手端响应等待。
-- `LHAND_TCP_RESPONSE_TIMEOUT_S`：Nova 60000 透传等待手端响应的单帧超时，默认 `0.3` s；诊断时日志会打印实际使用值，不能用增大它来掩盖持续超时。
+- `LHAND_TCP_RESPONSE_TIMEOUT_S`：Nova 60000 透传等待手端响应的单帧超时，默认 `0.6` s；Nova 的长反馈帧可能被拆分发送，`0.3` s 容易在第二段到达前误报超时。诊断时日志会打印实际使用值，持续接近该值仍需排查转发或总线。
 - `LHAND_TCP_TX_CHUNK_BYTES` / `LHAND_TCP_TX_CHUNK_DELAY_S`：TCP 发送分块和分块间延迟，默认 `4096/0`；正常应保持默认，只有抓包定位分包问题时才调整。
 
 通信时延排查：TCP 末端 RS485 模式启动时设置 `LHAND_LATENCY_DEBUG=1 LHAND_HEX_DEBUG=1` 并保存 worker 日志。`[LHandPro][时延]` 是一次上层广播总耗时；`[LHandPro/TCP485][时延]` 中 `tx` 是本机写入 Nova 60000，`rx_wait` 是发送完成到手端响应，`total` 是单帧总耗时。如果 `tx` 正常而 `rx_wait` 接近 `timeout`，问题在 Nova 转发/手端总线；如果单帧正常而上层总耗时大，问题在多帧控制方式或 SDK 调用数量；如果是 USB-RS485 直连，只能从上层日志得到 SDK 调用耗时，需用 RS485 分析仪或串口抓包器测线上 TX/RX 时间。

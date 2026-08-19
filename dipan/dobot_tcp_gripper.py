@@ -109,7 +109,7 @@ def _build_tcp_controller(host, port, debug=False):
             self._tcp_rx_frame_count = 0
             self._tcp_last_rx_at = None
             self._tcp_response_timeout = max(
-                0.05, float(os.getenv("LHAND_TCP_RESPONSE_TIMEOUT_S", "0.3"))
+                0.05, float(os.getenv("LHAND_TCP_RESPONSE_TIMEOUT_S", "0.6"))
             )
             self._tcp_tx_chunk_bytes = max(
                 1,

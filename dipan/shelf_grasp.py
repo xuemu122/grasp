@@ -204,7 +204,11 @@ DEPTH_GUARD_MAX_DEPTH_M = float(os.getenv("DEPTH_GUARD_MAX_DEPTH_M", "1.20"))
 DEPTH_GUARD_TARGET_DEPTH_MARGIN_M = float(os.getenv("DEPTH_GUARD_TARGET_DEPTH_MARGIN_M", "0.025"))
 DEPTH_GUARD_SHELF_ROW_INSET_PX = max(0, int(os.getenv("DEPTH_GUARD_SHELF_ROW_INSET_PX", "8")))
 DEPTH_GUARD_TARGET_ROW_TOP_MARGIN_PX = max(0, int(os.getenv("DEPTH_GUARD_TARGET_ROW_TOP_MARGIN_PX", "32")))
-DEPTH_GUARD_TARGET_ROW_BOTTOM_MARGIN_PX = max(0, int(os.getenv("DEPTH_GUARD_TARGET_ROW_BOTTOM_MARGIN_PX", "8")))
+# In fallback mode the target box bottom is the last trustworthy product row.
+# Extending it downward admits the shelf lip immediately below a bottle when
+# board detection has no valid upper/lower pair. Dynamic board bounds still
+# use their own inset below.
+DEPTH_GUARD_TARGET_ROW_BOTTOM_MARGIN_PX = max(0, int(os.getenv("DEPTH_GUARD_TARGET_ROW_BOTTOM_MARGIN_PX", "0")))
 DEPTH_GUARD_EXCLUDE_MARGIN_PX = int(os.getenv("DEPTH_GUARD_EXCLUDE_MARGIN_PX", "32"))
 DEPTH_GUARD_SELF_MASK_ENABLE = os.getenv("DEPTH_GUARD_SELF_MASK_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 DEPTH_GUARD_SELF_MASK_RADIUS_M = float(os.getenv("DEPTH_GUARD_SELF_MASK_RADIUS_M", str(DEPTH_GUARD_HAND_RADIUS_M + 0.02)))

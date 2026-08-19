@@ -592,16 +592,25 @@ class LHandProGripper:
             daemon=True,
         )
         self._hold_thread.start()
-        hz = max(1.0, float(os.getenv("LHAND_HOLD_HZ", "20")))
-        print(f"[LHandPro] 持续保持抓取姿态 ({hz:.0f}Hz, 低负载自动补紧)")
+        hz = max(1.0, float(os.getenv("LHAND_HOLD_HZ", "5")))
+        resend_interval = max(0.0, float(os.getenv("LHAND_HOLD_RESEND_INTERVAL_S", "1.0")))
+        print(
+            f"[LHandPro] 持续保持抓取姿态 (检测 {hz:.0f}Hz, "
+            f"低负载自动补紧, 静态目标重发 {resend_interval:.1f}s)"
+        )
 
     def _hold_loop(self, stop_event):
-        period = 1.0 / max(1.0, float(os.getenv("LHAND_HOLD_HZ", "20")))
-        tighten_interval = max(0.05, float(os.getenv("LHAND_HOLD_TIGHTEN_INTERVAL_S", "0.12")))
+        # The motor controller holds its last position command continuously.
+        # Re-broadcasting an unchanged six-axis target at 20Hz competes with
+        # feedback frames on Nova's TCP-to-RS485 bridge and can delay release.
+        period = 1.0 / max(1.0, float(os.getenv("LHAND_HOLD_HZ", "5")))
+        tighten_interval = max(0.05, float(os.getenv("LHAND_HOLD_TIGHTEN_INTERVAL_S", "0.20")))
+        resend_interval = max(0.0, float(os.getenv("LHAND_HOLD_RESEND_INTERVAL_S", "1.0")))
         tighten_step = max(1, int(os.getenv("LHAND_HOLD_TIGHTEN_STEP", "100")))
         min_delta = float(os.getenv("LHAND_HOLD_MIN_DELTA", "100"))
         hard_current = float(os.getenv("LHAND_FLEX_HARD_CURRENT", "750"))
         next_tighten = time.monotonic() + tighten_interval
+        last_command_at = time.monotonic()
         while not stop_event.wait(period):
             try:
                 with self._hold_lock:
@@ -614,8 +623,8 @@ class LHandProGripper:
                     return
 
                 currents = [abs(value) for value in self._read_currents(1, 0.0)]
+                changed = False
                 if time.monotonic() >= next_tighten:
-                    changed = False
                     for axis in axes:
                         index = axis - 1
                         command = positions[index]
@@ -637,7 +646,15 @@ class LHandProGripper:
 
                 if stop_event.is_set():
                     return
-                self._command_positions(positions, wait_s=0.0)
+                now = time.monotonic()
+                # A changed target must reach the hand immediately. A sparse
+                # refresh remains available for firmware that expects a
+                # heartbeat, without burying release behind stale holds.
+                if changed or (
+                    resend_interval > 0 and now - last_command_at >= resend_interval
+                ):
+                    self._command_positions(positions, wait_s=0.0)
+                    last_command_at = time.monotonic()
             except Exception as exc:
                 self._holding = False
                 print(f"[LHandPro][警告] 抓取保持失败: {exc}")
