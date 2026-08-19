@@ -472,6 +472,13 @@ class LHandProGripper:
             f"[LHandPro] 同步张开: 目标={list(positions)} 统一速度={velocity} "
             f"等待={effective_wait_s:.2f}s (单次全轴连续广播)"
         )
+        # The compact Nova adapter normally suppresses unchanged velocity
+        # frames. Force one on release: the physical hand can retain different
+        # per-axis speed state after a previous hold/timeout even when the
+        # adapter cache says all axes already use the same value.
+        force_velocity = getattr(self._sdk, "force_velocity_broadcast", None)
+        if callable(force_velocity):
+            force_velocity()
         self._command_positions(positions, wait_s=effective_wait_s, velocity=velocity)
 
     def _read_currents(self, samples=1, delay_s=0.0):

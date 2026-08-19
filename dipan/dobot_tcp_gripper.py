@@ -133,8 +133,6 @@ def _build_tcp_controller(host, port, debug=False):
                 payload = bytes(data)
                 started_at = time.perf_counter()
                 response_at = None
-                if self._tcp_debug:
-                    print(f"[LHandPro/TCP485][TX] {payload.hex(' ')}")
                 with self._tcp_send_lock:
                     self._tcp_response.clear()
                     self._tcp_last_rx_at = None
@@ -150,6 +148,12 @@ def _build_tcp_controller(host, port, debug=False):
                         self._tcp_tx_chunk_delay_s,
                     )
                     tx_done_at = time.perf_counter()
+                    # Log only after sendall has acquired the physical
+                    # transport lock. A pre-lock log made queued feedback
+                    # requests look as though they had interleaved with an
+                    # exclusive release frame.
+                    if self._tcp_debug:
+                        print(f"[LHandPro/TCP485][TX] {payload.hex(' ')}")
                     if self._tcp_debug and chunk_count > 1:
                         print(
                             f"[LHandPro/TCP485] 长帧分 {chunk_count} 段发送: "
@@ -474,6 +478,10 @@ class _CompactMotorAdapter:
     def set_max_current(self, axis, current):
         for index in self._axes(axis):
             self._currents[index] = int(current)
+
+    def force_velocity_broadcast(self):
+        """Send the current six-axis velocity vector on the next motion."""
+        self._sent_velocities = None
 
     def move_motors(self, axis):
         del axis
