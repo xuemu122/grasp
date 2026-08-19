@@ -163,6 +163,13 @@ class LHandProfileTests(unittest.TestCase):
             self.assertTrue(hand.open())
         self.assertEqual(FakeController.latest.sdk_handle.positions, [100, 0, 0, 0, 0, 0])
 
+    def test_open_succeeds_when_latency_diagnostics_are_enabled(self):
+        with patch.dict(os.environ, {"LHAND_LATENCY_DEBUG": "1"}, clear=False), patch("time.sleep"):
+            hand = LHandProGripper(controller_factory=FakeController)
+            hand.connect(enable_motors=False, home_motors=False)
+            self.assertTrue(hand.open())
+        self.assertEqual(FakeController.latest.sdk_handle.positions, [9000, 0, 0, 0, 0, 0])
+
     def test_changes_hand_baud_without_motor_enable(self):
         hand = LHandProGripper(controller_factory=FakeController)
         hand.connect(enable_motors=False, home_motors=False)

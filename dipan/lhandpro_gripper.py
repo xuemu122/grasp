@@ -423,6 +423,7 @@ class LHandProGripper:
         velocity = int(velocity or os.getenv("LHAND_FLEX_VELOCITY", "12000"))
         max_current = int(max_current or os.getenv("LHAND_FLEX_MAX_CURRENT", "600"))
         sdk = self._sdk
+        started_at = time.perf_counter()
         with self._command_lock:
             for axis, position in enumerate(positions, start=1):
                 sdk.set_target_position(axis, int(position))
