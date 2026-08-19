@@ -293,8 +293,8 @@ class ShelfBoardFilterTests(unittest.TestCase):
             det, (30, 90), 100.0
         )
         self.assertAlmostEqual(before_m, 0.02, places=5)
-        self.assertAlmostEqual(after_m, 0.075, places=5)
-        self.assertAlmostEqual(corrected[1], 62.5, places=5)
+        self.assertAlmostEqual(after_m, 0.080, places=5)
+        self.assertAlmostEqual(corrected[1], 60.0, places=5)
 
     def test_high_side_grasp_pixel_is_moved_to_maximum_safe_height(self):
         det = SimpleNamespace(bbox=(10, 0, 30, 100), depth_m=0.2)

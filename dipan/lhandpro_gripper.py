@@ -102,6 +102,9 @@ class LHandProGripper:
         self._hold_max_positions = None
         self._hold_profile = None
         self._hold_baseline = None
+        self._latency_debug = os.getenv("LHAND_LATENCY_DEBUG", "0").lower() in (
+            "1", "true", "yes", "on"
+        )
 
     def _load_controller_factory(self):
         if self._controller_factory is not None:
@@ -200,6 +203,7 @@ class LHandProGripper:
         return self.controller.sdk_handle
 
     def _motor_snapshot(self):
+        started_at = time.perf_counter()
         sdk = self._sdk
         snapshot = []
         for axis in range(1, self.dof_active + 1):
@@ -426,6 +430,12 @@ class LHandProGripper:
                 sdk.set_position_velocity(axis, axis_velocity)
                 sdk.set_max_current(axis, max_current)
             sdk.move_motors(0)
+        if self._latency_debug:
+            print(
+                f"[LHandPro][时延] 广播 positions={list(positions)} "
+                f"sdk_call={(time.perf_counter()-started_at)*1000:.2f}ms "
+                f"wait={float(wait_s)*1000:.2f}ms"
+            )
         if wait_s > 0:
             time.sleep(float(wait_s))
 

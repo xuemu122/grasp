@@ -107,8 +107,9 @@ DETECT_CONF_THRESHOLD=0.7 WATER_CONF_THRESHOLD=0.52 MOTION_SETTLE_S=0.15 GRASP_S
 - `PERSPECTIVE_COMP_GAIN`：透视补偿强度，默认 `2.0`。
 - `PERSPECTIVE_COMP_MIN_SCALE`：透视补偿最小缩放，默认 `0.65`。
 - `GRASP_APPROACH_BACKOFF_M`：抓取前固定退距，默认 `0.15` m；对齐位会放在抓取位后方这个距离，避免从观察位保留过长探入路径。
-- `SIDE_GRASP_MIN_HEIGHT_M` / `SIDE_GRASP_MAX_HEIGHT_M`：侧面抓取点离物体底部的允许区间，默认 `0.075..0.11` m。
-- `SIDE_GRASP_LOWER_SHIFT_M`：在原侧抓选点基础上向瓶底方向下移的距离，默认 `0.015` m；下移后仍受 `SIDE_GRASP_MIN_HEIGHT_M` 限制，最低离底高度不变。
+- `SIDE_GRASP_MIN_HEIGHT_M` / `SIDE_GRASP_MAX_HEIGHT_M`：侧面抓取点离物体底部的允许区间，默认 `0.080..0.11` m。
+- `SIDE_GRASP_LOWER_SHIFT_M`：在原侧抓选点基础上向瓶底方向下移的距离，默认 `0.015` m（1.5cm）；下移后仍受 `SIDE_GRASP_MIN_HEIGHT_M=0.080` m 限制。
+- 启动日志会打印实际侧抓高度参数；若外部环境设置了 `SIDE_GRASP_LOWER_SHIFT_M=0.09`，它会覆盖代码默认值，应清除或改为 `0.015`。
 - `LAYER_Z_TOLERANCE_M`：当前层世界 Z 过滤容差，默认 `0.16` m；如果误识别上一层会被剔除，现场层高/标定偏差大时可调大。
 - `SHELF_BOARD_FILTER_ENABLE`：是否启用基于当前深度帧的层板识别过滤，默认开启。识别不到可靠上下层板时自动回退旧的 ROI/Z 过滤。
 - `SHELF_BOARD_SAMPLE_STRIDE`：层板识别的深度采样步长，默认 `4` px；调小可提高稀疏/断裂层板的识别率，但会增加计算量。
@@ -183,6 +184,11 @@ LHandPro 抓取保持参数：
 - `LHAND_FLEX_EXTRA_CLOSE`：检测到接触后额外闭合的位置量，默认 `300`；仍受每轴闭合上限和硬电流保护限制。
 - `LHAND_FLEX_HARD_CURRENT`：柔性抓取硬电流阈值，默认 `750`‰；至少达到最少接触轴数且轴已进入闭合区时按夹住商品进入保持，否则仍安全停止并判失败。
 - `LHAND_FLEX_HARD_CURRENT_CONSECUTIVE`：硬电流连续采样次数，默认 `3`；过滤单帧电流尖峰，持续过流仍按接触/异常处理。
+- `LHAND_LATENCY_DEBUG`：输出灵巧手广播和 TCP/RS485 透传时延，默认关闭；设为 `1` 后可区分 SDK 调用、Nova 60000 转发等待和手端响应等待。
+- `LHAND_TCP_RESPONSE_TIMEOUT_S`：Nova 60000 透传等待手端响应的单帧超时，默认 `0.3` s；诊断时日志会打印实际使用值，不能用增大它来掩盖持续超时。
+- `LHAND_TCP_TX_CHUNK_BYTES` / `LHAND_TCP_TX_CHUNK_DELAY_S`：TCP 发送分块和分块间延迟，默认 `4096/0`；正常应保持默认，只有抓包定位分包问题时才调整。
+
+通信时延排查：TCP 末端 RS485 模式启动时设置 `LHAND_LATENCY_DEBUG=1 LHAND_HEX_DEBUG=1` 并保存 worker 日志。`[LHandPro][时延]` 是一次上层广播总耗时；`[LHandPro/TCP485][时延]` 中 `tx` 是本机写入 Nova 60000，`rx_wait` 是发送完成到手端响应，`total` 是单帧总耗时。如果 `tx` 正常而 `rx_wait` 接近 `timeout`，问题在 Nova 转发/手端总线；如果单帧正常而上层总耗时大，问题在多帧控制方式或 SDK 调用数量；如果是 USB-RS485 直连，只能从上层日志得到 SDK 调用耗时，需用 RS485 分析仪或串口抓包器测线上 TX/RX 时间。
 - `LHAND_FLEX_STEP`：柔性闭合每轮位置增量，默认 `500`；减小会更细腻但更慢，增大可更快但不宜超过现场空载曲线采样跨度太多。
 - `LHAND_FLEX_CONTINUOUS`：连续柔性闭合模式，默认开启；一次下发闭合上限并在运动中监测电流，接触后立即锁定该轴，避免逐步闭合的卡顿。设为 `0` 可恢复离散步进模式。
 - `LHAND_FLEX_SETTLE_S`：柔性闭合每步等待，默认 `0.015` s；现场通信不稳定时可适当调大。

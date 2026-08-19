@@ -30,6 +30,7 @@ from grasp_planner import (
     FORCE_SIDE_GRASP,
     SIDE_GRASP_MAX_HEIGHT_M,
     SIDE_GRASP_MIN_HEIGHT_M,
+    SIDE_GRASP_LOWER_SHIFT_M,
     TARGET_ROI_Y_MIN,
     TARGET_ROI_Y_MAX,
     axis_aligned_approach_m,
@@ -1875,6 +1876,10 @@ def main():
             f"control={LHAND_DOBOT_CONTROL}, profile={LHAND_FLEX_PROFILE}"
         )
     print(f"  抓取策略: {'临时强制全部侧抓' if FORCE_SIDE_GRASP else '按物体尺寸自动选择'}")
+    print(
+        f"  侧抓高度: 离底最低{SIDE_GRASP_MIN_HEIGHT_M*100:.1f}cm, "
+        f"最高{SIDE_GRASP_MAX_HEIGHT_M*100:.1f}cm, 下移{SIDE_GRASP_LOWER_SHIFT_M*100:.1f}cm"
+    )
     print(f"  目标商品: {TARGET_PRODUCT_QUERY or '未指定'}")
     if SHELF_GRASP_WORKER:
         print("  前端常驻模式: 保持使能, 等待 stdin 商品名; __stow__ 后收起并退出")

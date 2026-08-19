@@ -99,11 +99,15 @@ def _build_tcp_controller(host, port, debug=False):
             self._tcp_reader = None
             self._tcp_send_lock = threading.Lock()
             self._tcp_debug = bool(debug)
+            self._tcp_latency_debug = self._tcp_debug or os.getenv(
+                "LHAND_LATENCY_DEBUG", "0"
+            ).lower() in ("1", "true", "yes", "on")
             self._tcp_rx_buffer = bytearray()
             self._tcp_response = threading.Event()
             self._tcp_expected = None
             self._tcp_protocol_error = None
             self._tcp_rx_frame_count = 0
+            self._tcp_last_rx_at = None
             self._tcp_response_timeout = max(
                 0.05, float(os.getenv("LHAND_TCP_RESPONSE_TIMEOUT_S", "0.3"))
             )
@@ -124,10 +128,13 @@ def _build_tcp_controller(host, port, debug=False):
                 return False
             try:
                 payload = bytes(data)
+                started_at = time.perf_counter()
+                response_at = None
                 if self._tcp_debug:
                     print(f"[LHandPro/TCP485][TX] {payload.hex(' ')}")
                 with self._tcp_send_lock:
                     self._tcp_response.clear()
+                    self._tcp_last_rx_at = None
                     self._tcp_protocol_error = None
                     self._tcp_expected = (
                         (0x58, None) if payload[0] == 0x60
@@ -139,6 +146,7 @@ def _build_tcp_controller(host, port, debug=False):
                         self._tcp_tx_chunk_bytes,
                         self._tcp_tx_chunk_delay_s,
                     )
+                    tx_done_at = time.perf_counter()
                     if self._tcp_debug and chunk_count > 1:
                         print(
                             f"[LHandPro/TCP485] 长帧分 {chunk_count} 段发送: "
@@ -146,6 +154,7 @@ def _build_tcp_controller(host, port, debug=False):
                             f"gap={self._tcp_tx_chunk_delay_s:.4f}s"
                         )
                     got_response = self._tcp_response.wait(self._tcp_response_timeout)
+                    response_at = self._tcp_last_rx_at
                     if not got_response and payload[0] == 0x60:
                         # Nova sometimes releases TCP data in 32-byte blocks.
                         # An SDO reply can be left with its final CRC bytes in
@@ -165,11 +174,26 @@ def _build_tcp_controller(host, port, debug=False):
                         got_response = self._tcp_response.wait(
                             max(0.3, self._tcp_response_timeout)
                         )
+                        response_at = self._tcp_last_rx_at
                     if not got_response:
                         if self._tcp_debug:
                             print("[LHandPro/TCP485] 等待对应响应超时")
                     protocol_error = self._tcp_protocol_error
                     self._tcp_expected = None
+                if self._tcp_latency_debug:
+                    rx_wait_ms = (
+                        (response_at - tx_done_at) * 1000.0
+                        if response_at is not None else -1.0
+                    )
+                    print(
+                        f"[LHandPro/TCP485][时延] type=0x{payload[2]:02x} "
+                        f"bytes={len(payload)} chunks={chunk_count} "
+                        f"tx={(tx_done_at-started_at)*1000:.2f}ms "
+                        f"rx_wait={rx_wait_ms:.2f}ms "
+                        f"total={(time.perf_counter()-started_at)*1000:.2f}ms "
+                        f"timeout={self._tcp_response_timeout*1000:.0f}ms "
+                        f"ok={int(bool(got_response))}"
+                    )
                 if protocol_error:
                     if self._tcp_debug:
                         print(f"[LHandPro/TCP485] 发送被手端拒绝: {protocol_error}")
@@ -204,6 +228,7 @@ def _build_tcp_controller(host, port, debug=False):
                 frames, self._tcp_rx_buffer = _extract_rs485_frames(self._tcp_rx_buffer)
                 for frame in frames:
                     self._tcp_rx_frame_count += 1
+                    self._tcp_last_rx_at = time.perf_counter()
                     expected = self._tcp_expected
                     if frame[0] == 0x48 and frame[3] == 1 and frame[4] == 2:
                         self._tcp_protocol_error = (
