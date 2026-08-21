@@ -125,6 +125,9 @@ GRASP_SETTLE_S = float(os.getenv("GRASP_SETTLE_S", "0.4"))    # 抓取前进/后
 # LHandPro/Aero start their hold loop before returning from close; only keep a
 # short confirmation window here so the arm does not pause for a full second.
 HAND_CLOSE_WAIT_S = float(os.getenv("HAND_CLOSE_WAIT_S", "0.25"))
+# The dexterous hand takes longer to physically release an item than the
+# generic motion settle time; keep the arm at the place point while it opens.
+HAND_OPEN_WAIT_S = float(os.getenv("HAND_OPEN_WAIT_S", "2.0"))
 PLACE_TRANSITION_CP = os.getenv("PLACE_TRANSITION_CP", "60")       # 过渡点到放置点的平滑比例
 PLACE_SMOOTH_TRANSITION = os.getenv("PLACE_SMOOTH_TRANSITION", "0").lower() in ("1", "true", "yes", "on")
 PLACE_RETURN_CLEARANCE_MM = float(os.getenv("PLACE_RETURN_CLEARANCE_MM", "140"))  # 放置后回层的安全抬高量
@@ -1242,7 +1245,10 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional[object], current_layer_idx
         return False
     if hand_ok:
         hand.open()
-    time.sleep(MOTION_SETTLE_S)
+        print(f"  灵巧手 → 张开，等待 {HAND_OPEN_WAIT_S:.1f}s ...")
+        time.sleep(HAND_OPEN_WAIT_S)
+    else:
+        time.sleep(MOTION_SETTLE_S)
     print("[流程] 商品已放置，开始收起机械臂")
     if not go_to_stow_pose(arm):
         print("  [停止] 商品已放置，但机械臂收起失败")
