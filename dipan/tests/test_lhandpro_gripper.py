@@ -185,15 +185,21 @@ class LHandProfileTests(unittest.TestCase):
             self.assertTrue(hand.open())
         self.assertEqual(FakeController.latest.sdk_handle.positions, [9000, 0, 0, 0, 0, 0])
 
-    def test_default_open_uses_one_broadcast_without_feedback_reads(self):
+    def test_default_open_uses_two_broadcasts_without_feedback_reads(self):
         hand = LHandProGripper(controller_factory=FakeController)
         hand.connect(enable_motors=False, home_motors=False)
         sdk = FakeController.latest.sdk_handle
         with patch.dict(os.environ, {"LHAND_OPEN_VERIFY": "0"}, clear=False), patch("time.sleep"):
             self.assertTrue(hand.open())
         self.assertEqual(sdk.position_read_count, 0)
-        self.assertEqual(sdk.position_commands, [(9000, 0, 0, 0, 0, 0)])
-        self.assertEqual(sdk.velocity_commands, [(axis, 12000) for axis in range(1, 7)])
+        self.assertEqual(sdk.position_commands, [
+            (9000, 0, 0, 0, 0, 0),
+            (9000, 0, 0, 0, 0, 0),
+        ])
+        self.assertEqual(
+            sdk.velocity_commands,
+            [(axis, 12000) for _ in range(2) for axis in range(1, 7)],
+        )
 
     def test_hold_does_not_rebroadcast_an_unchanged_target_before_refresh(self):
         hand = LHandProGripper(controller_factory=FakeController)

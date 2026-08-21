@@ -152,7 +152,7 @@ python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 flex
 - 同位置电流比空载包络增加 `80‰`，连续 2 次才确认接触。
 - 接触后额外闭合 `150` 位置单位并锁定该轴。
 - 至少 2 个轴确认接触才算成功。
-- 控制最大电流默认 `600‰`；实测电流达到 `750‰` 安全停止。
+- 柔性抓取控制最大电流默认 `1200‰`；实测电流连续 3 次达到 `1200‰` 才触发运行时硬保护。空载曲线录制仍使用独立的 `750‰` 安全阈值。
 - 曲线缺失时拒绝柔性抓取。
 
 常用调参：
@@ -167,12 +167,12 @@ LHAND_FLEX_EXTRA_CLOSE         接触后补紧量，默认 150
 LHAND_FLEX_ACTIVE_AXES         参与闭合的轴，DH116 默认 2,3,4,5,6
 LHAND_FLEX_REQUIRED_AXES       必须等待接触或到上限的轴，DH116 默认 2,3,4,5,6
 LHAND_FLEX_MIN_CONTACTS        成功所需最少接触轴，默认 2
-LHAND_FLEX_MAX_CURRENT         SDK 下发的最大电流，默认 600‰
-LHAND_FLEX_HARD_CURRENT        实测硬保护阈值，默认 750‰
+LHAND_FLEX_MAX_CURRENT         SDK 下发的最大电流，默认 1200‰
+LHAND_FLEX_HARD_CURRENT        实测硬保护阈值，默认 1200‰
 LHAND_FLEX_MAX_POSITIONS       各轴最大位置，默认 9000；会受曲线范围限制
 ```
 
-调参原则：先减小步长和最大位置，再调整接触阈值。不要通过提高硬保护阈值解决误触发。
+调参原则：先减小步长和最大位置，再调整接触阈值。当前 1200‰ 是低于厂家 300% 最大值的现场试验值；如温升或冲击明显，应立即下调。
 
 ## 7. 更新末端负载
 

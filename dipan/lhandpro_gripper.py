@@ -426,7 +426,7 @@ class LHandProGripper:
         if velocities is not None and len(velocities) != self.dof_active:
             raise ValueError(f"速度数量应为 {self.dof_active}, 实际 {len(velocities)}")
         velocity = int(velocity or os.getenv("LHAND_FLEX_VELOCITY", "12000"))
-        max_current = int(max_current or os.getenv("LHAND_FLEX_MAX_CURRENT", "600"))
+        max_current = int(max_current or os.getenv("LHAND_FLEX_MAX_CURRENT", "1200"))
         sdk = self._sdk
         started_at = time.perf_counter()
         with self._command_lock:
@@ -479,7 +479,17 @@ class LHandProGripper:
         force_velocity = getattr(self._sdk, "force_velocity_broadcast", None)
         if callable(force_velocity):
             force_velocity()
-        self._command_positions(positions, wait_s=effective_wait_s, velocity=velocity)
+        broadcasts = max(1, int(os.getenv("LHAND_OPEN_POSITION_BROADCASTS", "2")))
+        gap_s = max(0.0, float(os.getenv("LHAND_OPEN_POSITION_BROADCAST_GAP_S", "0.0")))
+        for index in range(broadcasts):
+            self._command_positions(
+                positions,
+                wait_s=effective_wait_s if index == broadcasts - 1 else 0.0,
+                velocity=velocity,
+            )
+            if index + 1 < broadcasts and gap_s > 0:
+                time.sleep(gap_s)
+        print(f"[LHandPro] 张开位置帧已连续广播 {broadcasts} 次")
 
     def _read_currents(self, samples=1, delay_s=0.0):
         rows = []
@@ -653,7 +663,7 @@ class LHandProGripper:
         resend_interval = max(0.0, float(os.getenv("LHAND_HOLD_RESEND_INTERVAL_S", "1.0")))
         tighten_step = max(1, int(os.getenv("LHAND_HOLD_TIGHTEN_STEP", "100")))
         min_delta = float(os.getenv("LHAND_HOLD_MIN_DELTA", "100"))
-        hard_current = float(os.getenv("LHAND_FLEX_HARD_CURRENT", "750"))
+        hard_current = float(os.getenv("LHAND_FLEX_HARD_CURRENT", "1200"))
         next_tighten = time.monotonic() + tighten_interval
         last_command_at = time.monotonic()
         while not stop_event.wait(period):
@@ -767,7 +777,7 @@ class LHandProGripper:
             min_contacts = max(1, min(
                 len(required_axes), int(os.getenv("LHAND_FLEX_MIN_CONTACTS", "2"))
             ))
-            hard_current = float(os.getenv("LHAND_FLEX_HARD_CURRENT", "750"))
+            hard_current = float(os.getenv("LHAND_FLEX_HARD_CURRENT", "1200"))
             hard_consecutive = max(1, int(os.getenv("LHAND_FLEX_HARD_CURRENT_CONSECUTIVE", "3")))
             max_steps = max(1, int(os.getenv("LHAND_FLEX_MAX_STEPS", "300")))
             continuous = os.getenv("LHAND_FLEX_CONTINUOUS", "1").lower() in (

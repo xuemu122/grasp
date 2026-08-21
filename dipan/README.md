@@ -183,7 +183,8 @@ LHandPro 抓取保持参数：
 - `LHAND_HOLD_TIGHTEN_STEP`：每次补紧的位置步长，默认 `100`；物体较软或抓后变松时可调大，出现抖动时调小。
 - `LHAND_HOLD_MIN_DELTA`：相对空载电流低于该值才补紧，默认 `100`；高于初次接触阈值，抓住后会维持更牢的夹持力。
 - `LHAND_FLEX_EXTRA_CLOSE`：检测到接触后额外闭合的位置量，默认 `300`；仍受每轴闭合上限和硬电流保护限制。
-- `LHAND_FLEX_HARD_CURRENT`：柔性抓取硬电流阈值，默认 `750`‰；至少达到最少接触轴数且轴已进入闭合区时按夹住商品进入保持，否则仍安全停止并判失败。
+- `LHAND_FLEX_MAX_CURRENT`：柔性抓取下发给驱动器的电流上限，默认 `1200`‰（约 120%）；低于厂家 300% 最大值，可按现场温升继续下调。
+- `LHAND_FLEX_HARD_CURRENT`：柔性抓取软件硬电流阈值，默认 `1200`‰；至少达到最少接触轴数且轴已进入闭合区时按夹住商品进入保持，否则仍安全停止并判失败。
 - `LHAND_FLEX_HARD_CURRENT_CONSECUTIVE`：硬电流连续采样次数，默认 `3`；过滤单帧电流尖峰，持续过流仍按接触/异常处理。
 - `LHAND_LATENCY_DEBUG`：输出灵巧手广播和 TCP/RS485 透传时延，默认关闭；设为 `1` 后可区分 SDK 调用、Nova 60000 转发等待和手端响应等待。
 - `LHAND_TCP_RESPONSE_TIMEOUT_S`：Nova 60000 透传等待手端响应的单帧超时，默认 `0.6` s；Nova 的长反馈帧可能被拆分发送，`0.3` s 容易在第二段到达前误报超时。诊断时日志会打印实际使用值，持续接近该值仍需排查转发或总线。
@@ -208,6 +209,8 @@ LHandPro 抓取保持参数：
 - `LHAND_OPEN_POLL_S`：张开位置轮询间隔，默认 `0.05` s。
 - `LHAND_OPEN_VELOCITY`：张开统一速度，默认继承 `LHAND_FLEX_VELOCITY=12000`；所有轴用同一速度和一次六轴位置帧同时起动，行为与连续闭合一致。
 - `LHAND_OPEN_SETTLE_MARGIN_S`：最长预计行程之外的等待余量，默认 `0.20` s；用于覆盖电机实际加减速差异。
+- `LHAND_OPEN_POSITION_BROADCASTS`：张开位置帧连续广播次数，当前默认 `2`，用于验证手端是否需要重复触发；设为 `1` 可恢复单帧张开。
+- `LHAND_OPEN_POSITION_BROADCAST_GAP_S`：两次张开位置帧之间的间隔，默认 `0`，两帧连续发送；需要给手端留处理间隔时可设为 `0.03`。
 - `LHAND_PROFILE_SWEEP_AXES`：录制空载曲线时参与扫位的轴，默认 `2,3,4,5,6`；轴1保持 `LHAND_OPEN_POSITIONS` 的张开位置不动。
 - `HAND_CLOSE_WAIT_S`：闭合成功后确认保持状态的等待时间，默认 `0.25` s；需要兼容较慢控制器时可调回 `1.0` s。
 
@@ -458,6 +461,18 @@ python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 record --max 7000 --
 ```bash
 python3 test_lhandpro_flexible_grasp.py --port /dev/ttyUSB0 flex
 ```
+
+通过机械臂末端连续发送两条位置帧（不移动机械臂、不启动抓取流程）：
+
+```bash
+cd /home/nvidia/grasp/dipan
+LHAND_LATENCY_DEBUG=1 LHAND_HEX_DEBUG=1 python3 test_lhandpro_flexible_grasp.py \
+  --transport dobot --robot-ip 192.168.5.1 --robot-port 29999 \
+  double-position --first 9000,0,0,0,0,0 --second 9000,500,500,500,500,500 \
+  --gap 0 --velocity 12000 --raw
+```
+
+确认提示输入 `DOUBLE` 后才会动作。加 `--raw` 时只发送两条裸 `0x82` 位置帧，不自动插入 `0x84` 电流和 `0x83` 速度帧，适合隔离连续位置指令延迟。日志中的两条 `0x82` 是位置帧，`interval` 是两条指令开始发送的间隔，`total` 是两条指令完成的总时间；先用空手和低位置差测试。
 
 1 号拇指侧摆默认保持张开位置不动；2～6 号轴参与独立判断并等待接触或到上限，
 其中 2 号为拇指弯曲、3～6 号为四指弯曲。至少两个轴相对同位置空载包络增加

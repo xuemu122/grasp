@@ -26,7 +26,11 @@ def build_parser():
     parser.add_argument("--profile", default=os.getenv("LHAND_FLEX_PROFILE", DEFAULT_PROFILE_PATH))
     parser.add_argument("--home-timeout", type=float, default=float(os.getenv("LHAND_HOME_TIMEOUT_S", "45")))
     parser.add_argument("--debug", action="store_true", help="打印回零期间六轴状态")
-    parser.add_argument("--hex-debug", action="store_true", help="打印末端485原始TX/RX帧")
+    parser.add_argument(
+        "--hex-debug", action="store_true",
+        default=os.getenv("LHAND_HEX_DEBUG", "0").lower() in ("1", "true", "yes", "on"),
+        help="打印末端485原始TX/RX帧",
+    )
     subparsers = parser.add_subparsers(dest="action", required=True)
 
     subparsers.add_parser("info", help="只连接并读取轴状态，不使能、不回零")
@@ -53,6 +57,17 @@ def build_parser():
     flex = subparsers.add_parser("flex", help="执行一次柔性抓取，不移动机械臂")
     flex.add_argument("--yes", action="store_true", help="跳过放置物体确认提示")
 
+    double = subparsers.add_parser(
+        "double-position",
+        help="仅连续发送两条六轴位置帧，测试末端响应延迟，不移动机械臂",
+    )
+    double.add_argument("--first", required=True, help="第一条位置，6个整数，逗号分隔")
+    double.add_argument("--second", required=True, help="第二条位置，6个整数，逗号分隔")
+    double.add_argument("--gap", type=float, default=0.0, help="两条位置帧之间的间隔，默认0秒")
+    double.add_argument("--velocity", type=int, default=12000, help="六轴统一速度，默认12000")
+    double.add_argument("--raw", action="store_true", help="只发裸0x82位置帧，不自动发0x84/0x83")
+    double.add_argument("--yes", action="store_true", help="跳过安全确认")
+
     check = subparsers.add_parser("check-profile", help="只校验曲线文件，不连接硬件")
     check.add_argument("--dof", type=int, default=6)
     return parser
@@ -69,6 +84,25 @@ def confirm(prompt, expected, skip):
     answer = input(prompt).strip()
     if answer != expected:
         raise RuntimeError("用户取消")
+
+
+def parse_position_vector(raw):
+    try:
+        values = [int(item.strip()) for item in raw.split(",")]
+    except ValueError as exc:
+        raise ValueError(f"位置必须是6个整数: {raw!r}") from exc
+    if len(values) != 6:
+        raise ValueError(f"位置必须是6个整数，实际 {len(values)} 个: {raw!r}")
+    return values
+
+
+def build_compact_position_frame(positions, node_id):
+    from dobot_tcp_gripper import _crc16_modbus
+
+    body = bytes((0x50, int(node_id) & 0xFF, 0x82, len(positions)))
+    body += b"".join((int(value) & 0xFFFF).to_bytes(2, "little") for value in positions)
+    crc = _crc16_modbus(body)
+    return body + bytes((crc & 0xFF, crc >> 8))
 
 
 def main():
@@ -142,6 +176,45 @@ def main():
             hand.connect(enable_motors=False, home_motors=False)
             hand._sdk.stop_motors(1)
             print("SDO写入探测成功: F100:01=位置模式/空闲，未使能、未回零、未发送位置")
+            return 0
+
+        if args.action == "double-position":
+            first = parse_position_vector(args.first)
+            second = parse_position_vector(args.second)
+            if args.gap < 0:
+                parser.error("--gap 不能为负数")
+            if args.velocity <= 0:
+                parser.error("--velocity 必须大于0")
+            confirm(
+                "确认灵巧手周围无障碍，且允许六轴执行两条位置指令。输入 DOUBLE 继续: ",
+                "DOUBLE",
+                args.yes,
+            )
+            hand.connect(enable_motors=True, home_motors=False)
+            print(f"[双帧测试] first={first} second={second} gap={args.gap:.3f}s velocity={args.velocity}")
+            first_started = time.perf_counter()
+            if args.raw:
+                send_frame = getattr(hand.controller, "send_rs485_frame", None)
+                if not callable(send_frame):
+                    raise RuntimeError("当前传输后端不支持裸RS485帧")
+                send_frame(build_compact_position_frame(first, args.node))
+            else:
+                hand._command_positions(first, velocity=args.velocity, wait_s=0.0)
+            first_done = time.perf_counter()
+            if args.gap:
+                time.sleep(args.gap)
+            second_started = time.perf_counter()
+            if args.raw:
+                send_frame(build_compact_position_frame(second, args.node))
+            else:
+                hand._command_positions(second, velocity=args.velocity, wait_s=0.0)
+            second_done = time.perf_counter()
+            print(
+                f"[双帧测试] first_sdk={(first_done-first_started)*1000:.2f}ms "
+                f"second_sdk={(second_done-second_started)*1000:.2f}ms "
+                f"interval={(second_started-first_started)*1000:.2f}ms "
+                f"total={(second_done-first_started)*1000:.2f}ms"
+            )
             return 0
 
         if args.action == "record":
