@@ -201,6 +201,57 @@ class LHandProfileTests(unittest.TestCase):
             [(axis, 12000) for _ in range(2) for axis in range(1, 7)],
         )
 
+    def test_sync_open_assigns_per_axis_velocity_clamped_to_safe_window(self):
+        hand = LHandProGripper(controller_factory=FakeController)
+        hand.connect(enable_motors=False, home_motors=False)
+        hand._last_command_positions = [9000, 3000, 3000, 1000, 5000, 0]
+        sdk = FakeController.latest.sdk_handle
+        environment = {
+            "LHAND_OPEN_SYNC": "1",
+            "LHAND_OPEN_SYNC_TIME_S": "1.0",
+            "LHAND_OPEN_VEL_MIN": "1000",
+            "LHAND_OPEN_VEL_MAX": "5000",
+            "LHAND_OPEN_VERIFY": "0",
+        }
+        with patch.dict(os.environ, environment, clear=False), patch("time.sleep"):
+            self.assertTrue(hand.open())
+        self.assertEqual(sdk.positions, [9000, 0, 0, 0, 0, 0])
+        expected = [
+            1000,  # axis1 already open -> floor
+            3000,  # travel 3000 / 1.0s
+            3000,  # travel 3000 / 1.0s
+            1000,  # travel 1000 / 1.0s
+            5000,  # travel 5000 / 1.0s
+            1000,  # axis6 already open -> floor
+        ]
+        self.assertEqual(
+            sdk.velocity_commands,
+            [(axis, speed) for _ in range(2) for axis, speed in enumerate(expected, start=1)],
+        )
+
+    def test_sync_open_clamps_long_travel_velocity_to_max(self):
+        hand = LHandProGripper(controller_factory=FakeController)
+        hand.connect(enable_motors=False, home_motors=False)
+        hand._last_command_positions = [9000, 9000, 9000, 9000, 9000, 9000]
+        sdk = FakeController.latest.sdk_handle
+        environment = {
+            "LHAND_OPEN_SYNC": "1",
+            "LHAND_OPEN_SYNC_TIME_S": "0.5",
+            "LHAND_OPEN_VEL_MIN": "1000",
+            "LHAND_OPEN_VEL_MAX": "3000",
+            "LHAND_OPEN_VERIFY": "0",
+        }
+        with patch.dict(os.environ, environment, clear=False), patch("time.sleep"):
+            self.assertTrue(hand.open())
+        self.assertEqual(sdk.positions, [9000, 0, 0, 0, 0, 0])
+        # axis1 already open -> floor; raw = 9000 / 0.5 = 18000 -> clamped
+        # to VEL_MAX=3000 for every moving axis.
+        self.assertEqual(
+            sdk.velocity_commands,
+            [(axis, 1000) if axis == 1 else (axis, 3000)
+             for _ in range(2) for axis in range(1, 7)],
+        )
+
     def test_hold_does_not_rebroadcast_an_unchanged_target_before_refresh(self):
         hand = LHandProGripper(controller_factory=FakeController)
         hand.connect(enable_motors=False, home_motors=False)

@@ -272,12 +272,12 @@ class DobotArm:
             if rx is None:
                 pose = self.get_pose()
                 rx, ry, rz = pose[3], pose[4], pose[5]
-            if z_mm < 50 and not allow_low_z:
+            if z_mm < -400:
                 print(f"  [拒绝!] Z={z_mm:.0f}mm 太低, 可能碰撞, 跳过低抓取")
                 return False
-            if z_mm < 50 and allow_low_z:
+            if z_mm < 50:
                 print(f"  [低位放行] Z={z_mm:.0f}mm (第4层/下方工作区)")
-            if z_mm > 1100 or z_mm < -300:
+            if z_mm > 1100 or z_mm < -400:
                 print(f"  [警告] Z={z_mm:.0f}mm 可能超出工作范围, 请注意!")
             target_pose = (float(x_mm), float(y_mm), float(z_mm), float(rx), float(ry), float(rz))
             if not self._check_self_collision_pose(target_pose, label="MovL"):

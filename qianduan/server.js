@@ -570,6 +570,20 @@ function inventoryScanSnapshot() {
     };
 }
 
+function recoverInterruptedInventoryScan() {
+    const store = readInventoryScanStore();
+    const task = store.last_scan;
+    if (!task || !['running', 'stopping'].includes(task.status)) return;
+    task.status = 'failed';
+    task.current_shelf = null;
+    task.current_point = null;
+    task.current_layer = null;
+    task.message = '服务重启导致巡架识别中断';
+    task.completed_at = new Date().toISOString();
+    writeInventoryScanStore(store);
+    log(`⏹ 检测到上次未结束的巡架识别 (${task.id})，已标记为中断`);
+}
+
 function readOrderStore() {
     if (!fs.existsSync(ORDERS_DB_FILE)) return { orders: [] };
     try {
@@ -2773,6 +2787,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+    recoverInterruptedInventoryScan();
     migrateUncreatedPaymentOrders();
     log(`HTTP 服务已启动: http://${HOST}:${PORT}`);
     log(`商品管理页面: http://localhost:${PORT}/admin.html`);

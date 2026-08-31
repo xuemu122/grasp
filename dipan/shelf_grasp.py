@@ -235,7 +235,7 @@ SHELF_LAYERS_FILE = os.path.join(os.path.dirname(__file__), "shelf_layers.json")
 STARTUP_LAYER_IDX = 2   # 程序启动固定回第2层, 避免从上次低层状态恢复导致碰撞
 _current_layer_idx = STARTUP_LAYER_IDX  # 当前选中的层编号
 _shelf_layer_poses = {}  # {1: ([x,y,z,rx,ry,rz], name), 2: ...}
-LOW_Z_LAYER_IDXS = {4}  # 第4层在抬高基座下方, 允许低/负 Z
+LOW_Z_LAYER_IDXS = {4, 5}  # 第4/5层在抬高基座下方, 允许低/负 Z
 
 # 放置点位姿文件 (笛卡尔: x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg)
 PLACE_POINT_FILE = os.path.join(os.path.dirname(__file__), "place_point.json")
@@ -244,6 +244,9 @@ _place_point_joints = None  # [j1,j2,j3,j4,j5,j6]，可选
 PLACE_TRANSITION_FILE = os.path.join(os.path.dirname(__file__), "place_transition.json")
 _place_transition_pose = None  # ([x,y,z,rx,ry,rz], name)
 _place_transition_joints = None  # [j1,j2,j3,j4,j5,j6]，可选
+PLACE_TRANSITION_LOW_FILE = os.path.join(os.path.dirname(__file__), "place_transition_low.json")
+_place_transition_low_pose = None  # ([x,y,z,rx,ry,rz], name) 低位进层过渡点
+_place_transition_low_joints = None  # [j1,j2,j3,j4,j5,j6]，可选
 
 # 收起姿态: 调用底盘前和退出程序前使用, 防止机械臂/灵巧手与环境碰撞
 STOW_POSE_FILE = os.path.join(os.path.dirname(__file__), "stow_pose.json")
@@ -846,6 +849,44 @@ def save_place_transition():
         json.dump(data, f, indent=2)
 
 
+def load_place_transition_low():
+    """从 JSON 加载低位进层过渡点位姿，返回 (pose, name) 或 None"""
+    global _place_transition_low_pose, _place_transition_low_joints
+    if os.path.exists(PLACE_TRANSITION_LOW_FILE):
+        with open(PLACE_TRANSITION_LOW_FILE) as f:
+            data = json.load(f)
+        if "pose" in data:
+            _place_transition_low_pose = (data["pose"], data.get("name", "低位过渡点"))
+            _place_transition_low_joints = data.get("joints")
+    return _place_transition_low_pose
+
+
+def save_place_transition_low():
+    """保存低位进层过渡点位姿到 JSON"""
+    if _place_transition_low_pose is None:
+        if os.path.exists(PLACE_TRANSITION_LOW_FILE):
+            os.remove(PLACE_TRANSITION_LOW_FILE)
+        return
+    pose, name = _place_transition_low_pose
+    data = {"pose": pose, "name": name}
+    if _place_transition_low_joints is not None:
+        data["joints"] = _place_transition_low_joints
+    with open(PLACE_TRANSITION_LOW_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def go_to_place_transition_low(arm: "DobotArm"):
+    """关节运动到低位进层过渡点"""
+    if _place_transition_low_pose is None:
+        print("  [低位过渡点] 未记录，先用 l t s 记录")
+        return False
+    pose, name = _place_transition_low_pose
+    ok = arm.move_pose_safe(pose, joints=_place_transition_low_joints, speed=80)
+    if ok:
+        print(f"  ✓ 已到达低位过渡点 ({name})")
+    return ok
+
+
 def save_stow_pose():
     """保存收起姿态到 JSON"""
     if _stow_pose is None:
@@ -867,9 +908,9 @@ def go_to_layer(arm: "DobotArm", layer_idx: int):
     print(f"\n[货架层] 移动到第{layer_idx}层 ({name})...")
     target_z = pose[2]
     allow_low_z = _layer_allows_low_z(layer_idx)
-    if target_z < 80.0 and not allow_low_z:
-        print(f"  [警告] 第{layer_idx}层记录 Z={target_z:.1f}mm 过低, 自动抬到 80mm")
-        target_z = 80.0
+    if target_z < -400.0 and not allow_low_z:
+        print(f"  [警告] 第{layer_idx}层记录 Z={target_z:.1f}mm 过低, 自动抬到 -400mm")
+        target_z = -400.0
     if allow_low_z and target_z < 50.0:
         print(f"  [第{layer_idx}层] 允许低位观察 Z={target_z:.1f}mm")
     if not arm.movel(pose[0], pose[1], target_z, pose[3], pose[4], pose[5], speed=100,
@@ -888,9 +929,9 @@ def go_to_layer_from_non_shelf_pose(arm: "DobotArm", layer_idx: int, visit_place
     pose, name = _shelf_layer_poses[layer_idx]
     target_z = pose[2]
     allow_low_z = _layer_allows_low_z(layer_idx)
-    if target_z < 80.0 and not allow_low_z:
-        print(f"  [警告] 第{layer_idx}层记录 Z={target_z:.1f}mm 过低, 自动抬到 80mm")
-        target_z = 80.0
+    if target_z < -400.0 and not allow_low_z:
+        print(f"  [警告] 第{layer_idx}层记录 Z={target_z:.1f}mm 过低, 自动抬到 -400mm")
+        target_z = -400.0
     if allow_low_z and target_z < 50.0:
         print(f"  [第{layer_idx}层] 允许低位观察 Z={target_z:.1f}mm")
 
@@ -900,14 +941,34 @@ def go_to_layer_from_non_shelf_pose(arm: "DobotArm", layer_idx: int, visit_place
         print(f"  [安全进层][中止] 无法读取当前位姿, 不发送运动命令: {e}")
         return False
 
+    cp_pct = _clamp_cp(PLACE_TRANSITION_CP)
+    descend_cp = min(cp_pct, 40)
+
+    # 低位层: 若已记录低位过渡点, 经低位过渡点进层, 避免高位横移不可达
+    if target_z < 50.0 and _place_transition_low_pose is not None:
+        lt_pose, lt_name = _place_transition_low_pose
+        lt_z = lt_pose[2]
+        print(f"\n[低位进层] 经低位过渡点 {lt_name} 进入第{layer_idx}层 ...")
+        if not arm.move_pose_safe(lt_pose, joints=_place_transition_low_joints, speed=80):
+            print("  [低位进层] 前往低位过渡点失败")
+            return False
+        print(f"\n[货架层] 低位横移到第{layer_idx}层上方 ...")
+        if not arm.movel(pose[0], pose[1], lt_z, pose[3], pose[4], pose[5],
+                         speed=100, allow_low_z=True, cp=descend_cp, wait=False):
+            return False
+        print(f"\n[货架层] 下落到第{layer_idx}层 ({name})...")
+        if not arm.movel(pose[0], pose[1], target_z, pose[3], pose[4], pose[5],
+                         speed=100, allow_low_z=True, cp=0):
+            return False
+        time.sleep(MOTION_SETTLE_S)
+        return True
+
     z_candidates = [cur[2], target_z]
     if _place_transition_pose is not None:
         z_candidates.append(_place_transition_pose[0][2])
     base_z = max(z_candidates)
     max_return_z = min(1100.0, max(base_z + 60.0, PLACE_RETURN_MAX_Z_MM))
     safe_z = min(max_return_z, base_z + PLACE_RETURN_CLEARANCE_MM)
-    cp_pct = _clamp_cp(PLACE_TRANSITION_CP)
-    descend_cp = min(cp_pct, 40)
 
     lift_targets = []
     for z in (
@@ -991,9 +1052,9 @@ def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: flo
 
     target_z = pose[2]
     allow_low_z = _layer_allows_low_z(layer_idx)
-    if target_z < 80.0 and not allow_low_z:
-        print(f"  [警告] 第{layer_idx}层记录 Z={target_z:.1f}mm 过低, 自动抬到 80mm 作为可达观察位")
-        target_z = 80.0
+    if target_z < -400.0 and not allow_low_z:
+        print(f"  [警告] 第{layer_idx}层记录 Z={target_z:.1f}mm 过低, 自动抬到 -400mm 作为可达观察位")
+        target_z = -400.0
     if allow_low_z and target_z < 50.0:
         print(f"  [第{layer_idx}层] 允许低位观察 Z={target_z:.1f}mm")
     safe_z = max(cur[2], target_z) + clearance_mm
@@ -1357,6 +1418,7 @@ def _layer_management(arm: "DobotArm"):
 def _place_point_management(arm: "DobotArm"):
     """放置点管理子菜单: 记录、移动到、删除放置点"""
     global _place_point_pose, _place_transition_pose, _place_point_joints, _place_transition_joints
+    global _place_transition_low_pose, _place_transition_low_joints
 
     while True:
         print(f"\n── 放置点管理 ──")
@@ -1372,6 +1434,12 @@ def _place_point_management(arm: "DobotArm"):
             print(f"  当前过渡点: {name}  pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f}) [{joint_state}]")
         else:
             print("  当前: 未记录放置过渡点")
+        if _place_transition_low_pose:
+            pose, name = _place_transition_low_pose
+            joint_state = "有joints" if _place_transition_low_joints is not None else "无joints"
+            print(f"  低位过渡点: {name}  pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f}) [{joint_state}]")
+        else:
+            print("  当前: 未记录低位过渡点 (低位层进层用)")
         print("\n  操作:")
         print("    s       ← 记录当前法兰位姿为放置点")
         print("    g       ← 移动到放置点 (若有过渡点则先经过渡点)")
@@ -1379,6 +1447,9 @@ def _place_point_management(arm: "DobotArm"):
         print("    ts      ← 记录当前法兰位姿为放置过渡点")
         print("    tg      ← 移动到放置过渡点")
         print("    td      ← 删除放置过渡点")
+        print("    ls      ← 记录当前法兰位姿为低位过渡点 (第4/5层低位进层用)")
+        print("    lg      ← 移动到低位过渡点")
+        print("    ld      ← 删除低位过渡点")
         print("    q       ← 返回主菜单")
 
         choice = input("  放置点 > ").strip().lower()
@@ -1435,11 +1506,38 @@ def _place_point_management(arm: "DobotArm"):
             go_to_place_transition(arm)
             return
 
+        if choice == "ls":
+            try:
+                pose = arm.get_pose()
+                joints = arm.get_joints()
+            except Exception:
+                print("  无法获取当前位姿/关节角")
+                continue
+            name = input('  低位过渡点名称 (回车默认"低位过渡点"): ').strip()
+            if not name:
+                name = "低位过渡点"
+            _place_transition_low_pose = (list(pose[:6]), name)
+            _place_transition_low_joints = list(joints[:6])
+            save_place_transition_low()
+            print(f"  ✓ 低位过渡点 ({name}) 已记录: pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
+            continue
+
+        if choice == "ld":
+            _place_transition_low_pose = None
+            _place_transition_low_joints = None
+            save_place_transition_low()
+            print("  ✓ 低位过渡点已删除")
+            continue
+
+        if choice == "lg":
+            go_to_place_transition_low(arm)
+            return
+
         if choice == "g":
             go_to_place_point(arm)
             return
 
-        print("  无效输入, 请输入 s / g / d / ts / tg / td / q")
+        print("  无效输入, 请输入 s / g / d / ts / tg / td / ls / lg / ld / q")
 
 
 def _stow_pose_management(arm: "DobotArm", from_shelf_pose: bool = False):
@@ -1617,7 +1715,27 @@ def _scan_inventory_layer(camera, locator, transformer, flange_pose, layer_z_m, 
         {"name": name, "count": count}
         for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     ]
-    dominant = candidates[0] if candidates else {"name": "", "count": 0}
+    img_h, img_w = best_img.shape[:2]
+    img_cx, img_cy = img_w / 2.0, img_h / 2.0
+    if accepted:
+        def _center_distance(item):
+            cx, cy = item["center"]
+            return (cx - img_cx) ** 2 + (cy - img_cy) ** 2
+        nearest = min(accepted, key=_center_distance)
+        dominant = {
+            "name": nearest["class_name"],
+            "count": 1,
+            "center": nearest["center"],
+            "distance_px": round(_center_distance(nearest) ** 0.5, 1),
+        }
+        print(
+            f"[巡架识别] 取最靠近相机中心物品 "
+            f"center=({nearest['center'][0]:.0f},{nearest['center'][1]:.0f}) "
+            f"dist={dominant['distance_px']:.1f}px name={dominant['name'] or '-'}",
+            flush=True,
+        )
+    else:
+        dominant = {"name": "", "count": 0}
     report = {
         "current_layer": layer_idx,
         "dominant_name": dominant["name"],
@@ -1908,6 +2026,7 @@ def main():
     load_shelf_layers()
     load_place_point()
     load_place_transition()
+    load_place_transition_low()
     load_stow_pose()
 
     if SHELF_GRASP_IDLE_STARTUP:

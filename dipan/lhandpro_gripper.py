@@ -447,30 +447,70 @@ class LHandProGripper:
             time.sleep(float(wait_s))
 
     def _command_open_positions(self, positions, wait_s=0.0):
-        """Release all axes with the same continuous position command."""
-        # Match continuous grasp: all axes receive one common speed and one
-        # shared position frame. Per-axis velocity matching looked synchronous
-        # on paper, but real motor load/acceleration differences made fingers
-        # visibly start at different times.
+        """Release all axes to their open pose.
+
+        Default: all axes receive one common speed and one shared position
+        frame (legacy uniform-velocity release). When LHAND_OPEN_SYNC=1, each
+        axis instead gets a per-axis velocity scaled to its own travel so every
+        finger returns to its open pose within the same target time T, clamped
+        to a safe window so long-travel axes never overspeed and short-travel
+        axes never crawl. The underlying _command_positions already accepts a
+        per-axis velocities vector; this only fills it in.
+        """
+        dof = self.dof_active
+        previous = list(self._last_command_positions or [0] * dof)
+        if len(previous) != dof:
+            previous = [0] * dof
+        sync = os.getenv("LHAND_OPEN_SYNC", "0").lower() in (
+            "1", "true", "yes", "on"
+        )
         velocity = max(1, int(os.getenv(
             "LHAND_OPEN_VELOCITY", os.getenv("LHAND_FLEX_VELOCITY", "12000")
         )))
-        previous = list(self._last_command_positions or [0] * self.dof_active)
-        if len(previous) != self.dof_active:
-            previous = [0] * self.dof_active
-        longest_travel_s = max(
-            (abs(int(target) - int(current)) / float(velocity)
-             for current, target in zip(previous, positions)),
-            default=0.0,
+        settle_margin = max(0.0, float(os.getenv("LHAND_OPEN_SETTLE_MARGIN_S", "0.20")))
+
+        velocities = None
+        if sync:
+            target_time = max(0.05, float(os.getenv("LHAND_OPEN_SYNC_TIME_S", "0.6")))
+            vel_min = max(1, int(os.getenv("LHAND_OPEN_VEL_MIN", "1500")))
+            vel_max = max(vel_min, int(os.getenv("LHAND_OPEN_VEL_MAX", "18000")))
+            travels = [
+                abs(int(target) - int(current))
+                for current, target in zip(previous, positions)
+            ]
+            velocities = [
+                int(max(vel_min, min(vel_max, travel / target_time)))
+                for travel in travels
+            ]
+            # Wait until the slowest (post-clamp) finger reaches its open pose.
+            longest_clamped_s = max(
+                (travel / speed for travel, speed in zip(travels, velocities) if travel > 0),
+                default=0.0,
+            )
+            wait_target_s = max(target_time, longest_clamped_s) + settle_margin
+        else:
+            longest_travel_s = max(
+                (abs(int(target) - int(current)) / float(velocity)
+                 for current, target in zip(previous, positions)),
+                default=0.0,
+            )
+            wait_target_s = max(1.0, longest_travel_s + settle_margin)
+
+        effective_wait_s = max(float(wait_s), wait_target_s)
+        open_current = int(os.getenv("LHAND_OPEN_MAX_CURRENT", "1200"))
+        speed_desc = (
+            "逐轴速度=" + ",".join(map(str, velocities))
+            if velocities is not None
+            else f"统一速度={velocity}"
         )
-        minimum_wait_s = max(
-            1.0,
-            longest_travel_s + max(0.0, float(os.getenv("LHAND_OPEN_SETTLE_MARGIN_S", "0.20"))),
+        travel_desc = (
+            " 行程=" + ",".join(map(str, travels))
+            if sync
+            else ""
         )
-        effective_wait_s = max(float(wait_s), minimum_wait_s)
         print(
-            f"[LHandPro] 同步张开: 目标={list(positions)} 统一速度={velocity} "
-            f"等待={effective_wait_s:.2f}s (单次全轴连续广播)"
+            f"[LHandPro] 同步张开: 目标={list(positions)}{travel_desc} "
+            f"{speed_desc} 等待={effective_wait_s:.2f}s (单次全轴连续广播)"
         )
         # The compact Nova adapter normally suppresses unchanged velocity
         # frames. Force one on release: the physical hand can retain different
@@ -486,6 +526,8 @@ class LHandProGripper:
                 positions,
                 wait_s=effective_wait_s if index == broadcasts - 1 else 0.0,
                 velocity=velocity,
+                velocities=velocities,
+                max_current=open_current,
             )
             if index + 1 < broadcasts and gap_s > 0:
                 time.sleep(gap_s)
@@ -557,6 +599,8 @@ class LHandProGripper:
 
                 deadline = time.monotonic() + timeout_s
                 last_actual = None
+                verify_log_interval = max(0.0, float(os.getenv("LHAND_OPEN_VERIFY_LOG_S", "0.5")))
+                last_verify_log_at = 0.0
                 while time.monotonic() < deadline:
                     try:
                         last_actual = [
@@ -571,6 +615,28 @@ class LHandProGripper:
                     ):
                         print("[LHandPro] 张开")
                         return True
+                    now = time.monotonic()
+                    if (
+                        last_actual is not None
+                        and verify_log_interval > 0
+                        and now - last_verify_log_at >= verify_log_interval
+                    ):
+                        try:
+                            currents = [abs(value) for value in self._read_currents(1, 0.0)]
+                        except Exception:
+                            currents = None
+                        remaining = [
+                            int(target) - last_actual[index]
+                            for index, target in enumerate(positions)
+                        ]
+                        current_str = (
+                            ",".join(map(str, currents)) if currents is not None else "-"
+                        )
+                        print(
+                            f"[LHandPro][张开轮询 {now - deadline + timeout_s:5.2f}s] "
+                            f"pos={last_actual} 余量={remaining} I={current_str}‰"
+                        )
+                        last_verify_log_at = now
                     time.sleep(poll_s)
 
                 if attempt + 1 < retries:
