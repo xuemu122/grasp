@@ -102,6 +102,66 @@ const INVENTORY_SCAN_FILE = process.env.INVENTORY_SCAN_FILE
     || path.join(path.dirname(PRODUCTS_DB_FILE), 'inventory_scan.json');
 const ORDER_TOKEN_SECRET = process.env.ORDER_TOKEN_SECRET || ADMIN_SESSION_SECRET;
 const ORDER_TOKEN_TTL_MS = Number(process.env.ORDER_TOKEN_TTL_MS || 24 * 60 * 60 * 1000);
+// 语音点单大模型校正（ModelScope / OpenAI 兼容接口）
+const VOICE_LLM_ENABLED = process.env.VOICE_LLM_ENABLED !== '0';
+const VOICE_LLM_BASE_URL = String(process.env.VOICE_LLM_BASE_URL || 'https://api-inference.modelscope.cn/v1').replace(/\/+$/, '');
+const VOICE_LLM_API_KEY = process.env.VOICE_LLM_API_KEY || '';
+const VOICE_LLM_MODEL = process.env.VOICE_LLM_MODEL || 'Qwen/Qwen3.8-Flash-Next';
+const VOICE_LLM_TIMEOUT_MS = Number(process.env.VOICE_LLM_TIMEOUT_MS || 15000);
+// 语音误识别对照表：现场积累的"用户说词 → 商品库标准词"，模型优先按此表校正。
+// 内置常见项；VOICE_LLM_ALIASES 环境变量可追加/覆盖，JSON 对象 {"用户说词":"商品库词"}
+const VOICE_LLM_BUILTIN_ALIASES = {
+    '迈动': '脉动', '买动': '脉动', '麦动': '脉动',
+    '洗笔': '雪碧', '雪壁': '雪碧',
+    '茶派': '茶π', '茶pai': '茶π', '茶pi': '茶π', '茶Π': '茶π', '茶批': '茶π', '查派': '茶π',
+    '娃哈哈': '哇哈哈', '哇哈哈': '哇哈哈',
+    '水溶希': '水溶C', '水溶西': '水溶C', '水溶c': '水溶C',
+};
+const VOICE_LLM_ALIASES = (() => {
+    if (!process.env.VOICE_LLM_ALIASES) return {};
+    try { return JSON.parse(process.env.VOICE_LLM_ALIASES); }
+    catch (e) {
+        console.error('VOICE_LLM_ALIASES 不是合法 JSON，已忽略:', e.message);
+        return {};
+    }
+})();
+const VOICE_LLM_ALIAS_TEXT = Object.entries({ ...VOICE_LLM_BUILTIN_ALIASES, ...VOICE_LLM_ALIASES })
+    .map(([spoken, standard]) => `${spoken}→${standard}`)
+    .join('、');
+// 语音校正使用的商品库来源：优先从云端商品库拉取（与点单/订单一致），
+// 未配置或拉取失败时回退盒子本地 readProducts()。
+const VOICE_LLM_CATALOG_URL = String(process.env.VOICE_LLM_CATALOG_URL || '').trim();
+const VOICE_LLM_CATALOG_CACHE_MS = Number(process.env.VOICE_LLM_CATALOG_CACHE_MS || 300000);
+let voiceCatalogCache = null;
+let voiceCatalogCacheAt = 0;
+
+async function loadVoiceCatalog() {
+    if (!VOICE_LLM_CATALOG_URL) return readProducts();
+    const now = Date.now();
+    if (voiceCatalogCache && now - voiceCatalogCacheAt < VOICE_LLM_CATALOG_CACHE_MS) {
+        return voiceCatalogCache;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+        const res = await fetch(VOICE_LLM_CATALOG_URL, { signal: controller.signal });
+        if (res.ok) {
+            const json = await res.json();
+            const list = Array.isArray(json.data) ? json.data
+                : (Array.isArray(json.products) ? json.products : []);
+            if (list.length) {
+                voiceCatalogCache = list;
+                voiceCatalogCacheAt = now;
+                return list;
+            }
+        }
+    } catch (error) {
+        log(`⚠️ 语音商品库拉取失败，回退本地: ${error.message}`);
+    } finally {
+        clearTimeout(timer);
+    }
+    return readProducts();
+}
 if (process.env.ORDER_TOKEN_SECRET && Buffer.byteLength(ORDER_TOKEN_SECRET, 'utf8') < 32) {
     throw new Error('ORDER_TOKEN_SECRET 必须至少 32 字节');
 }
@@ -255,6 +315,96 @@ function sendJSON(res, data, status = 200, headers = {}) {
         ...headers
     });
     res.end(JSON.stringify(data));
+}
+
+function parseJsonLoose(text) {
+    if (!text) return null;
+    try { return JSON.parse(text); } catch (e) { /* fall through */ }
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+        try { return JSON.parse(text.slice(start, end + 1)); } catch (e) { /* ignore */ }
+    }
+    return null;
+}
+
+// 语音点单大模型校正：把 Web Speech 识别出的口语文本归一化到商品库
+async function correctVoiceText(rawText) {
+    const clean = String(rawText || '').trim();
+    if (!clean) return { used: false };
+    if (!VOICE_LLM_ENABLED || !VOICE_LLM_API_KEY) return { used: false };
+
+    let products = [];
+    try { products = await loadVoiceCatalog(); } catch (e) { /* 商品库读取失败不阻塞 */ }
+    const names = [...new Set(products.map(p => p && p.name).filter(Boolean))];
+    const cats = [...new Set(products.map(p => p && p.category).filter(Boolean))];
+    const catalog = { products: names, categories: cats };
+
+    const system = [
+        '你是自助点单机的语音识别校正助手。用户说话经过语音识别得到文字，可能有谐音、错别字或口语前后缀。',
+        '下面是本机商品库（商品名和分类），你必须只从中匹配，不能编造商品。',
+        JSON.stringify(catalog, null, 2),
+        '处理规则：',
+        '1. 把谐音/识别错误校正回商品库标准名称，如"洗笔"→"雪碧"、"迈动"→"脉动"、"茶PI"→"茶π"、"娃哈哈"→"哇哈哈"。',
+        '2. 去除口语前后缀（"我要买""来一瓶""给我拿""有没有"等）。',
+        '3. 只返回 JSON，不要 markdown 代码块、不要多余文字，格式：',
+        '{"matched_product":"商品库中的精确商品名，匹配不到填 null","category":"商品库中的分类名，匹配不到填 null","keyword":"用于搜索的关键词，优先用品牌/系列基础名（如 脉动、茶π，不含口味后缀）","corrected_text":"校正后的干净文本","note":"说明，如 谐音校正:洗笔→雪碧；无需说明填空字符串"}',
+        '4. matched_product 和 category 可以都为 null，但要尽力给出最合适的关键词 keyword。',
+        '5. 同一商品有多个口味/规格变体时（如 脉动（青柠口味）、脉动（蜜桃味）），matched_product 返回最匹配的一个精确名称，但 keyword 必须用品牌/系列基础名（如 脉动、茶π），确保前端能筛出全部变体。',
+        '6. 现场积累的语音误识别对照（用户说词→商品库标准词），必须优先按此表校正，即使该词不在商品库里：' + (VOICE_LLM_ALIAS_TEXT || '无'),
+        '7. 若用户输入与商品库某商品或上表目标发音/字形相近（谐音、同音、近音），也必须校正为该商品。',
+    ].join('\n');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), VOICE_LLM_TIMEOUT_MS);
+    try {
+        const response = await fetch(`${VOICE_LLM_BASE_URL}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${VOICE_LLM_API_KEY}`,
+            },
+            body: JSON.stringify({
+                model: VOICE_LLM_MODEL,
+                messages: [
+                    { role: 'system', content: system },
+                    { role: 'user', content: clean },
+                ],
+                temperature: 0,
+                stream: false,
+            }),
+            signal: controller.signal,
+        });
+        if (!response.ok) {
+            const body = await response.text().catch(() => '');
+            log(`⚠️ 语音大模型 HTTP ${response.status}: ${body.slice(0, 200)}`);
+            return { used: false, error: `大模型 HTTP ${response.status}` };
+        }
+        const payload = await response.json();
+        const content = payload && payload.choices && payload.choices[0]
+            && payload.choices[0].message && payload.choices[0].message.content;
+        const parsed = parseJsonLoose(content);
+        if (!parsed) {
+            log(`⚠️ 语音大模型返回无法解析: ${String(content).slice(0, 200)}`);
+            return { used: false, error: '大模型返回无法解析' };
+        }
+        const result = {
+            used: true,
+            matched: Boolean(parsed.matched_product),
+            product: parsed.matched_product || null,
+            category: parsed.category || null,
+            keyword: parsed.keyword || null,
+            corrected_text: parsed.corrected_text || clean,
+            note: parsed.note || '',
+        };
+        log(`🎤 语音大模型: "${clean}" → ${JSON.stringify(result)}`);
+        return result;
+    } catch (error) {
+        log(`⚠️ 语音大模型调用失败: ${error.message}`);
+        return { used: false, error: error.message };
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 function parseBinaryBody(req, maxBytes) {
@@ -2269,6 +2419,25 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+// POST /api/voice/correct（含 test.html 的 /test-api 前缀）- 语音识别文本大模型校正
+    if (
+        (pathname === '/api/voice/correct' || pathname === '/test-api/voice/correct')
+        && req.method === 'POST'
+    ) {
+        const body = await parseBody(req);
+        if (!body || !String(body.text || '').trim()) {
+            sendJSON(res, { code: 1, message: '缺少识别文本 text' }, 400);
+            return;
+        }
+        try {
+            const result = await correctVoiceText(String(body.text));
+            sendJSON(res, { code: 0, data: result });
+        } catch (e) {
+            sendJSON(res, { code: 1, message: e.message }, 502);
+        }
+        return;
+    }
+
     // GET /api/products - 获取所有商品
     if (pathname === '/api/products' && req.method === 'GET') {
         try {
@@ -2792,6 +2961,7 @@ server.listen(PORT, HOST, () => {
     log(`HTTP 服务已启动: http://${HOST}:${PORT}`);
     log(`商品管理页面: http://localhost:${PORT}/admin.html`);
     log(`抓取模式: ${ROBOT_GRASP_REAL ? '真实机械臂' : '模拟'} (${ROBOT_GRASP_MODE})`);
+    log(`语音大模型校正: ${VOICE_LLM_ENABLED && VOICE_LLM_API_KEY ? `已启用 (${VOICE_LLM_MODEL})` : '未启用（未配置 VOICE_LLM_API_KEY）'}`);
     log(`支付模式: ${PAYMENT_MODE}${PAYMENT_MODE === 'lyorder' ? `，支付 API: ${PAYMENT_API_BASE_URL || '未配置'}` : '（免费/测试）'}`);
     if (PAYMENT_MODE === 'lyorder') {
         setInterval(refundTimedOutOrders, Math.max(1000, PAYMENT_STATUS_SWEEP_INTERVAL_MS)).unref();
@@ -2893,6 +3063,25 @@ process.on('SIGTERM', () => {
 
 // ========== WebSocket 服务 ==========
 const wss = new WebSocketServer({ port: WS_PORT, host: WS_HOST, maxPayload: 64 * 1024 });
+
+// 同源访问（http://盒子IP:3000/）时前端连的是 ws://host:3000/ws/，
+// 让 3000 端口复用同一个 wss，直连也能建立 WebSocket。
+server.on('upgrade', (request, socket, head) => {
+    let pathname = '';
+    try {
+        pathname = new URL(request.url, `http://${request.headers.host || 'localhost'}`).pathname;
+    } catch (error) {
+        socket.destroy();
+        return;
+    }
+    if (pathname === '/ws/') {
+        wss.handleUpgrade(request, socket, head, (client) => {
+            wss.emit('connection', client, request);
+        });
+    } else {
+        socket.destroy();
+    }
+});
 
 // WebSocket 协议级心跳可保持 Nginx/FRP 的升级连接活跃，并清理已经失联的浏览器。
 const wsHeartbeatTimer = setInterval(() => {

@@ -443,6 +443,23 @@ __filter_preview__\n
 | `ROBOT_STOW_TIMEOUT_MS` | `120000` | 收起超时 |
 | `ROBOT_FILTER_PREVIEW_TIMEOUT_MS` | `30000` | 层板过滤预览超时 |
 | `ROBOT_BROADCAST_LOGS` | 空 | 设为 `1` 时向前端广播内部日志 |
+| `VOICE_LLM_ENABLED` | `1` | 语音大模型校正开关，设为 `0` 关闭（前端自动回退原关键词匹配） |
+| `VOICE_LLM_API_KEY` | 空 | ModelScope Token；未设置时不调用大模型，语音走原 Web Speech 关键词逻辑 |
+| `VOICE_LLM_BASE_URL` | `https://api-inference.modelscope.cn/v1` | OpenAI 兼容接口地址 |
+| `VOICE_LLM_MODEL` | `Qwen/Qwen3.8-Flash-Next` | 大模型 Model-Id |
+| `VOICE_LLM_TIMEOUT_MS` | `15000` | 单次校正调用超时 |
+
+## 语音点单大模型校正
+
+前端 Web Speech API 识别出文字后，`server.js` 的 `POST /api/voice/correct` 会用商品库
+（`products.json` 的商品名和分类）作提示词，让大模型做谐音/错别字校正并返回结构化 JSON
+（`matched_product` / `category` / `keyword` / `corrected_text` / `note`），前端按结果
+展示商品或分类，并在 `voiceHintText` 显示校正说明（如"谐音校正:洗笔→雪碧"）。
+
+- 不配置 `VOICE_LLM_API_KEY` 或大模型调用失败时，`used=false`，前端自动回退到原来的
+  `extractVoiceKeyword` + 关键词/分类匹配逻辑，不影响原有语音点单。
+- `VOICE_LLM_API_KEY` 应放在 `/etc/grasp-qianduan.env` 或启动命令环境变量中，不要把
+  Token 写进仓库。
 
 ## 数据初始化与测试
 

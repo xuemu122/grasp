@@ -554,21 +554,16 @@ function handleSearch() {
 function productMatchesKeywords(product, keyword) {
     const words = (keyword || '').toLowerCase().split(/\s+/).filter(Boolean);
     if (words.length === 0) return false;
-    const fields = [product.name, product.spec, product.manufacturer, product.location]
-        .filter(Boolean)
-        .map(f => f.toLowerCase());
-    return words.every(w => fields.some(f => f.includes(w)));
+    const name = (product.name || '').toLowerCase();
+    return words.every(w => name.includes(w));
 }
 
 function getFilteredProducts() {
     return products.filter(p => {
         const matchCategory = currentCategory === 'all' || p.category === currentCategory;
         const words = searchKeyword ? searchKeyword.toLowerCase().split(/\s+/).filter(Boolean) : [];
-        const matchSearch = words.length === 0 || words.every(w =>
-            [p.name, p.spec, p.manufacturer, p.location]
-                .filter(Boolean)
-                .some(f => f.toLowerCase().includes(w))
-        );
+        const name = (p.name || '').toLowerCase();
+        const matchSearch = words.length === 0 || words.every(w => name.includes(w));
         return matchCategory && matchSearch;
     });
 }
@@ -1562,6 +1557,62 @@ function handleVoiceCommand(rawText) {
     if (ps) ps.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+// ========== 语音大模型校正（保留原逻辑回退） ==========
+async function handleVoiceCommandSmart(rawText) {
+    let llm = null;
+    try {
+        const res = await fetch(graspApi('/voice/correct'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: rawText }),
+        });
+        if (res.ok) {
+            const json = await res.json();
+            if (json.code === 0 && json.data && json.data.used) llm = json.data;
+        }
+    } catch (e) {
+        console.warn('语音大模型校正失败，走原逻辑:', e);
+    }
+
+    if (llm) {
+        const hint = document.getElementById('voiceHintText');
+        if (hint && llm.note) hint.textContent = `✅ ${llm.note}`;
+        const ps = document.getElementById('productsSection');
+
+        // 1) 模型给出搜索关键词 → 直接搜索（命中所有含该词的系列/口味变体）
+        if (llm.keyword || llm.product) {
+            const keyword = (llm.keyword || llm.product);
+            currentCategory = 'all';
+            searchKeyword = keyword.toLowerCase();
+            const s = document.getElementById('searchInput'); if (s) s.value = keyword;
+            const t = document.getElementById('currentCategoryTitle'); if (t) t.textContent = '全部商品';
+            renderCategories();
+            renderProducts();
+            startVoiceResetTimer();
+            if (ps) ps.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            return;
+        }
+        // 2) 只给了分类 → 切分类
+        if (llm.category) {
+            currentCategory = llm.category;
+            searchKeyword = '';
+            const s = document.getElementById('searchInput'); if (s) s.value = '';
+            const t = document.getElementById('currentCategoryTitle'); if (t) t.textContent = currentCategory;
+            renderCategories();
+            renderProducts();
+            startVoiceResetTimer();
+            if (ps) ps.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            return;
+        }
+        // 3) 未命中商品/分类：用大模型校正后的文本走原逻辑
+        if (llm.corrected_text) {
+            handleVoiceCommand(llm.corrected_text);
+            return;
+        }
+    }
+    handleVoiceCommand(rawText);
+}
+
 // 初始化语音识别
 function initVoice() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1585,7 +1636,7 @@ function initVoice() {
         const hint = document.getElementById('voiceHintText');
         if (hint) hint.textContent = (voiceFinalText || voiceInterimText) || '正在聆听...';
         if (voiceFinalText) {
-            handleVoiceCommand(voiceFinalText);
+            handleVoiceCommandSmart(voiceFinalText);
             setTimeout(() => { if (isListening) stopVoice(); }, 1500);
         }
     };
