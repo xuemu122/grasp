@@ -1355,6 +1355,33 @@ let voiceRecognition = null;
 let isListening = false;
 let voiceFinalText = '';
 let voiceInterimText = '';
+let voiceMode = 'search';   // search=语音检索(筛选商品) / order=语音点单(加入购物车)
+let voiceStartedAt = 0;     // 用于统计语音识别耗时
+
+const VOICE_MODE_LABELS = { search: '检索', order: '点单' };
+
+function applyVoiceModeUI() {
+    const searchBtn = document.getElementById('voiceModeSearch');
+    const orderBtn = document.getElementById('voiceModeOrder');
+    const isOrder = voiceMode === 'order';
+    if (searchBtn) searchBtn.classList.toggle('listening', isListening && !isOrder);
+    if (orderBtn) orderBtn.classList.toggle('listening', isListening && isOrder);
+    const s = document.getElementById('searchInput');
+    if (s && !isListening) {
+        s.placeholder = '搜索或点击语音按钮说话';
+    }
+}
+
+// 两个按钮分别直接开始对应模式的语音；再点同一个按钮则停止
+function handleVoiceButton(mode) {
+    if (!voiceRecognition) { alert('请使用 Chrome 或 Edge 浏览器'); return; }
+    if (mode !== 'order' && mode !== 'search') return;
+    if (isListening && voiceMode === mode) { stopVoice(); return; }
+    voiceMode = mode;
+    try { localStorage.setItem('grasp_voice_mode', voiceMode); } catch (e) { /* ignore */ }
+    applyVoiceModeUI();
+    if (!isListening) startVoice();
+}
 
 // 品类关键词映射：语音词 → 分类名
 const VOICE_CATEGORY_MAP = {
@@ -1560,6 +1587,7 @@ function handleVoiceCommand(rawText) {
 // ========== 语音大模型校正（保留原逻辑回退） ==========
 async function handleVoiceCommandSmart(rawText) {
     let llm = null;
+    const t0 = Date.now();
     try {
         const res = await fetch(graspApi('/voice/correct'), {
             method: 'POST',
@@ -1573,6 +1601,7 @@ async function handleVoiceCommandSmart(rawText) {
     } catch (e) {
         console.warn('语音大模型校正失败，走原逻辑:', e);
     }
+    console.log(`[语音] 检索服务端调用耗时 ${Date.now() - t0}ms`);
 
     if (llm) {
         const hint = document.getElementById('voiceHintText');
@@ -1613,12 +1642,171 @@ async function handleVoiceCommandSmart(rawText) {
     handleVoiceCommand(rawText);
 }
 
+// ========== 语音点单（加入购物车） ==========
+function findProductByName(name) {
+    const target = String(name || '').trim().toLowerCase();
+    if (!target) return null;
+    return products.find(p => (p.name || '').toLowerCase() === target)
+        || products.find(p => (p.name || '').toLowerCase().includes(target))
+        || products.find(p => target.includes((p.name || '').toLowerCase()) && (p.name || '').length >= 2)
+        || null;
+}
+
+function addProductQty(product, qty) {
+    if (!product) return 0;
+    const stock = Number(product.stock);
+    const current = Number(cart[product.id] || 0);
+    const want = Math.max(1, Math.floor(Number(qty) || 1));
+    const allowed = Number.isFinite(stock) ? Math.max(0, stock - current) : want;
+    const add = Math.min(want, allowed);
+    if (add <= 0) return 0;
+    cart[product.id] = current + add;
+    updateCartUI();
+    renderProducts();
+    return add;
+}
+
+function openCart() {
+    const sidebar = document.getElementById('cartSidebar');
+    if (!sidebar) return;
+    sidebar.classList.add('is-open');
+    const header = sidebar.querySelector('.cart-header');
+    if (header) {
+        header.setAttribute('aria-expanded', 'true');
+        header.setAttribute('aria-label', '收起购物车');
+    }
+}
+
+async function handleVoiceOrder(rawText) {
+    const hint = document.getElementById('voiceHintText');
+    const say = (text) => { if (hint) hint.textContent = text; };
+    let llm = null;
+    const t0 = Date.now();
+    try {
+        const res = await fetch(graspApi('/voice/correct'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: rawText, mode: 'order' }),
+        });
+        if (res.ok) {
+            const json = await res.json();
+            if (json.code === 0 && json.data && json.data.used) llm = json.data;
+        }
+    } catch (e) {
+        console.warn('语音点单大模型失败:', e);
+    }
+    console.log(`[语音] 点单服务端调用耗时 ${Date.now() - t0}ms`);
+    if (!llm) { say('语音点单识别失败，请再说一次'); return; }
+
+    const action = llm.action || (llm.matched ? 'add' : 'none');
+    const qty = Math.max(1, Math.floor(Number(llm.quantity) || 1));
+
+    if (action === 'clear') {
+        clearCart();
+        say('✅ 已清空购物车');
+        return;
+    }
+    if (action === 'query') {
+        const items = getCartItems();
+        say(items.length
+            ? '购物车：' + items.map(i => `${i.name}×${i.qty}`).join('、') + `，共 ${getTotalQty()} 件`
+            : '购物车是空的');
+        return;
+    }
+    if (action === 'checkout') {
+        if (getCartItems().length === 0) { say('购物车是空的，无法结算'); return; }
+        say('✅ 正在结算…');
+        await submitOrder();
+        return;
+    }
+
+    // 组装商品项（兼容单商品字段），支持一句话多个商品
+    const orderItems = Array.isArray(llm.items) && llm.items.length
+        ? llm.items
+        : ((llm.product || llm.keyword) ? [{ product: llm.product, keyword: llm.keyword, quantity: qty }] : []);
+
+    const resolveItem = (item) => {
+        if (item && item.product) {
+            const exact = findProductByName(item.product);
+            if (exact) return exact;
+        }
+        const kw = String((item && (item.keyword || item.product)) || '').trim().toLowerCase();
+        if (!kw) return null;
+        return products.find(p => (p.name || '').toLowerCase().includes(kw)) || null;
+    };
+
+    if (action === 'none' || !orderItems.length) {
+        say(`没听清要什么商品${llm.corrected_text ? `（${llm.corrected_text}）` : ''}`);
+        return;
+    }
+
+    const done = [];
+    const missing = [];
+
+    if (action === 'add') {
+        for (const item of orderItems) {
+            const product = resolveItem(item);
+            const q = Math.max(1, Math.floor(Number(item.quantity) || 1));
+            if (!product) { missing.push(item.product || item.keyword || '?'); continue; }
+            const added = addProductQty(product, q);
+            if (!added) { say(`${product.name} 库存不足`); return; }
+            done.push(`${product.name}×${added}`);
+        }
+        if (done.length) {
+            say(`✅ 已加入购物车：${done.join('、')}${missing.length ? `；未找到：${missing.join('、')}` : ''}`);
+            openCart();
+        } else {
+            say(`商品库中没有：${missing.join('、')}`);
+        }
+        return;
+    }
+
+    if (action === 'remove') {
+        for (const item of orderItems) {
+            const product = resolveItem(item);
+            const q = Math.max(1, Math.floor(Number(item.quantity) || 1));
+            if (!product) { missing.push(item.product || item.keyword || '?'); continue; }
+            const current = Number(cart[product.id] || 0);
+            if (current <= 0) { missing.push(product.name); continue; }
+            const removeQty = Math.min(q, current);
+            const left = current - removeQty;
+            if (left <= 0) delete cart[product.id]; else cart[product.id] = left;
+            done.push(`${product.name}×${removeQty}`);
+        }
+        updateCartUI();
+        renderProducts();
+        say(done.length
+            ? `✅ 已移除：${done.join('、')}${missing.length ? `；未在购物车：${missing.join('、')}` : ''}`
+            : `未在购物车：${missing.join('、')}`);
+        return;
+    }
+
+    if (action === 'set') {
+        for (const item of orderItems) {
+            const product = resolveItem(item);
+            if (!product) { missing.push(item.product || item.keyword || '?'); continue; }
+            const q = Math.max(0, Math.floor(Number(item.quantity) || 0));
+            const stock = Number(product.stock);
+            const target = Number.isFinite(stock) ? Math.min(q, stock) : q;
+            if (target <= 0) delete cart[product.id]; else cart[product.id] = target;
+            done.push(`${product.name}=${Math.max(0, target)}`);
+        }
+        updateCartUI();
+        renderProducts();
+        say(done.length ? `✅ 已设置：${done.join('、')}` : `商品库中没有：${missing.join('、')}`);
+        return;
+    }
+}
+
 // 初始化语音识别
 function initVoice() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
-        const b = document.getElementById('btnVoice');
-        if (b) { b.title = '浏览器不支持语音识别'; b.style.opacity = '0.4'; b.style.cursor = 'not-allowed'; }
+        ['voiceModeSearch', 'voiceModeOrder'].forEach((id) => {
+            const b = document.getElementById(id);
+            if (b) { b.title = '浏览器不支持语音识别'; b.style.opacity = '0.4'; b.style.cursor = 'not-allowed'; }
+        });
+        applyVoiceModeUI();
         return;
     }
     voiceRecognition = new SR();
@@ -1636,43 +1824,53 @@ function initVoice() {
         const hint = document.getElementById('voiceHintText');
         if (hint) hint.textContent = (voiceFinalText || voiceInterimText) || '正在聆听...';
         if (voiceFinalText) {
-            handleVoiceCommandSmart(voiceFinalText);
+            const asrMs = voiceStartedAt ? (Date.now() - voiceStartedAt) : 0;
+            console.log(`[语音] 识别耗时(开始→最终文本) ${asrMs}ms: "${voiceFinalText}"`);
+            if (voiceMode === 'order') handleVoiceOrder(voiceFinalText);
+            else handleVoiceCommandSmart(voiceFinalText);
             setTimeout(() => { if (isListening) stopVoice(); }, 1500);
         }
     };
 
     voiceRecognition.onerror = (event) => {
-        const hint = document.getElementById('voiceHintText');
-        if (hint) hint.textContent = event.error === 'not-allowed' ? '麦克风权限被拒绝' : '没听清，再试一次';
-        setTimeout(() => { if (isListening && voiceRecognition) { try { voiceRecognition.start(); } catch (e) {} } }, 1000);
+        const err = event && event.error;
+        if (err === 'not-allowed' || err === 'service-not-allowed') {
+            const hint = document.getElementById('voiceHintText');
+            if (hint) hint.textContent = '麦克风权限被拒绝';
+            return;
+        }
+        // no-speech / aborted / network 等静默处理，不弹"没听清"，保持连续聆听
+        if (isListening) {
+            setTimeout(() => { if (isListening && voiceRecognition) { try { voiceRecognition.start(); } catch (e) {} } }, 1000);
+        }
     };
 
     voiceRecognition.onend = () => {
         if (isListening) setTimeout(() => { if (isListening && voiceRecognition) { try { voiceRecognition.start(); } catch (e) {} } }, 300);
     };
-}
-
-function toggleVoice() {
-    if (!voiceRecognition) { alert('请使用 Chrome 或 Edge 浏览器'); return; }
-    isListening ? stopVoice() : startVoice();
+    try {
+        const saved = localStorage.getItem('grasp_voice_mode');
+        if (saved === 'order' || saved === 'search') voiceMode = saved;
+    } catch (e) { /* ignore */ }
+    applyVoiceModeUI();
 }
 
 function startVoice() {
     if (!voiceRecognition) return;
     isListening = true; voiceFinalText = ''; voiceInterimText = '';
-    const b = document.getElementById('btnVoice'); if (b) { b.classList.add('listening'); b.textContent = '🎙️'; }
+    voiceStartedAt = Date.now();
+    applyVoiceModeUI();
     const h = document.getElementById('voiceHint'); if (h) h.style.display = 'flex';
-    const t = document.getElementById('voiceHintText'); if (t) t.textContent = '正在聆听...';
-    const s = document.getElementById('searchInput'); if (s) s.placeholder = '🎤 正在聆听，请说话...';
+    const t = document.getElementById('voiceHintText'); if (t) t.textContent = voiceMode === 'order' ? '请说要点什么…' : '正在聆听...';
+    const s = document.getElementById('searchInput'); if (s) s.placeholder = voiceMode === 'order' ? '🎤 语音点单中，请说商品...' : '🎤 正在聆听，请说话...';
     try { voiceRecognition.start(); } catch (e) {}
 }
 
 function stopVoice() {
     isListening = false;
-    const b = document.getElementById('btnVoice'); if (b) { b.classList.remove('listening'); b.textContent = '🎤'; }
     const h = document.getElementById('voiceHint');
     if (h) setTimeout(() => { h.style.display = 'none'; }, 2000);
-    const s = document.getElementById('searchInput'); if (s) s.placeholder = '搜索或点击🎤语音搜索';
+    applyVoiceModeUI();
     try { voiceRecognition.abort(); } catch (e) {}
 }
 

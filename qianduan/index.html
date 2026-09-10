@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>机器人智能点单平台</title>
 
-    <link rel="stylesheet" href="style.css?v=payment-26">
+    <link rel="stylesheet" href="style.css?v=voice-36">
 
 </head>
 <body>
@@ -32,10 +32,11 @@
                 </div>
             </div>
             <div class="header-search">
-                <input type="text" id="searchInput" placeholder="搜索或点击🎤语音搜索" autocomplete="off">
-                <button class="btn-voice" id="btnVoice" title="语音点单" onclick="toggleVoice()">🎤</button>
+                <input type="text" id="searchInput" placeholder="搜索或点击语音按钮说话" autocomplete="off">
+                <button type="button" class="voice-mode-btn" id="voiceModeSearch" onclick="handleVoiceButton('search')" title="语音检索：说话筛选商品"><span class="vm-icon">🎤</span>语音检索</button>
                 <button class="btn-search" onclick="handleSearch()">🔍</button>
             </div>
+            <button type="button" class="voice-mode-btn" id="voiceModeOrder" onclick="handleVoiceButton('order')" title="语音点单：说话加入购物车"><span class="vm-icon">🛒</span>语音点单</button>
             <div class="voice-hint" id="voiceHint" style="display:none;">
                 <span class="voice-hint-dot"></span>
                 <span id="voiceHintText">正在聆听...</span>
@@ -114,6 +115,6 @@
         <div class="toast-content" id="toastContent"></div>
     </div>
 
-    <script src="script.js?v=payment-27"></script>
+    <script src="script.js?v=voice-36"></script>
 </body>
 </html>

@@ -444,20 +444,37 @@ __filter_preview__\n
 | `ROBOT_FILTER_PREVIEW_TIMEOUT_MS` | `30000` | 层板过滤预览超时 |
 | `ROBOT_BROADCAST_LOGS` | 空 | 设为 `1` 时向前端广播内部日志 |
 | `VOICE_LLM_ENABLED` | `1` | 语音大模型校正开关，设为 `0` 关闭（前端自动回退原关键词匹配） |
-| `VOICE_LLM_API_KEY` | 空 | ModelScope Token；未设置时不调用大模型，语音走原 Web Speech 关键词逻辑 |
-| `VOICE_LLM_BASE_URL` | `https://api-inference.modelscope.cn/v1` | OpenAI 兼容接口地址 |
-| `VOICE_LLM_MODEL` | `Qwen/Qwen3.8-Flash-Next` | 大模型 Model-Id |
-| `VOICE_LLM_TIMEOUT_MS` | `15000` | 单次校正调用超时 |
+| `VOICE_LLM_API_KEY` | 空 | 大模型 API Key；未设置时不调用大模型，语音走原 Web Speech 关键词逻辑 |
+| `VOICE_LLM_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容接口地址（默认 DeepSeek） |
+| `VOICE_LLM_MODEL` | `deepseek-flash` | 大模型 Model-Id |
+| `VOICE_LLM_TIMEOUT_MS` | `30000` | 单次校正调用超时 |
+| `VOICE_LLM_RETRIES` | `2` | 单次校正调用失败（超时/网络/5xx）自动重试次数 |
+| `VOICE_LLM_REASONING_EFFORT` | `none` | 推理力度；DeepSeek 设为 `none` 关闭思考降低延迟，设为空字符串则不下发 |
+| `VOICE_LLM_CATALOG_URL` | 空 | 语音校正商品库来源；设为云端商品接口（如 `https://<站点>/api/products`）时与点单商品一致，未配置则用本地 `products.json` |
+| `VOICE_LLM_CATALOG_CACHE_MS` | `300000` | 云端商品库缓存时间 |
+| `VOICE_LLM_ALIASES` | 空 | 追加/覆盖误识别对照表，JSON 对象 `{"用户说词":"商品库词"}` |
 
-## 语音点单大模型校正
+## 语音交互（检索 + 点单）
 
-前端 Web Speech API 识别出文字后，`server.js` 的 `POST /api/voice/correct` 会用商品库
-（`products.json` 的商品名和分类）作提示词，让大模型做谐音/错别字校正并返回结构化 JSON
-（`matched_product` / `category` / `keyword` / `corrected_text` / `note`），前端按结果
-展示商品或分类，并在 `voiceHintText` 显示校正说明（如"谐音校正:洗笔→雪碧"）。
+前端顶部有 **🎤 检索** 和 **🛒 点单** 两个按钮，点哪个就直接开始哪种语音输入（再点同一个停止）：
 
-- 不配置 `VOICE_LLM_API_KEY` 或大模型调用失败时，`used=false`，前端自动回退到原来的
-  `extractVoiceKeyword` + 关键词/分类匹配逻辑，不影响原有语音点单。
+- **🎤 检索**：说商品或品类（"我要一瓶可乐"），大模型把谐音/口语校正为商品库标准词，
+  前端按关键词（品牌/系列基础名）筛选商品列表。未命中时回退原 `extractVoiceKeyword`
+  + 关键词/分类匹配逻辑。
+- **🛒 点单**：说"来两瓶可乐""去掉雪碧""清空购物车""结算""我买了什么"等，大模型返回
+  `action`（add/remove/set/clear/checkout/query/none）和 `items`（每项含商品名/关键词/数量），
+  一句话可说多个商品（"我要一瓶可乐，一瓶外星人"），前端逐项操作购物车并把结果显示在
+  `voiceHintText`。同一商品有多个品牌/口味时（如"可乐"、"外星人"），按关键词匹配到的
+  第一种加入，用户可在购物车里增减或改选。
+
+`server.js` 的 `POST /api/voice/correct`（`mode=search|order`）用商品库作提示词，返回
+结构化 JSON：`matched_product` / `category` / `keyword` / `corrected_text` / `note`
+（点单模式另有 `action` / `items` / `quantity`）。
+
+- 商品库来源优先用 `VOICE_LLM_CATALOG_URL`（建议指向云端商品接口，与点单/订单一致），
+  拉取失败或未配置时回退本地 `products.json`。
+- 不配置 `VOICE_LLM_API_KEY` 或大模型调用失败时，`used=false`，检索模式自动回退原关键词
+  匹配，点单模式提示"识别失败，请再说一次"。
 - `VOICE_LLM_API_KEY` 应放在 `/etc/grasp-qianduan.env` 或启动命令环境变量中，不要把
   Token 写进仓库。
 

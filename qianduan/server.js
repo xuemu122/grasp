@@ -104,10 +104,15 @@ const ORDER_TOKEN_SECRET = process.env.ORDER_TOKEN_SECRET || ADMIN_SESSION_SECRE
 const ORDER_TOKEN_TTL_MS = Number(process.env.ORDER_TOKEN_TTL_MS || 24 * 60 * 60 * 1000);
 // 语音点单大模型校正（ModelScope / OpenAI 兼容接口）
 const VOICE_LLM_ENABLED = process.env.VOICE_LLM_ENABLED !== '0';
-const VOICE_LLM_BASE_URL = String(process.env.VOICE_LLM_BASE_URL || 'https://api-inference.modelscope.cn/v1').replace(/\/+$/, '');
+const VOICE_LLM_BASE_URL = String(process.env.VOICE_LLM_BASE_URL || 'https://api.deepseek.com').replace(/\/+$/, '');
 const VOICE_LLM_API_KEY = process.env.VOICE_LLM_API_KEY || '';
-const VOICE_LLM_MODEL = process.env.VOICE_LLM_MODEL || 'Qwen/Qwen3.8-Flash-Next';
-const VOICE_LLM_TIMEOUT_MS = Number(process.env.VOICE_LLM_TIMEOUT_MS || 15000);
+const VOICE_LLM_MODEL = process.env.VOICE_LLM_MODEL || 'deepseek-flash';
+const VOICE_LLM_TIMEOUT_MS = Number(process.env.VOICE_LLM_TIMEOUT_MS || 30000);
+const VOICE_LLM_RETRIES = Math.max(1, Number(process.env.VOICE_LLM_RETRIES || 2));
+// 'none' 关闭推理思考（DeepSeek 支持），降低延迟；设为空字符串则不下发该参数
+const VOICE_LLM_REASONING_EFFORT = process.env.VOICE_LLM_REASONING_EFFORT === undefined
+    ? 'none'
+    : process.env.VOICE_LLM_REASONING_EFFORT;
 // 语音误识别对照表：现场积累的"用户说词 → 商品库标准词"，模型优先按此表校正。
 // 内置常见项；VOICE_LLM_ALIASES 环境变量可追加/覆盖，JSON 对象 {"用户说词":"商品库词"}
 const VOICE_LLM_BUILTIN_ALIASES = {
@@ -328,43 +333,77 @@ function parseJsonLoose(text) {
     return null;
 }
 
-// 语音点单大模型校正：把 Web Speech 识别出的口语文本归一化到商品库
-async function correctVoiceText(rawText) {
+// 语音点单大模型校正：把 Web Speech 识别出的口语文本归一化到商品库。
+// mode='search' 返回检索关键词/商品；mode='order' 额外返回 action/quantity 供加入购物车。
+async function correctVoiceText(rawText, mode = 'search') {
     const clean = String(rawText || '').trim();
     if (!clean) return { used: false };
     if (!VOICE_LLM_ENABLED || !VOICE_LLM_API_KEY) return { used: false };
+    const startedAt = Date.now();
 
     let products = [];
     try { products = await loadVoiceCatalog(); } catch (e) { /* 商品库读取失败不阻塞 */ }
+    const catalogMs = Date.now() - startedAt;
     const names = [...new Set(products.map(p => p && p.name).filter(Boolean))];
     const cats = [...new Set(products.map(p => p && p.category).filter(Boolean))];
     const catalog = { products: names, categories: cats };
+    const orderMode = mode === 'order';
 
-    const system = [
-        '你是自助点单机的语音识别校正助手。用户说话经过语音识别得到文字，可能有谐音、错别字或口语前后缀。',
-        '下面是本机商品库（商品名和分类），你必须只从中匹配，不能编造商品。',
-        JSON.stringify(catalog, null, 2),
-        '处理规则：',
-        '1. 把谐音/识别错误校正回商品库标准名称，如"洗笔"→"雪碧"、"迈动"→"脉动"、"茶PI"→"茶π"、"娃哈哈"→"哇哈哈"。',
-        '2. 去除口语前后缀（"我要买""来一瓶""给我拿""有没有"等）。',
-        '3. 只返回 JSON，不要 markdown 代码块、不要多余文字，格式：',
-        '{"matched_product":"商品库中的精确商品名，匹配不到填 null","category":"商品库中的分类名，匹配不到填 null","keyword":"用于搜索的关键词，优先用品牌/系列基础名（如 脉动、茶π，不含口味后缀）","corrected_text":"校正后的干净文本","note":"说明，如 谐音校正:洗笔→雪碧；无需说明填空字符串"}',
-        '4. matched_product 和 category 可以都为 null，但要尽力给出最合适的关键词 keyword。',
-        '5. 同一商品有多个口味/规格变体时（如 脉动（青柠口味）、脉动（蜜桃味）），matched_product 返回最匹配的一个精确名称，但 keyword 必须用品牌/系列基础名（如 脉动、茶π），确保前端能筛出全部变体。',
-        '6. 现场积累的语音误识别对照（用户说词→商品库标准词），必须优先按此表校正，即使该词不在商品库里：' + (VOICE_LLM_ALIAS_TEXT || '无'),
-        '7. 若用户输入与商品库某商品或上表目标发音/字形相近（谐音、同音、近音），也必须校正为该商品。',
-    ].join('\n');
+    const commonRules = [
+        '现场积累的语音误识别对照（用户说词→商品库标准词），必须优先按此表校正，即使该词不在商品库里：' + (VOICE_LLM_ALIAS_TEXT || '无'),
+        '若用户输入与商品库某商品或上表目标发音/字形相近（谐音、同音、近音），也必须校正为该商品。',
+    ];
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), VOICE_LLM_TIMEOUT_MS);
-    try {
-        const response = await fetch(`${VOICE_LLM_BASE_URL}/chat/completions`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${VOICE_LLM_API_KEY}`,
-            },
-            body: JSON.stringify({
+    let system;
+    if (orderMode) {
+        system = [
+            '你是自助售货机的语音点单助手。用户用语音点单，识别文字可能有谐音、错别字、数量词和口语。',
+            '下面是本机商品库（商品名和分类），你只能从中匹配，不能编造商品。',
+            JSON.stringify(catalog, null, 2),
+            '判断用户意图 action：',
+            '- add：把某商品加入购物车（如"来一瓶可乐""加两个雪碧"）',
+            '- remove：减少或移除某商品（如"去掉可乐""不要雪碧了"）',
+            '- set：把某商品数量设为指定值（如"可乐改成3个"）',
+            '- clear：清空购物车（如"清空""全部删掉"）',
+            '- checkout：结算/下单/付款（如"结算""下单""买单""付款"）',
+            '- query：查询购物车（如"我买了什么""购物车有什么"）',
+            '- none：无法判断意图或商品',
+            '规则：',
+            '1. 用户一句话可能包含多个商品（如"我要一瓶可乐，一瓶外星人"），必须用 items 数组逐项列出，每个商品一个元素。',
+            '2. 每个 item 的 quantity 是该商品数量，中文数字必须转成阿拉伯数字（"两瓶"→2、"三个"→3），默认 1。',
+            '3. matched_product 必须是商品库中的精确商品名，匹配不到填 null；keyword 用品牌/系列基础名。',
+            '4. 只返回 JSON，不要 markdown 代码块、不要多余文字，格式：',
+            '{"action":"add","items":[{"matched_product":"商品库中的精确商品名或null","keyword":"品牌/系列基础名","quantity":1}],"corrected_text":"校正后的干净文本","note":"简短说明或空字符串"}',
+            '5. action 为 clear/checkout/query 时 items 可为空数组。',
+            '6. 把谐音/识别错误校正回商品库标准名称，并去除口语前后缀。',
+            '7. 同一商品有多个口味/规格变体时，matched_product 返回最匹配的一个精确名称，keyword 用品牌/系列基础名（如 脉动、茶π）。',
+            ...commonRules,
+        ].join('\n');
+    } else {
+        system = [
+            '你是自助点单机的语音识别校正助手。用户说话经过语音识别得到文字，可能有谐音、错别字或口语前后缀。',
+            '下面是本机商品库（商品名和分类），你必须只从中匹配，不能编造商品。',
+            JSON.stringify(catalog, null, 2),
+            '处理规则：',
+            '1. 把谐音/识别错误校正回商品库标准名称，如"洗笔"→"雪碧"、"迈动"→"脉动"、"茶PI"→"茶π"、"娃哈哈"→"哇哈哈"。',
+            '2. 去除口语前后缀（"我要买""来一瓶""给我拿""有没有"等）。',
+            '3. 只返回 JSON，不要 markdown 代码块、不要多余文字，格式：',
+            '{"matched_product":"商品库中的精确商品名，匹配不到填 null","category":"商品库中的分类名，匹配不到填 null","keyword":"用于搜索的关键词，优先用品牌/系列基础名（如 脉动、茶π，不含口味后缀）","corrected_text":"校正后的干净文本","note":"说明，如 谐音校正:洗笔→雪碧；无需说明填空字符串"}',
+            '4. matched_product 和 category 可以都为 null，但要尽力给出最合适的关键词 keyword。',
+            '5. 同一商品有多个口味/规格变体时（如 脉动（青柠口味）、脉动（蜜桃味）），matched_product 返回最匹配的一个精确名称，但 keyword 必须用品牌/系列基础名（如 脉动、茶π），确保前端能筛出全部变体。',
+            ...commonRules,
+        ].join('\n');
+    }
+
+    const attempts = VOICE_LLM_RETRIES;
+    let content = null;
+    let lastError = '';
+    const llmStartedAt = Date.now();
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), VOICE_LLM_TIMEOUT_MS);
+        try {
+            const requestBody = {
                 model: VOICE_LLM_MODEL,
                 messages: [
                     { role: 'system', content: system },
@@ -372,39 +411,89 @@ async function correctVoiceText(rawText) {
                 ],
                 temperature: 0,
                 stream: false,
-            }),
-            signal: controller.signal,
-        });
-        if (!response.ok) {
-            const body = await response.text().catch(() => '');
-            log(`⚠️ 语音大模型 HTTP ${response.status}: ${body.slice(0, 200)}`);
-            return { used: false, error: `大模型 HTTP ${response.status}` };
+            };
+            if (VOICE_LLM_REASONING_EFFORT) requestBody.reasoning_effort = VOICE_LLM_REASONING_EFFORT;
+            const response = await fetch(`${VOICE_LLM_BASE_URL}/chat/completions`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${VOICE_LLM_API_KEY}`,
+                },
+                body: JSON.stringify(requestBody),
+                signal: controller.signal,
+            });
+            if (!response.ok) {
+                const body = await response.text().catch(() => '');
+                lastError = `大模型 HTTP ${response.status}`;
+                log(`⚠️ 语音大模型 HTTP ${response.status} (${attempt}/${attempts}): ${body.slice(0, 200)}`);
+                if (attempt < attempts && (response.status >= 500 || response.status === 429)) {
+                    await new Promise((resolve) => setTimeout(resolve, 300));
+                    continue;
+                }
+                return { used: false, error: lastError };
+            }
+            const payload = await response.json();
+            content = payload && payload.choices && payload.choices[0]
+                && payload.choices[0].message && payload.choices[0].message.content;
+            break;
+        } catch (error) {
+            lastError = error.message;
+            log(`⚠️ 语音大模型调用失败 (${attempt}/${attempts}): ${error.message}`);
+            if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 300));
+        } finally {
+            clearTimeout(timer);
         }
-        const payload = await response.json();
-        const content = payload && payload.choices && payload.choices[0]
-            && payload.choices[0].message && payload.choices[0].message.content;
-        const parsed = parseJsonLoose(content);
-        if (!parsed) {
-            log(`⚠️ 语音大模型返回无法解析: ${String(content).slice(0, 200)}`);
-            return { used: false, error: '大模型返回无法解析' };
-        }
-        const result = {
-            used: true,
-            matched: Boolean(parsed.matched_product),
-            product: parsed.matched_product || null,
-            category: parsed.category || null,
-            keyword: parsed.keyword || null,
-            corrected_text: parsed.corrected_text || clean,
-            note: parsed.note || '',
-        };
-        log(`🎤 语音大模型: "${clean}" → ${JSON.stringify(result)}`);
-        return result;
-    } catch (error) {
-        log(`⚠️ 语音大模型调用失败: ${error.message}`);
-        return { used: false, error: error.message };
-    } finally {
-        clearTimeout(timer);
     }
+    if (content === null) {
+        return { used: false, error: lastError || '大模型无响应' };
+    }
+    const parsed = parseJsonLoose(content);
+    if (!parsed) {
+        log(`⚠️ 语音大模型返回无法解析: ${String(content).slice(0, 200)}`);
+        return { used: false, error: '大模型返回无法解析' };
+    }
+    const result = {
+        used: true,
+        mode: orderMode ? 'order' : 'search',
+        matched: Boolean(parsed.matched_product),
+        product: parsed.matched_product || null,
+        category: parsed.category || null,
+        keyword: parsed.keyword || null,
+        corrected_text: parsed.corrected_text || clean,
+        note: parsed.note || '',
+    };
+    if (orderMode) {
+        const validActions = ['add', 'remove', 'set', 'clear', 'checkout', 'query', 'none'];
+        let action = String(parsed.action || '').toLowerCase();
+        if (!validActions.includes(action)) action = result.matched ? 'add' : 'none';
+        result.action = action;
+        const normalizeQty = (value) => {
+            const n = Number(value);
+            return (!Number.isFinite(n) || n < 0) ? 1 : Math.max(0, Math.floor(n));
+        };
+        const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
+        result.items = rawItems
+            .map((item) => {
+                if (!item || typeof item !== 'object') return null;
+                const product = item.matched_product || item.product || null;
+                const keyword = item.keyword || null;
+                if (!product && !keyword) return null;
+                return { product, keyword, quantity: normalizeQty(item.quantity) };
+            })
+            .filter(Boolean);
+        // 兼容模型只返回单个商品字段的情况
+        if (!result.items.length && (result.product || result.keyword)) {
+            result.items.push({
+                product: result.product,
+                keyword: result.keyword,
+                quantity: normalizeQty(parsed.quantity),
+            });
+        }
+        result.quantity = result.items.length ? result.items[0].quantity : normalizeQty(parsed.quantity);
+    }
+    const llmMs = Date.now() - llmStartedAt;
+    log(`🎤 语音大模型: "${clean}" → ${JSON.stringify(result)} (时延: 商品库=${catalogMs}ms 大模型=${llmMs}ms 总=${Date.now() - startedAt}ms)`);
+    return result;
 }
 
 function parseBinaryBody(req, maxBytes) {
@@ -2430,7 +2519,7 @@ const server = http.createServer(async (req, res) => {
             return;
         }
         try {
-            const result = await correctVoiceText(String(body.text));
+            const result = await correctVoiceText(String(body.text), body.mode === 'order' ? 'order' : 'search');
             sendJSON(res, { code: 0, data: result });
         } catch (e) {
             sendJSON(res, { code: 1, message: e.message }, 502);
