@@ -107,6 +107,24 @@ const MERCHANT_COOKIE_NAME = 'grasp_merchant_session';
 const BOX_PROXY_BASE_URL = String(process.env.BOX_PROXY_BASE_URL || 'http://127.0.0.1:5060').replace(/\/+$/, '');
 // 该盒子对应的门店；只有绑定此门店的商家才能操作（留空则不校验）。
 const BOX_PROXY_STORE_ID = String(process.env.BOX_PROXY_STORE_ID || 'STORE-001').trim();
+// 设备在线状态：云端按固定间隔探测盒子 /api/device/info，只探测由云端的那个盒子。
+// 只有显式配置 BOX_PROXY_BASE_URL 时才启用轮询，避免盒子进程反向探测自己。
+const BOX_PROXY_ENABLED = Boolean(process.env.BOX_PROXY_BASE_URL);
+const DEVICE_ONLINE_POLL_MS = Math.max(5000, Number(process.env.DEVICE_ONLINE_POLL_MS || 15000));
+const DEVICE_ONLINE_TIMEOUT_MS = Math.max(500, Number(process.env.DEVICE_ONLINE_TIMEOUT_MS || 3000));
+const DEVICE_ONLINE_STALE_MS = Math.max(DEVICE_ONLINE_POLL_MS, Number(process.env.DEVICE_ONLINE_STALE_MS || 45000));
+const boxPresence = {
+    enabled: BOX_PROXY_ENABLED,
+    online: false,
+    sn: '',
+    storeId: null,
+    storeName: null,
+    graspMode: null,
+    checkedAt: null,
+    lastSeenAt: null,
+    error: BOX_PROXY_ENABLED ? '尚未探测' : '未配置 BOX_PROXY_BASE_URL'
+};
+let boxPresenceProbeRunning = false;
 const INVENTORY_SCAN_FILE = process.env.INVENTORY_SCAN_FILE
     || path.join(path.dirname(PRODUCTS_DB_FILE), 'inventory_scan.json');
 // 门店 / 设备（机器人）台账：云端统一登记，设备出库时绑定门店
@@ -683,6 +701,62 @@ async function proxyToBox(req, res, targetPath) {
     } catch (error) {
         sendJSON(res, { code: 1, message: `盒子服务不可达: ${error.message}` }, 502);
     }
+}
+
+// 探测盒子是否在线：能读到 /api/device/info 即视为在线，并记录盒子自报的 SN / 门店。
+async function probeBoxPresence() {
+    if (!BOX_PROXY_ENABLED || boxPresenceProbeRunning) return;
+    boxPresenceProbeRunning = true;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DEVICE_ONLINE_TIMEOUT_MS);
+    try {
+        const response = await fetch(`${BOX_PROXY_BASE_URL}/api/device/info`, { signal: controller.signal, cache: 'no-store' });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload || payload.code !== 0) {
+            throw new Error((payload && payload.message) || `盒子返回 ${response.status}`);
+        }
+        const info = payload.data || {};
+        const now = new Date().toISOString();
+        boxPresence.online = true;
+        boxPresence.sn = String(info.sn || '').trim();
+        boxPresence.storeId = info.storeId || null;
+        boxPresence.storeName = info.storeName || null;
+        boxPresence.graspMode = info.graspMode || null;
+        boxPresence.checkedAt = now;
+        boxPresence.lastSeenAt = now;
+        boxPresence.error = '';
+    } catch (error) {
+        boxPresence.online = false;
+        boxPresence.checkedAt = new Date().toISOString();
+        boxPresence.error = error.name === 'AbortError' ? '探测超时' : error.message;
+    } finally {
+        clearTimeout(timer);
+        boxPresenceProbeRunning = false;
+    }
+}
+
+function boxPresenceSnapshot() {
+    return { ...boxPresence };
+}
+
+// 单个设备的在线状态：只有 SN 与在线盒子一致，且最近一次心跳未过期，才判定在线。
+function devicePresence(device) {
+    const sn = String(device && device.sn || '').trim();
+    const matches = Boolean(sn) && sn === boxPresence.sn;
+    const fresh = boxPresence.online && boxPresence.lastSeenAt
+        && (Date.now() - Date.parse(boxPresence.lastSeenAt) <= DEVICE_ONLINE_STALE_MS);
+    return {
+        online: matches && fresh,
+        known: matches,
+        checkedAt: boxPresence.checkedAt,
+        lastSeenAt: matches ? boxPresence.lastSeenAt : null
+    };
+}
+
+function withDevicePresence(device) {
+    if (!device || typeof device !== 'object') return device;
+    const presence = devicePresence(device);
+    return { ...device, online: presence.online, presence };
 }
 
 function clientIp(req) {
@@ -2864,13 +2938,19 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    if (pathname === '/api/admin/device-presence' && req.method === 'GET') {
+        if (!requireAdmin(req, res)) return;
+        sendJSON(res, { code: 0, data: boxPresenceSnapshot() });
+        return;
+    }
+
     if (pathname === '/api/admin/devices' && req.method === 'GET') {
         if (!requireAdmin(req, res)) return;
         const operations = readOperationsStore();
         const status = String(url.searchParams.get('status') || '').trim();
         const storeId = String(url.searchParams.get('storeId') || '').trim();
         const search = String(url.searchParams.get('search') || '').trim().toLowerCase();
-        let devices = operations.devices.map((device) => deviceWithStore(device, operations));
+        let devices = operations.devices.map((device) => withDevicePresence(deviceWithStore(device, operations)));
         if (status) devices = devices.filter((device) => device.status === status);
         if (storeId === 'unassigned') devices = devices.filter((device) => !device.storeId);
         else if (storeId) devices = devices.filter((device) => device.storeId === storeId);
@@ -2878,7 +2958,7 @@ const server = http.createServer(async (req, res) => {
             devices = devices.filter((device) => [device.id, device.sn, device.name, device.model, device.storeName, device.location]
                 .some((value) => String(value || '').toLowerCase().includes(search)));
         }
-        sendJSON(res, { code: 0, data: devices, total: devices.length, statuses: DEVICE_STATUS_LABELS });
+        sendJSON(res, { code: 0, data: devices, total: devices.length, statuses: DEVICE_STATUS_LABELS, presence: boxPresenceSnapshot() });
         return;
     }
 
@@ -3224,7 +3304,7 @@ const server = http.createServer(async (req, res) => {
         const stores = operations.stores.filter((store) => storeIds.includes(store.id));
         const devices = operations.devices
             .filter((device) => device.storeId && storeIds.includes(device.storeId))
-            .map((device) => deviceWithStore(device, operations));
+            .map((device) => withDevicePresence(deviceWithStore(device, operations)));
         const orders = readOrderStore().orders.filter((order) => order.source !== 'test' && order.storeId && storeIds.includes(order.storeId));
         const products = readProducts().filter((product) => product.storeId && storeIds.includes(product.storeId));
         const deviceStatusCounts = {};
@@ -3241,6 +3321,8 @@ const server = http.createServer(async (req, res) => {
                 devices,
                 deviceStatusCounts,
                 deviceStatusLabels: DEVICE_STATUS_LABELS,
+                presence: boxPresenceSnapshot(),
+                onlineDeviceCount: devices.filter((device) => device.online).length,
                 productCount: products.length,
                 orderCount: orders.length,
                 revenue: Number(orders.reduce((sum, order) => sum + Number(order.totalAmount || 0), 0).toFixed(2))
@@ -4046,6 +4128,11 @@ server.listen(PORT, HOST, () => {
     if (ORDER_STATUS_CALLBACK_URL) {
         setInterval(flushOrderCallbackOutbox, Math.max(5000, ORDER_CALLBACK_RETRY_INTERVAL_MS)).unref();
         flushOrderCallbackOutbox({ force: true }).catch((error) => log(`⚠️ 完成回调队列启动重试失败: ${error.message}`));
+    }
+    if (BOX_PROXY_ENABLED) {
+        probeBoxPresence();
+        setInterval(probeBoxPresence, DEVICE_ONLINE_POLL_MS).unref();
+        log(`设备在线探测: 每 ${Math.round(DEVICE_ONLINE_POLL_MS / 1000)}s 探测 ${BOX_PROXY_BASE_URL}/api/device/info`);
     }
     const chassisSettings = readChassisSettings();
     log(`底盘接口: ${CHASSIS_HOST}:${CHASSIS_PORT}，栅格地图: ${CHASSIS_MAP_HTTP_PROTOCOL}://${CHASSIS_MAP_HTTP_HOST}:${CHASSIS_MAP_HTTP_PORT}`);

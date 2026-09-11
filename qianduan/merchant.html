@@ -152,6 +152,7 @@
                         <div class="stat"><div class="stat-label">营业额</div><div class="stat-value" id="statRevenue">-</div></div>
                         <div class="stat"><div class="stat-label">门店数</div><div class="stat-value" id="statStores">-</div></div>
                         <div class="stat"><div class="stat-label">设备数</div><div class="stat-value" id="statDevices">-</div></div>
+                        <div class="stat"><div class="stat-label">在线设备</div><div class="stat-value" id="statOnlineDevices">-</div></div>
                         <div class="stat"><div class="stat-label">商品数</div><div class="stat-value" id="statProducts">-</div></div>
                     </div>
                 </div>
@@ -240,8 +241,8 @@
                     <div class="card-title"><span>设备管理 <span class="count" id="deviceCount">0 台</span></span></div>
                     <div class="table-wrapper">
                         <table>
-                            <thead><tr><th>设备</th><th>SN</th><th>状态</th><th>存放位置</th></tr></thead>
-                            <tbody id="deviceBody"><tr><td colspan="4" class="loading">加载中...</td></tr></tbody>
+                            <thead><tr><th>设备</th><th>SN</th><th>状态</th><th>在线</th><th>存放位置</th></tr></thead>
+                            <tbody id="deviceBody"><tr><td colspan="5" class="loading">加载中...</td></tr></tbody>
                         </table>
                     </div>
                 </div>
@@ -339,6 +340,7 @@
         let editingProductId = null;
         let merchantProducts = [];
         let merchantStores = [];
+        let merchantRefreshTimer = null;
 
         document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('loginForm').addEventListener('submit', loginMerchant);
@@ -401,9 +403,27 @@
             switchMerchantPage('dashboard');
             await loadOverview();
             await Promise.all([loadMerchantProducts(), loadOrders(1), mcLoadScan()]);
+            startMerchantRefresh();
+        }
+
+        function startMerchantRefresh() {
+            stopMerchantRefresh();
+            merchantRefreshTimer = setInterval(refreshMerchantData, 15000);
+        }
+
+        function stopMerchantRefresh() {
+            if (merchantRefreshTimer) clearInterval(merchantRefreshTimer);
+            merchantRefreshTimer = null;
+        }
+
+        async function refreshMerchantData() {
+            if (document.hidden) return;
+            if (!document.getElementById('loginOverlay').hidden) return;
+            await loadOverview();
         }
 
         function showLogin(message = '') {
+            stopMerchantRefresh();
             document.getElementById('loginOverlay').hidden = false;
             document.getElementById('merchantMain').hidden = true;
             document.getElementById('loginError').textContent = message;
@@ -446,6 +466,10 @@
                 document.getElementById('statRevenue').textContent = `¥${Number(data.revenue || 0).toFixed(2)}`;
                 document.getElementById('statStores').textContent = String((data.stores || []).length);
                 document.getElementById('statDevices').textContent = String((data.devices || []).length);
+                const onlineDevices = Number.isFinite(Number(data.onlineDeviceCount))
+                    ? Number(data.onlineDeviceCount)
+                    : (data.devices || []).filter((device) => device.online).length;
+                document.getElementById('statOnlineDevices').textContent = String(onlineDevices);
                 document.getElementById('statProducts').textContent = String(data.productCount || 0);
                 document.getElementById('storeCount').textContent = `${(data.stores || []).length} 家`;
                 merchantStores = data.stores || [];
@@ -472,13 +496,20 @@
                 </div>`).join('');
         }
 
+        function deviceOnlineBadge(device) {
+            if (device.online) return '<span class="status-badge on">在线</span>';
+            if (device.presence && device.presence.known) return '<span class="status-badge off">离线</span>';
+            return '<span class="status-badge warn">未接入</span>';
+        }
+
         function renderDevices(devices) {
             const body = document.getElementById('deviceBody');
-            if (!devices.length) { body.innerHTML = '<tr><td colspan="4" class="empty-state">暂无绑定设备</td></tr>'; return; }
+            if (!devices.length) { body.innerHTML = '<tr><td colspan="5" class="empty-state">暂无绑定设备</td></tr>'; return; }
             body.innerHTML = devices.map((device) => `<tr>
                 <td><strong>${esc(device.name) || esc(device.id)}</strong><br><small>${esc(device.id)}</small></td>
                 <td>${esc(device.sn) || '-'}</td>
                 <td><span class="status-badge ${device.status === 'deployed' ? 'on' : (device.status === 'in_stock' ? 'warn' : 'off')}">${esc(device.statusLabel || device.status)}</span></td>
+                <td>${deviceOnlineBadge(device)}</td>
                 <td>${esc(device.location) || '-'}</td>
             </tr>`).join('');
         }
