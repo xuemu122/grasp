@@ -169,6 +169,9 @@
         .fleet-chip { padding: 6px 12px; border-radius: 8px; background: var(--gray-50); border: 1px solid var(--gray-200); font-size: 0.82rem; color: var(--gray-600); }
         .fleet-chip strong { color: var(--gray-900); margin-left: 4px; }
         .store-assign-select { min-width: 150px; padding: 7px 10px; }
+        .merchant-store-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; max-height: 180px; overflow: auto; padding: 8px; border: 2px solid var(--gray-200); border-radius: 8px; }
+        .merchant-store-item { display: flex; align-items: center; gap: 6px; font-size: 0.86rem; color: var(--gray-700); cursor: pointer; }
+        .merchant-store-item input { margin: 0; }
         .modal-overlay[hidden] { display: none; }
         .modal .form-group:last-of-type { margin-bottom: 0; }
         .map-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -239,7 +242,8 @@
             <button class="admin-nav-item active" type="button" data-page="dashboard" onclick="switchAdminPage('dashboard')">仪表盘</button>
             <button class="admin-nav-item" type="button" data-page="products" onclick="switchAdminPage('products')">商品管理</button>
             <button class="admin-nav-item" type="button" data-page="devices" onclick="switchAdminPage('devices')">设备管理</button>
-            <button class="admin-nav-item" type="button" data-page="operations" onclick="switchAdminPage('operations')">运营管理</button>
+            <button class="admin-nav-item" type="button" data-page="stores" onclick="switchAdminPage('stores')">门店管理</button>
+            <button class="admin-nav-item" type="button" data-page="merchants" onclick="switchAdminPage('merchants')">商家账号</button>
             <button class="admin-nav-item" type="button" data-page="orders" onclick="switchAdminPage('orders')">订单管理</button>
             <button class="admin-nav-item" type="button" data-page="inventory-scan" onclick="switchAdminPage('inventory-scan')">自动巡架</button>
             <button class="admin-nav-item" type="button" data-page="chassis" onclick="switchAdminPage('chassis')">底盘与地图</button>
@@ -404,69 +408,37 @@
             </div>
         </div>
 
-        <!-- 运营管理 -->
-        <div class="card operations-card" data-admin-page="operations">
+        <!-- 门店管理（平台） -->
+        <div class="card operations-card" data-admin-page="stores">
             <div class="card-title">
                 <span>门店管理 <span class="count" id="storeCount">0 家</span></span>
                 <button class="btn btn-primary btn-sm" type="button" onclick="openStoreModal()">+ 新增门店</button>
             </div>
+            <p class="robot-control-status">门店由平台维护；设备出库时绑定门店，商家端只能看到自己门店的订单和设备。</p>
             <div class="table-wrapper">
                 <table>
-                    <thead><tr><th>门店</th><th>编号</th><th>地址 / 联系人</th><th>设备数</th><th>订单数</th><th>营业额</th><th>操作</th></tr></thead>
-                    <tbody id="storeTableBody"><tr><td colspan="7" class="loading">加载中...</td></tr></tbody>
+                    <thead><tr><th>门店</th><th>编号</th><th>地址 / 联系人</th><th>设备数</th><th>操作</th></tr></thead>
+                    <tbody id="storeTableBody"><tr><td colspan="5" class="loading">加载中...</td></tr></tbody>
                 </table>
             </div>
         </div>
 
-        <div class="card operations-card" data-admin-page="operations">
+        <!-- 商家账号（平台） -->
+        <div class="card operations-card" data-admin-page="merchants">
             <div class="card-title">
-                <span>设备分布与出入库</span>
-                <button class="btn btn-primary btn-sm" type="button" onclick="loadOperationsOverview()">刷新</button>
+                <span>商家账号 <span class="count" id="merchantCount">0 个</span></span>
+                <button class="btn btn-primary btn-sm" type="button" onclick="openMerchantModal()">+ 新增商家</button>
             </div>
-            <p class="robot-control-status">出库即把设备投放到门店并绑定归属；入库即从门店收回并解除归属。两台设备可分别归属不同门店。</p>
-            <div class="table-wrapper">
-                <table>
-                    <thead><tr><th>设备</th><th>SN</th><th>状态</th><th>所属门店</th><th>订单数</th><th>营业额</th><th>出入库</th></tr></thead>
-                    <tbody id="operationsDeviceBody"><tr><td colspan="7" class="loading">加载中...</td></tr></tbody>
-                </table>
-            </div>
-        </div>
-
-        <div class="card order-admin-card" data-admin-page="operations">
-            <div class="card-title">
-                <span>订单归属 <span class="count" id="operationsOrderCount">0 条</span></span>
-                <button class="btn btn-primary btn-sm" type="button" onclick="loadOperationsOrders(1)">刷新</button>
-            </div>
+            <p class="robot-control-status">商家用自己的账号登录 <code>merchant.html</code>，只能查看所选门店的订单、门店信息和设备（只读）。</p>
             <div class="order-toolbar">
-                <input class="search-box" id="operationsOrderSearch" placeholder="搜索订单号 / 商品 / 门店 / 设备" onkeydown="if(event.key === 'Enter') loadOperationsOrders(1)">
-                <select class="select-box" id="operationsOrderStore" onchange="loadOperationsOrders(1)">
-                    <option value="">全部门店</option>
-                    <option value="unassigned">未归属门店</option>
-                </select>
-                <select class="select-box" id="operationsOrderDevice" onchange="loadOperationsOrders(1)">
-                    <option value="">全部设备</option>
-                    <option value="unassigned">未归属设备</option>
-                </select>
-                <select class="select-box" id="operationsOrderStatus" onchange="loadOperationsOrders(1)">
-                    <option value="">全部状态</option>
-                    <option value="PENDING_PAYMENT">待支付</option>
-                    <option value="PAID">已支付</option>
-                    <option value="PROCESSING">抓取中</option>
-                    <option value="COMPLETED">已完成</option>
-                    <option value="REFUNDED">已退款</option>
-                    <option value="FAILED">失败</option>
-                </select>
+                <input class="search-box" id="merchantSearch" placeholder="搜索账号 / 名称 / 门店" onkeydown="if(event.key === 'Enter') loadMerchants()">
+                <button class="btn btn-primary btn-sm" type="button" onclick="loadMerchants()">刷新</button>
             </div>
             <div class="table-wrapper">
                 <table>
-                    <thead><tr><th>订单号</th><th>商品</th><th>金额</th><th>门店</th><th>设备</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
-                    <tbody id="operationsOrderBody"><tr><td colspan="8" class="loading">加载中...</td></tr></tbody>
+                    <thead><tr><th>登录账号</th><th>名称</th><th>绑定门店</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead>
+                    <tbody id="merchantTableBody"><tr><td colspan="6" class="loading">加载中...</td></tr></tbody>
                 </table>
-            </div>
-            <div class="order-pagination">
-                <button id="operationsOrderPrev" type="button" onclick="loadOperationsOrders(operationsOrderPage - 1)">上一页</button>
-                <span id="operationsOrderPageInfo">第 1 / 1 页</span>
-                <button id="operationsOrderNext" type="button" onclick="loadOperationsOrders(operationsOrderPage + 1)">下一页</button>
             </div>
         </div>
 
@@ -668,13 +640,10 @@
         let adminOrderTotalPages = 1;
         let adminDataRefreshTimer = null;
         let adminDataRefreshBusy = false;
-        let operationsOrderPage = 1;
-        let operationsOrderTotalPages = 1;
         let deviceRecords = [];
         let storeRecords = [];
-        let deviceStats = [];
-        let operationsOrders = [];
-        const ADMIN_PAGES = new Set(['dashboard', 'products', 'devices', 'operations', 'orders', 'inventory-scan', 'chassis']);
+        let merchantRecords = [];
+        const ADMIN_PAGES = new Set(['dashboard', 'products', 'devices', 'stores', 'merchants', 'orders', 'inventory-scan', 'chassis']);
         let currentAdminPage = 'dashboard';
 
         // ========== 登录与初始化 ==========
@@ -730,7 +699,7 @@
         async function showAdmin() {
             document.getElementById('loginOverlay').hidden = true;
             await Promise.all([loadShelfLayers(), loadChassisMap(), loadChassisNavigationConfig(), loadRobotHandConfig(), loadRobotStatus(), loadInventoryScan()]);
-            await Promise.all([loadProducts(), loadCategories(), loadAdminOrders(1), loadStores(), loadDevices()]);
+            await Promise.all([loadProducts(), loadCategories(), loadAdminOrders(1), loadStores(), loadDevices(), loadMerchants()]);
             switchAdminPage(currentAdminPage, { refresh: false });
             document.getElementById('adminRefreshStatus').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
             startAdminDataRefresh();
@@ -774,7 +743,8 @@
         function refreshAdminPage(page) {
             if (page === 'products') return Promise.allSettled([loadProducts({ silent: true }), loadCategories(), loadShelfLayers()]);
             if (page === 'devices') return Promise.allSettled([loadStores({ silent: true }), loadDevices()]);
-            if (page === 'operations') return Promise.allSettled([loadStores(), loadOperationsOverview(), loadOperationsOrders(operationsOrderPage, { silent: true })]);
+            if (page === 'stores') return loadStores();
+            if (page === 'merchants') return Promise.allSettled([loadStores({ silent: true }), loadMerchants()]);
             if (page === 'orders') return loadAdminOrders(adminOrderPage, { silent: true });
             if (page === 'inventory-scan') return loadInventoryScan();
             if (page === 'chassis') return Promise.allSettled([loadChassisMap(), loadChassisNavigationConfig(), loadRobotHandConfig()]);
@@ -1799,19 +1769,13 @@
         }
 
         function syncStoreSelects() {
+            const select = document.getElementById('deviceStoreFilter');
+            if (!select) return;
+            const current = select.value;
             const options = storeRecords.map((store) => `<option value="${esc(store.id)}">${esc(store.name)}</option>`).join('');
-            const filters = [
-                { id: 'deviceStoreFilter', prefix: '<option value="">全部门店</option>' },
-                { id: 'operationsOrderStore', prefix: '<option value="">全部门店</option><option value="unassigned">未归属门店</option>' }
-            ];
-            for (const filter of filters) {
-                const select = document.getElementById(filter.id);
-                if (!select) continue;
-                const current = select.value;
-                select.innerHTML = filter.prefix + options;
-                select.value = current;
-                if (select.value !== current) select.value = '';
-            }
+            select.innerHTML = `<option value="">全部门店</option>` + options;
+            select.value = current;
+            if (select.value !== current) select.value = '';
         }
 
         // ========== 门店管理 ==========
@@ -1833,7 +1797,7 @@
             const body = document.getElementById('storeTableBody');
             if (!body) return;
             if (!storeRecords.length) {
-                body.innerHTML = '<tr><td colspan="7" class="empty-state">暂无门店，请先新增门店</td></tr>';
+                body.innerHTML = '<tr><td colspan="5" class="empty-state">暂无门店，请先新增门店</td></tr>';
                 return;
             }
             body.innerHTML = storeRecords.map((store) => `<tr>
@@ -1841,8 +1805,6 @@
                 <td>${esc(store.code) || '-'}</td>
                 <td>${esc(store.address) || '-'}<br><small>${esc(store.contact) || '无联系人'} ${esc(store.phone) || ''}</small></td>
                 <td>${Number(store.deviceCount || 0)}</td>
-                <td>${Number(store.orderCount || 0)}</td>
-                <td style="color:var(--primary);font-weight:700;">¥${Number(store.revenue || 0).toFixed(2)}</td>
                 <td class="actions">
                     <button class="btn btn-primary btn-sm" type="button" onclick="openStoreModal('${esc(store.id)}')">编辑</button>
                     <button class="btn btn-danger btn-sm" type="button" onclick="deleteStore('${esc(store.id)}')">删除</button>
@@ -1900,7 +1862,7 @@
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '门店保存失败');
                 showToast(json.message || '门店已保存', 'success');
                 closeAdminModal();
-                await Promise.all([loadStores({ silent: true }), loadOperationsOverview()]);
+                await Promise.all([loadStores({ silent: true })]);
             } catch (error) {
                 showToast(error.message, 'error');
             }
@@ -1914,7 +1876,7 @@
                 const json = await readAdminJson(res, '门店删除接口返回了无效数据');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '门店删除失败');
                 showToast('门店已删除', 'success');
-                await Promise.all([loadStores({ silent: true }), loadOperationsOverview()]);
+                await Promise.all([loadStores({ silent: true })]);
             } catch (error) {
                 showToast(error.message, 'error');
             }
@@ -1986,9 +1948,7 @@
         }
 
         function openDeviceModal(deviceId = '') {
-            const device = deviceId
-                ? (deviceRecords.find((row) => row.id === deviceId) || deviceStats.find((row) => row.id === deviceId))
-                : null;
+            const device = deviceId ? deviceRecords.find((row) => row.id === deviceId) : null;
             if (deviceId && !device) { showToast('设备不存在，请刷新', 'error'); return; }
             const statuses = { in_stock: '在库', deployed: '已投放', repair: '维修中', retired: '已停用' };
             openAdminModal(`
@@ -2038,7 +1998,7 @@
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '设备保存失败');
                 showToast(json.message || '设备已保存', 'success');
                 closeAdminModal();
-                await Promise.all([loadDevices({ silent: true }), loadStores({ silent: true }), loadOperationsOverview()]);
+                await Promise.all([loadDevices({ silent: true }), loadStores({ silent: true })]);
             } catch (error) {
                 showToast(error.message, 'error');
             }
@@ -2052,17 +2012,16 @@
                 const json = await readAdminJson(res, '设备删除接口返回了无效数据');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '设备删除失败');
                 showToast('设备已删除', 'success');
-                await Promise.all([loadDevices({ silent: true }), loadStores({ silent: true }), loadOperationsOverview()]);
+                await Promise.all([loadDevices({ silent: true }), loadStores({ silent: true })]);
             } catch (error) {
                 showToast(error.message, 'error');
             }
         }
 
         function openCheckoutModal(deviceId) {
-            const device = deviceRecords.find((row) => row.id === deviceId)
-                || deviceStats.find((row) => row.id === deviceId);
+            const device = deviceRecords.find((row) => row.id === deviceId);
             if (!device) { showToast('设备不存在，请刷新', 'error'); return; }
-            if (!storeRecords.length) { showToast('请先在运营管理中新增门店', 'error'); return; }
+            if (!storeRecords.length) { showToast('请先在门店管理中新增门店', 'error'); return; }
             openAdminModal(`
                 <h3>设备出库 · ${esc(device.name || device.sn || device.id)}</h3>
                 <p class="robot-control-status">出库后设备状态变为“已投放”，并绑定到所选门店。</p>
@@ -2095,7 +2054,7 @@
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '设备出库失败');
                 showToast(json.message || '设备已出库', 'success');
                 closeAdminModal();
-                await Promise.all([loadDevices({ silent: true }), loadStores({ silent: true }), loadOperationsOverview(), loadOperationsOrders(operationsOrderPage, { silent: true })]);
+                await Promise.all([loadDevices({ silent: true }), loadStores({ silent: true })]);
             } catch (error) {
                 showToast(error.message, 'error');
             }
@@ -2103,8 +2062,7 @@
         }
 
         async function checkinDevice(deviceId) {
-            const device = deviceRecords.find((row) => row.id === deviceId)
-                || deviceStats.find((row) => row.id === deviceId);
+            const device = deviceRecords.find((row) => row.id === deviceId);
             const location = window.prompt('设备入库，请输入存放位置（可留空）', device ? device.location : '');
             if (location === null) return;
             const notes = window.prompt('入库备注（可留空）', '') || '';
@@ -2117,154 +2075,133 @@
                 const json = await readAdminJson(res, '设备入库接口返回了无效数据');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '设备入库失败');
                 showToast('设备已入库', 'success');
-                await Promise.all([loadDevices({ silent: true }), loadStores({ silent: true }), loadOperationsOverview()]);
+                await Promise.all([loadDevices({ silent: true }), loadStores({ silent: true })]);
             } catch (error) {
                 showToast(error.message, 'error');
             }
         }
 
-        // ========== 运营管理 ==========
-        async function loadOperationsOverview() {
-            try {
-                const res = await adminFetch('/api/admin/operations/summary', { cache: 'no-store' });
-                const json = await readAdminJson(res, '运营汇总接口返回了无效数据');
-                if (!res.ok || json.code !== 0) throw new Error(json.message || '运营汇总读取失败');
-                const data = json.data || {};
-                storeRecords = data.storeStats || [];
-                deviceStats = data.deviceStats || [];
-                document.getElementById('storeCount').textContent = `${data.storeCount || 0} 家`;
-                renderStoreTable();
-                syncStoreSelects();
-                renderOperationsDevices();
-                syncOperationDeviceFilter();
-            } catch (error) {
-                showToast(error.message, 'error');
-            }
-        }
-
-        function renderOperationsDevices() {
-            const body = document.getElementById('operationsDeviceBody');
+        // ========== 商家账号管理 ==========
+        async function loadMerchants() {
+            const body = document.getElementById('merchantTableBody');
             if (!body) return;
-            if (!deviceStats.length) {
-                body.innerHTML = '<tr><td colspan="7" class="empty-state">暂无设备，请先在设备管理中新增</td></tr>';
+            const search = document.getElementById('merchantSearch').value.trim();
+            const params = new URLSearchParams();
+            if (search) params.set('search', search);
+            try {
+                const res = await adminFetch(`/api/admin/merchants?${params.toString()}`, { cache: 'no-store' });
+                const json = await readAdminJson(res, '商家账号接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '商家账号读取失败');
+                merchantRecords = json.data || [];
+                document.getElementById('merchantCount').textContent = `${json.total || merchantRecords.length} 个`;
+                renderMerchantTable();
+            } catch (error) {
+                body.innerHTML = `<tr><td colspan="6" class="empty-state">${esc(error.message)}</td></tr>`;
+            }
+        }
+
+        function renderMerchantTable() {
+            const body = document.getElementById('merchantTableBody');
+            if (!body) return;
+            if (!merchantRecords.length) {
+                body.innerHTML = '<tr><td colspan="6" class="empty-state">暂无商家账号，请先新增</td></tr>';
                 return;
             }
-            body.innerHTML = deviceStats.map((device) => `<tr>
-                <td><strong>${esc(device.name) || esc(device.id)}</strong><br><small>${esc(device.id)}</small></td>
-                <td>${esc(device.sn) || '-'}</td>
-                <td><span class="status-badge ${deviceStatusBadgeClass(device.status)}">${esc(device.statusLabel || device.status)}</span></td>
-                <td>${device.storeName ? esc(device.storeName) : '<span class="status-badge warn">未分配</span>'}</td>
-                <td>${Number(device.orderCount || 0)}</td>
-                <td style="color:var(--primary);font-weight:700;">¥${Number(device.revenue || 0).toFixed(2)}</td>
-                <td class="actions">
-                    <button class="btn btn-success btn-sm" type="button" onclick="openCheckoutModal('${esc(device.id)}')">出库</button>
-                    ${device.storeId ? `<button class="btn btn-danger btn-sm" type="button" onclick="checkinDevice('${esc(device.id)}')">入库</button>` : ''}
-                </td>
-            </tr>`).join('');
+            body.innerHTML = merchantRecords.map((merchant) => {
+                const stores = (merchant.stores || []).map((store) => esc(store.name)).join('、') || '<span class="status-badge warn">未绑定门店</span>';
+                return `<tr>
+                    <td><strong>${esc(merchant.username)}</strong><br><small>${esc(merchant.id)}</small></td>
+                    <td>${esc(merchant.name) || '-'}</td>
+                    <td>${stores}</td>
+                    <td><span class="status-badge ${merchant.status === 'active' ? 'on' : 'off'}">${merchant.status === 'active' ? '启用' : '停用'}</span></td>
+                    <td>${esc(adminOrderTime(merchant.lastLoginAt))}</td>
+                    <td class="actions">
+                        <button class="btn btn-primary btn-sm" type="button" onclick="openMerchantModal('${esc(merchant.id)}')">编辑</button>
+                        <button class="btn btn-danger btn-sm" type="button" onclick="deleteMerchant('${esc(merchant.id)}')">删除</button>
+                    </td>
+                </tr>`;
+            }).join('');
         }
 
-        function syncOperationDeviceFilter() {
-            const select = document.getElementById('operationsOrderDevice');
-            if (!select) return;
-            const current = select.value;
-            const options = deviceStats.map((device) => `<option value="${esc(device.id)}">${esc(device.name || device.sn || device.id)}</option>`).join('');
-            select.innerHTML = `<option value="">全部设备</option><option value="unassigned">未归属设备</option>${options}`;
-            select.value = current;
-            if (select.value !== current) select.value = '';
+        function merchantStoreCheckboxes(selectedIds) {
+            if (!storeRecords.length) return '<p class="robot-control-status">还没有门店，请先在“门店管理”里新增门店。</p>';
+            return `<div class="merchant-store-grid">${storeRecords.map((store) => `
+                <label class="merchant-store-item">
+                    <input type="checkbox" class="merchantStoreCheckbox" value="${esc(store.id)}"${(selectedIds || []).includes(store.id) ? ' checked' : ''}>
+                    <span>${esc(store.name)}${store.code ? ' · ' + esc(store.code) : ''}</span>
+                </label>`).join('')}</div>`;
         }
 
-        async function loadOperationsOrders(page = 1, { silent = false } = {}) {
-            const body = document.getElementById('operationsOrderBody');
-            if (!body) return;
-            syncOperationDeviceFilter();
-            const params = new URLSearchParams({ page: String(Math.max(1, page)), pageSize: '10' });
-            const search = document.getElementById('operationsOrderSearch').value.trim();
-            const storeId = document.getElementById('operationsOrderStore').value;
-            const deviceId = document.getElementById('operationsOrderDevice').value;
-            const status = document.getElementById('operationsOrderStatus').value;
-            if (search) params.set('search', search);
-            if (storeId) params.set('storeId', storeId);
-            if (deviceId) params.set('deviceId', deviceId);
-            if (status) params.set('status', status);
-            if (!silent) body.innerHTML = '<tr><td colspan="8" class="loading">加载中...</td></tr>';
-            try {
-                const res = await adminFetch(`/api/admin/orders?${params.toString()}`);
-                const json = await readAdminJson(res, '订单接口返回了无效数据');
-                if (!res.ok || json.code !== 0) throw new Error(json.message || '订单读取失败');
-                operationsOrderPage = json.page;
-                operationsOrderTotalPages = json.totalPages;
-                operationsOrders = json.data || [];
-                document.getElementById('operationsOrderCount').textContent = `${json.total} 条`;
-                document.getElementById('operationsOrderPageInfo').textContent = `第 ${operationsOrderPage} / ${operationsOrderTotalPages} 页`;
-                document.getElementById('operationsOrderPrev').disabled = operationsOrderPage <= 1;
-                document.getElementById('operationsOrderNext').disabled = operationsOrderPage >= operationsOrderTotalPages;
-                if (!operationsOrders.length) {
-                    body.innerHTML = '<tr><td colspan="8" class="empty-state">暂无订单</td></tr>';
-                    return;
-                }
-                body.innerHTML = operationsOrders.map((order) => {
-                    const items = (order.items || []).map((item) => `${esc(item.name)} × ${item.qty}`).join('<br>');
-                    const statusLabel = adminOrderStatusLabels[order.status] || order.status;
-                    const deviceLabel = order.deviceSn || order.deviceId
-                        ? esc(order.deviceSn || order.deviceId)
-                        : '<span class="status-badge warn">未归属</span>';
-                    return `<tr>
-                        <td><strong>${esc(order.orderId)}</strong><br><small>${esc(order.paymentMode || '')}</small></td>
-                        <td class="order-items-summary">${items || '-'}</td>
-                        <td style="color:var(--primary);font-weight:700;">¥${Number(order.totalAmount || 0).toFixed(2)}</td>
-                        <td>${order.storeName ? esc(order.storeName) : '<span class="status-badge warn">未归属</span>'}</td>
-                        <td>${deviceLabel}</td>
-                        <td><span class="status-badge ${order.status === 'COMPLETED' ? 'on' : (order.status === 'REFUNDED' ? 'off' : 'warn')}">${esc(statusLabel)}</span></td>
-                        <td>${esc(adminOrderTime(order.createdAt))}</td>
-                        <td class="actions"><button class="btn btn-primary btn-sm" type="button" onclick="openOrderAssignModal('${esc(order.orderId)}')">归属</button></td>
-                    </tr>`;
-                }).join('');
-            } catch (error) {
-                if (!silent) body.innerHTML = `<tr><td colspan="8" class="empty-state">${esc(error.message)}</td></tr>`;
-            }
-        }
-
-        function openOrderAssignModal(orderId) {
-            const order = operationsOrders.find((row) => row.orderId === orderId);
-            if (!order) { showToast('订单不存在，请刷新', 'error'); return; }
+        function openMerchantModal(merchantId = '') {
+            const merchant = merchantId ? merchantRecords.find((row) => row.id === merchantId) : null;
+            if (merchantId && !merchant) { showToast('商家账号不存在，请刷新', 'error'); return; }
             openAdminModal(`
-                <h3>订单归属 · ${esc(order.orderId)}</h3>
-                <p class="robot-control-status">可把订单划分到具体门店和设备，便于按门店统计营业额。</p>
-                <form onsubmit="return saveOrderAssignment(event, '${esc(order.orderId)}')">
-                    <div class="form-group"><label>所属门店</label><select class="form-select" id="assignStore">${storeOptionsHtml(order.storeId || '', { includeEmpty: true })}</select></div>
-                    <div class="form-group"><label>所属设备</label><select class="form-select" id="assignDevice">
-                        <option value="">未分配设备</option>
-                        ${deviceStats.map((device) => `<option value="${esc(device.id)}"${order.deviceId === device.id ? ' selected' : ''}>${esc(device.name || device.sn || device.id)}${device.storeName ? ' · ' + esc(device.storeName) : ''}</option>`).join('')}
-                    </select></div>
+                <h3>${merchant ? '编辑商家账号' : '新增商家账号'}</h3>
+                <form onsubmit="return saveMerchant(event)">
+                    <input type="hidden" id="merchantFormId" value="${merchant ? esc(merchant.id) : ''}">
+                    <div class="form-row">
+                        <div class="form-group"><label><span class="required">*</span> 登录账号</label><input class="form-input" id="merchantFormUsername" value="${merchant ? esc(merchant.username) : ''}" required autocomplete="off"></div>
+                        <div class="form-group"><label>名称</label><input class="form-input" id="merchantFormName" value="${merchant ? esc(merchant.name) : ''}" placeholder="如：门店A负责人"></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>${merchant ? '重置密码（留空不改）' : '<span class="required">*</span> 登录密码'}</label><input class="form-input" id="merchantFormPassword" type="password" autocomplete="new-password" ${merchant ? '' : 'required'} placeholder="至少 6 位"></div>
+                        <div class="form-group"><label>状态</label><select class="form-select" id="merchantFormStatus"><option value="active"${!merchant || merchant.status !== 'disabled' ? ' selected' : ''}>启用</option><option value="disabled"${merchant && merchant.status === 'disabled' ? ' selected' : ''}>停用</option></select></div>
+                    </div>
+                    <div class="form-group"><label>绑定门店（可多选）</label>${merchantStoreCheckboxes(merchant ? merchant.storeIds : [])}</div>
+                    <div class="form-row">
+                        <div class="form-group"><label>联系人</label><input class="form-input" id="merchantFormContact" value="${merchant ? esc(merchant.contact) : ''}"></div>
+                        <div class="form-group"><label>联系电话</label><input class="form-input" id="merchantFormPhone" value="${merchant ? esc(merchant.phone) : ''}"></div>
+                    </div>
                     <div class="modal-actions">
                         <button type="button" class="btn btn-danger" onclick="closeAdminModal()">取消</button>
-                        <button type="submit" class="btn btn-primary">保存归属</button>
+                        <button type="submit" class="btn btn-primary">保存</button>
                     </div>
                 </form>
             `);
         }
 
-        async function saveOrderAssignment(event, orderId) {
+        async function saveMerchant(event) {
             event.preventDefault();
+            const id = document.getElementById('merchantFormId').value;
+            const password = document.getElementById('merchantFormPassword').value;
+            const storeIds = [...document.querySelectorAll('.merchantStoreCheckbox:checked')].map((node) => node.value);
             const payload = {
-                storeId: document.getElementById('assignStore').value,
-                deviceId: document.getElementById('assignDevice').value
+                username: document.getElementById('merchantFormUsername').value.trim(),
+                name: document.getElementById('merchantFormName').value.trim(),
+                status: document.getElementById('merchantFormStatus').value,
+                storeIds,
+                contact: document.getElementById('merchantFormContact').value.trim(),
+                phone: document.getElementById('merchantFormPhone').value.trim()
             };
+            if (password) payload.password = password;
             try {
-                const res = await adminFetch(`/api/admin/orders/${encodeURIComponent(orderId)}/assignment`, {
-                    method: 'PUT',
+                const res = await adminFetch(id ? `/api/admin/merchants/${encodeURIComponent(id)}` : '/api/admin/merchants', {
+                    method: id ? 'PUT' : 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
-                const json = await readAdminJson(res, '订单归属接口返回了无效数据');
-                if (!res.ok || json.code !== 0) throw new Error(json.message || '订单归属保存失败');
-                showToast('订单归属已更新', 'success');
+                const json = await readAdminJson(res, '商家账号保存接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '商家账号保存失败');
+                showToast(json.message || '商家账号已保存', 'success');
                 closeAdminModal();
-                await loadOperationsOrders(operationsOrderPage, { silent: true });
+                await loadMerchants();
             } catch (error) {
                 showToast(error.message, 'error');
             }
             return false;
+        }
+
+        async function deleteMerchant(merchantId) {
+            if (!window.confirm('确定删除该商家账号吗？')) return;
+            try {
+                const res = await adminFetch(`/api/admin/merchants/${encodeURIComponent(merchantId)}`, { method: 'DELETE' });
+                const json = await readAdminJson(res, '商家账号删除接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '商家账号删除失败');
+                showToast('商家账号已删除', 'success');
+                await loadMerchants();
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
         }
 
         function renderChassisMap() {
@@ -2715,7 +2652,8 @@
                 );
                 if (productFilterActive) tasks.push(checkStockAlert());
                 if (currentAdminPage === 'devices') tasks.push(loadDevices({ silent: true }));
-                if (currentAdminPage === 'operations') tasks.push(loadOperationsOverview(), loadOperationsOrders(operationsOrderPage, { silent: true }));
+                if (currentAdminPage === 'stores') tasks.push(loadStores({ silent: true }));
+                if (currentAdminPage === 'merchants') tasks.push(loadMerchants());
                 if (currentAdminPage === 'inventory-scan' && !inventoryScanData.running) tasks.push(loadInventoryScan());
                 await Promise.allSettled(tasks);
                 document.getElementById('adminRefreshStatus').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;

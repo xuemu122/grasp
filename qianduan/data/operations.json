@@ -76,5 +76,37 @@
         }
       ]
     }
+  ],
+  "merchants": [
+    {
+      "id": "MER-001",
+      "username": "storeA",
+      "name": "门店A负责人",
+      "salt": "326af27970f2bd85c0a31cfc8bc70139",
+      "passwordHash": "1d1a726a2a9345be181eccf72b34a5cd457b7345b47028aa9ead788c2135ffda0849784e16b170509fa07c23267048bbffd8fc9f33321bee7ed0022a424d5653",
+      "storeIds": ["STORE-001"],
+      "status": "active",
+      "contact": "",
+      "phone": "",
+      "notes": "示例商家，默认密码 Merchant@123，请尽快修改",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "lastLoginAt": null
+    },
+    {
+      "id": "MER-002",
+      "username": "storeB",
+      "name": "门店B负责人",
+      "salt": "6e8cad23bc21642d2b8a53c80b02384b",
+      "passwordHash": "e754a292e7bb99b854f40f4861697534f3aa3de8a303830bd24f4ae6089042f6e37158a90e0ebb4ef6b43ccd4e0d1db312350f4a8e6135c23e14e6862d489a37",
+      "storeIds": ["STORE-002"],
+      "status": "active",
+      "contact": "",
+      "phone": "",
+      "notes": "示例商家，默认密码 Merchant@123，请尽快修改",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "lastLoginAt": null
+    }
   ]
 }

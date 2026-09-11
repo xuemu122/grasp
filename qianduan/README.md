@@ -41,9 +41,32 @@ POST   /api/admin/devices/:deviceId/checkout   {"storeId":"STORE-001","location"
 POST   /api/admin/devices/:deviceId/checkin    {"location":"总仓A区","notes":"..."}
 GET    /api/admin/operations/summary
 PUT    /api/admin/orders/:orderId/assignment   {"storeId":"STORE-001","deviceId":"DEV-001"}
+GET    /api/admin/merchants
+POST   /api/admin/merchants                    {"username":"storeA","password":"...","storeIds":["STORE-001"]}
+PUT    /api/admin/merchants/:merchantId
+DELETE /api/admin/merchants/:merchantId
 ```
 
 设备状态为 `in_stock`（在库）、`deployed`（已投放）、`repair`（维修中）、`retired`（已停用）。出库会把设备状态改为 `deployed` 并绑定门店，入库会解绑门店并回到 `in_stock`；删除门店时其下设备会自动回库。订单 API 也支持 `storeId`、`deviceId`（含 `unassigned`）筛选。
+
+管理端拆成两个独立界面，各自独立登录：
+
+| 页面 | 使用者 | 能力 |
+| --- | --- | --- |
+| `admin.html` | 平台方（我们） | 全部功能 + 设备管理、门店管理、商家账号 |
+| `merchant.html` | 商家 | 只看绑定门店：订单、门店信息、只读设备；无出入库权限 |
+
+商家账号由平台在 `admin.html` → “商家账号”里创建，可绑定一个或多个门店，密码以 scrypt 加盐哈希存入 `operations.json`。商家端接口：
+
+```text
+GET    /api/merchant/session
+POST   /api/merchant/login    {"username":"storeA","password":"..."}
+POST   /api/merchant/logout
+GET    /api/merchant/overview
+GET    /api/merchant/orders?page=1&pageSize=10&status=&search=
+```
+
+商家接口只返回 `storeIds` 内门店的订单与设备，无法调用任何 `/api/admin/*` 接口。商家端会话使用独立 Cookie `grasp_merchant_session`，签名密钥为 `MERCHANT_SESSION_SECRET`（未配置时复用 `ADMIN_SESSION_SECRET`）。
 
 免费订单退款只恢复本地库存；真实订单退款会转发到 LyOrder `/api/WeChatPay/refund`。每笔退款持久化唯一 `refundRequestId`，并通过请求体与 `Idempotency-Key` 重复使用；LyOrder 应按该键幂等处理。部分退款请求同时携带 `partial=true`、元单位的 `refundAmount/totalAmount`，以及分单位的 `amount.refund/amount.total`；LyOrder 必须按明确金额退款，不能忽略这些字段后退整单。库存预占和恢复都具有持久化幂等标记。
 
@@ -95,7 +118,8 @@ ORDER_STATUS_CALLBACK_SECRET=<与云端相同>
 ## 文件
 
 - `index.html`、`style.css`、`script.js`：点单页面。
-- `admin.html`：管理页面，包含仪表盘、商品、订单、设备管理、运营管理、自动巡架和底盘地图。
+- `admin.html`：平台管理页面，包含仪表盘、商品、订单、设备管理、门店管理、商家账号、自动巡架和底盘地图。
+- `merchant.html`：商家端页面，登录后只看自己门店的订单、门店信息和只读设备。
 - `data/operations.json`：设备与门店台账（出入库、门店归属），可通过 `OPERATIONS_DB_FILE` 调整路径。
 - `uploads/`：管理端上传的商品图片（默认与商品 JSON 位于同一数据目录）。
 - `server.js`：HTTP/API 与订单 WebSocket 服务。
@@ -545,6 +569,8 @@ __filter_preview__\n
 | `DEVICE_SN` | 与 `PAYMENT_DEVICE_SN` 相同 | 本盒子设备 SN，用于订单归属 |
 | `STORE_ID` | 空 | 本盒子所属门店 ID，用于订单归属 |
 | `STORE_NAME` | 空 | 本盒子所属门店名称，用于订单归属 |
+| `MERCHANT_SESSION_SECRET` | 同 `ADMIN_SESSION_SECRET` | 商家端会话签名密钥 |
+| `MERCHANT_SESSION_TTL_MS` | `28800000` | 商家端会话有效期（8 小时） |
 | `ROBOT_MAX_ITEM_QTY` | 已移除 | 商品数量只受商品库存限制 |
 | `ROBOT_MAX_ORDER_UNITS` | 已移除 | 整单数量只受各商品库存之和限制 |
 | `ROBOT_WORKER_READY_TIMEOUT_MS` | `90000` | worker 启动超时 |

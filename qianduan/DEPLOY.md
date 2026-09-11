@@ -29,11 +29,15 @@
 
 | 文件 | 说明 |
 | --- | --- |
-| `server.js` | 新增门店/设备/出入库接口、订单归属筛选 |
-| `admin.html` | 新增“设备管理”“运营管理”页面 |
+| `server.js` | 门店/设备/出入库接口、商家账号与商家端接口 |
+| `admin.html` | 平台端：设备管理、门店管理、商家账号 |
+| `merchant.html` | 商家端：登录后看自己门店的订单、门店信息、只读设备 |
 | `script.js` | 点单页支持 `?store=&device=` 归属参数 |
-| `data/operations.json` | 设备与门店台账（首次可拷示例，之后会被接口改写） |
-| `nginx.conf` | 仅作参考，通常无需修改 |
+| `data/operations.json` | 门店、设备、商家账号台账（首次可拷示例，之后被接口改写） |
+| `nginx.conf` | 建议给 `merchant.html` 增加与 `admin.html` 相同的代理 |
+
+两个界面：`admin.html` 是平台方（我们）用，`merchant.html` 是商家用；各自独立登录、独立 Cookie，
+商家只能看到绑定门店的订单和设备，看不到设备出入库。
 
 本次没有新增 npm 依赖，**不需要** 重新 `npm install`。
 
@@ -55,9 +59,17 @@ server {
         add_header Cache-Control "no-store, max-age=0" always;
     }
 
-    # 管理页：代理到 Node（这样新页面随 Node 一起更新）
+    # 平台管理页：代理到 Node（这样新页面随 Node 一起更新）
     location = /admin.html {
         proxy_pass http://127.0.0.1:3000/admin.html;   # 云端服务是 3100 就改成 3100
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        add_header Cache-Control "no-store, max-age=0" always;
+    }
+
+    # 商家端页面：同样代理到 Node
+    location = /merchant.html {
+        proxy_pass http://127.0.0.1:3000/merchant.html; # 云端服务是 3100 就改成 3100
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         add_header Cache-Control "no-store, max-age=0" always;
@@ -100,7 +112,7 @@ server {
 # 1) 本地：确认改动并打包（在仓库 qianduan 目录）
 git status
 tar -czf qianduan-deploy.tar.gz \
-  server.js admin.html script.js style.css index.html \
+  server.js admin.html merchant.html script.js style.css index.html \
   package.json data/operations.json
 
 # 2) 上传到服务器（示例）
@@ -120,7 +132,7 @@ tar -xzf /tmp/qianduan-deploy.tar.gz -C /opt/grasp/qianduan
 
 # 5) 同步一份到 Nginx 静态目录（若 /admin.html 走静态时有需要）
 sudo mkdir -p /var/www/qianduan
-sudo cp admin.html script.js style.css index.html /var/www/qianduan/
+sudo cp admin.html merchant.html script.js style.css index.html /var/www/qianduan/
 sudo chown -R nginx:nginx /var/www/qianduan    # 按现场用户调整
 
 # 6) 确认台账文件可写（新增接口会写入）
@@ -160,6 +172,9 @@ OPERATIONS_DB_FILE=/var/lib/grasp-qianduan/operations.json
 DEVICE_SN=GRASP-ROBOT-01
 STORE_ID=STORE-001
 STORE_NAME=门店A
+
+# 商家端会话签名密钥（不配置则复用 ADMIN_SESSION_SECRET）
+MERCHANT_SESSION_SECRET=<至少32字节随机值>
 ```
 
 第二台设备改为 `GRASP-ROBOT-02` / `STORE-002` / `门店B`。

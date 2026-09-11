@@ -98,6 +98,10 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const ADMIN_SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const ADMIN_SESSION_TTL_MS = Number(process.env.ADMIN_SESSION_TTL_MS || 8 * 60 * 60 * 1000);
 const ADMIN_COOKIE_NAME = 'grasp_admin_session';
+// 商家账号：平台管理员在管理页维护，绑定一个或多个门店；商家端只能看自己门店
+const MERCHANT_SESSION_SECRET = process.env.MERCHANT_SESSION_SECRET || ADMIN_SESSION_SECRET;
+const MERCHANT_SESSION_TTL_MS = Number(process.env.MERCHANT_SESSION_TTL_MS || 8 * 60 * 60 * 1000);
+const MERCHANT_COOKIE_NAME = 'grasp_merchant_session';
 const INVENTORY_SCAN_FILE = process.env.INVENTORY_SCAN_FILE
     || path.join(path.dirname(PRODUCTS_DB_FILE), 'inventory_scan.json');
 // 门店 / 设备（机器人）台账：云端统一登记，设备出库时绑定门店
@@ -185,6 +189,7 @@ if (PAYMENT_MODE === 'lyorder' && !ROBOT_GRASP_REAL) {
     if (ALLOW_FREE_ORDERS) throw new Error('正式支付服务禁止启用 ALLOW_FREE_ORDERS');
 }
 const loginAttempts = new Map();
+const merchantLoginAttempts = new Map();
 const requestRateLimits = new Map();
 const paymentReconcilePromises = new Map();
 let activeOrderId = null;
@@ -588,6 +593,49 @@ function requireAdmin(req, res) {
     return false;
 }
 
+function signMerchantSession(payload) {
+    return crypto.createHmac('sha256', MERCHANT_SESSION_SECRET).update(payload).digest('base64url');
+}
+
+function createMerchantSession(merchant) {
+    const payload = Buffer.from(JSON.stringify({
+        id: merchant.id,
+        user: merchant.username,
+        exp: Date.now() + MERCHANT_SESSION_TTL_MS
+    })).toString('base64url');
+    return `${payload}.${signMerchantSession(payload)}`;
+}
+
+function readMerchantSession(req) {
+    const token = parseCookies(req)[MERCHANT_COOKIE_NAME];
+    if (!token) return null;
+    const separator = token.lastIndexOf('.');
+    if (separator < 1) return null;
+    const payload = token.slice(0, separator);
+    if (!safeEqual(token.slice(separator + 1), signMerchantSession(payload))) return null;
+    try {
+        const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+        return session.id && Number(session.exp) > Date.now() ? session : null;
+    } catch (error) {
+        return null;
+    }
+}
+
+function requireMerchant(req, res) {
+    const session = readMerchantSession(req);
+    if (!session) {
+        sendJSON(res, { code: 1, message: '请先登录商家账号' }, 401);
+        return null;
+    }
+    const operations = readOperationsStore();
+    const merchant = operations.merchants.find((row) => row.id === session.id);
+    if (!merchant || merchant.status !== 'active') {
+        sendJSON(res, { code: 1, message: '商家账号不存在或已停用' }, 401);
+        return null;
+    }
+    return { merchant, operations };
+}
+
 function clientIp(req) {
     const direct = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '').trim();
     const trustedProxy = direct === '127.0.0.1' || direct === '::1';
@@ -621,6 +669,22 @@ function recordLoginFailure(ip) {
     const attempt = loginAttempts.get(ip) || { count: 0, startedAt: Date.now() };
     attempt.count += 1;
     loginAttempts.set(ip, attempt);
+}
+
+function merchantLoginBlocked(ip) {
+    const now = Date.now();
+    const attempt = merchantLoginAttempts.get(ip);
+    if (!attempt || now - attempt.startedAt > 15 * 60 * 1000) {
+        merchantLoginAttempts.set(ip, { count: 0, startedAt: now });
+        return false;
+    }
+    return attempt.count >= 5;
+}
+
+function recordMerchantLoginFailure(ip) {
+    const attempt = merchantLoginAttempts.get(ip) || { count: 0, startedAt: Date.now() };
+    attempt.count += 1;
+    merchantLoginAttempts.set(ip, attempt);
 }
 
 function normalizeProduct(raw, fallbackId = 1) {
@@ -1009,17 +1073,39 @@ function normalizeDeviceRecord(raw, fallbackIndex = 1) {
     };
 }
 
+function normalizeMerchantRecord(raw, fallbackIndex = 1) {
+    const now = new Date().toISOString();
+    const username = String(raw && raw.username || '').trim();
+    const id = String(raw && raw.id || username || `MER-${String(fallbackIndex).padStart(3, '0')}`).trim();
+    return {
+        id,
+        username,
+        name: String(raw && raw.name || '').trim(),
+        passwordHash: String(raw && raw.passwordHash || ''),
+        salt: String(raw && raw.salt || ''),
+        storeIds: Array.isArray(raw && raw.storeIds) ? [...new Set(raw.storeIds.map((value) => String(value)).filter(Boolean))] : [],
+        status: raw && raw.status === 'disabled' ? 'disabled' : 'active',
+        contact: String(raw && raw.contact || '').trim(),
+        phone: String(raw && raw.phone || '').trim(),
+        notes: String(raw && raw.notes || '').trim(),
+        createdAt: raw && raw.createdAt || now,
+        updatedAt: raw && raw.updatedAt || null,
+        lastLoginAt: raw && raw.lastLoginAt || null
+    };
+}
+
 function readOperationsStore() {
-    if (!fs.existsSync(OPERATIONS_DB_FILE)) return { stores: [], devices: [] };
+    if (!fs.existsSync(OPERATIONS_DB_FILE)) return { stores: [], devices: [], merchants: [] };
     try {
         const data = JSON.parse(fs.readFileSync(OPERATIONS_DB_FILE, 'utf8'));
         return {
             stores: Array.isArray(data.stores) ? data.stores.map((row, index) => normalizeStoreRecord(row, index + 1)) : [],
-            devices: Array.isArray(data.devices) ? data.devices.map((row, index) => normalizeDeviceRecord(row, index + 1)) : []
+            devices: Array.isArray(data.devices) ? data.devices.map((row, index) => normalizeDeviceRecord(row, index + 1)) : [],
+            merchants: Array.isArray(data.merchants) ? data.merchants.map((row, index) => normalizeMerchantRecord(row, index + 1)) : []
         };
     } catch (error) {
         log(`⚠️ 设备/门店数据读取失败: ${error.message}`);
-        return { stores: [], devices: [] };
+        return { stores: [], devices: [], merchants: [] };
     }
 }
 
@@ -1028,9 +1114,41 @@ function writeOperationsStore(store) {
     const tempFile = `${OPERATIONS_DB_FILE}.${process.pid}.tmp`;
     fs.writeFileSync(tempFile, JSON.stringify({
         stores: store.stores || [],
-        devices: store.devices || []
+        devices: store.devices || [],
+        merchants: store.merchants || []
     }, null, 2), 'utf8');
     fs.renameSync(tempFile, OPERATIONS_DB_FILE);
+}
+
+function hashMerchantPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+    const passwordHash = crypto.scryptSync(String(password), salt, 64).toString('hex');
+    return { salt, passwordHash };
+}
+
+function verifyMerchantPassword(password, record) {
+    if (!record || !record.salt || !record.passwordHash) return false;
+    const candidate = crypto.scryptSync(String(password), record.salt, 64).toString('hex');
+    return safeEqual(candidate, record.passwordHash);
+}
+
+function publicMerchant(record, operations) {
+    const stores = (operations ? operations.stores : [])
+        .filter((store) => record.storeIds.includes(store.id))
+        .map((store) => ({ id: store.id, name: store.name, code: store.code }));
+    return {
+        id: record.id,
+        username: record.username,
+        name: record.name,
+        status: record.status,
+        storeIds: record.storeIds,
+        stores,
+        contact: record.contact,
+        phone: record.phone,
+        notes: record.notes,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        lastLoginAt: record.lastLoginAt
+    };
 }
 
 function nextOperationsId(rows, prefix) {
@@ -2878,6 +2996,207 @@ const server = http.createServer(async (req, res) => {
                 unassignedOrderCount: orders.filter((order) => !order.storeId && !order.deviceId).length
             }
         });
+        return;
+    }
+
+    // ========== 商家账号管理（平台管理员） ==========
+    if (pathname === '/api/admin/merchants' && req.method === 'GET') {
+        if (!requireAdmin(req, res)) return;
+        const operations = readOperationsStore();
+        const search = String(url.searchParams.get('search') || '').trim().toLowerCase();
+        let merchants = operations.merchants.map((merchant) => publicMerchant(merchant, operations));
+        if (search) {
+            merchants = merchants.filter((merchant) => [merchant.username, merchant.name, ...merchant.stores.map((store) => store.name)]
+                .some((value) => String(value || '').toLowerCase().includes(search)));
+        }
+        sendJSON(res, { code: 0, data: merchants, total: merchants.length });
+        return;
+    }
+
+    if (pathname === '/api/admin/merchants' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        const body = await parseBody(req);
+        try {
+            const operations = readOperationsStore();
+            const username = String(body && body.username || '').trim();
+            const password = String(body && body.password || '');
+            if (!username) throw new Error('商家登录账号不能为空');
+            if (password.length < 6) throw new Error('商家密码至少 6 位');
+            if (operations.merchants.some((merchant) => merchant.username === username)) throw new Error(`商家账号已存在: ${username}`);
+            const storeIds = Array.isArray(body && body.storeIds) ? body.storeIds.map((value) => String(value)).filter(Boolean) : [];
+            for (const storeId of storeIds) {
+                if (!findStoreRecord(operations, storeId)) throw new Error(`所选门店不存在: ${storeId}`);
+            }
+            const now = new Date().toISOString();
+            const { salt, passwordHash } = hashMerchantPassword(password);
+            const record = normalizeMerchantRecord({
+                id: nextOperationsId(operations.merchants, 'MER'),
+                username,
+                name: String(body && body.name || '').trim() || username,
+                passwordHash,
+                salt,
+                storeIds,
+                status: body && body.status === 'disabled' ? 'disabled' : 'active',
+                contact: body && body.contact,
+                phone: body && body.phone,
+                notes: body && body.notes,
+                createdAt: now,
+                updatedAt: now
+            });
+            operations.merchants.push(record);
+            writeOperationsStore(operations);
+            sendJSON(res, { code: 0, message: '商家账号已创建', data: publicMerchant(record, operations) }, 201);
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 400);
+        }
+        return;
+    }
+
+    const adminMerchantMatch = pathname.match(/^\/api\/admin\/merchants\/([^/]+)$/);
+    if (adminMerchantMatch && ['PUT', 'DELETE'].includes(req.method)) {
+        if (!requireAdmin(req, res)) return;
+        const merchantId = decodeURIComponent(adminMerchantMatch[1]);
+        try {
+            const operations = readOperationsStore();
+            const merchant = operations.merchants.find((row) => row.id === merchantId);
+            if (!merchant) throw Object.assign(new Error('商家账号不存在'), { statusCode: 404 });
+            if (req.method === 'DELETE') {
+                operations.merchants = operations.merchants.filter((row) => row.id !== merchantId);
+                writeOperationsStore(operations);
+                sendJSON(res, { code: 0, message: '商家账号已删除' });
+                return;
+            }
+            const body = await parseBody(req);
+            const now = new Date().toISOString();
+            if (body && body.username !== undefined) {
+                const username = String(body.username || '').trim();
+                if (!username) throw new Error('商家登录账号不能为空');
+                if (operations.merchants.some((row) => row.id !== merchantId && row.username === username)) throw new Error(`商家账号已存在: ${username}`);
+                merchant.username = username;
+            }
+            if (body && body.name !== undefined) merchant.name = String(body.name || '').trim() || merchant.username;
+            if (body && body.password) {
+                if (String(body.password).length < 6) throw new Error('商家密码至少 6 位');
+                const { salt, passwordHash } = hashMerchantPassword(String(body.password));
+                merchant.salt = salt;
+                merchant.passwordHash = passwordHash;
+            }
+            if (body && body.status !== undefined) merchant.status = body.status === 'disabled' ? 'disabled' : 'active';
+            if (body && body.contact !== undefined) merchant.contact = String(body.contact || '').trim();
+            if (body && body.phone !== undefined) merchant.phone = String(body.phone || '').trim();
+            if (body && body.notes !== undefined) merchant.notes = String(body.notes || '').trim();
+            if (body && body.storeIds !== undefined) {
+                const storeIds = Array.isArray(body.storeIds) ? body.storeIds.map((value) => String(value)).filter(Boolean) : [];
+                for (const storeId of storeIds) {
+                    if (!findStoreRecord(operations, storeId)) throw new Error(`所选门店不存在: ${storeId}`);
+                }
+                merchant.storeIds = [...new Set(storeIds)];
+            }
+            merchant.updatedAt = now;
+            writeOperationsStore(operations);
+            sendJSON(res, { code: 0, message: '商家账号已更新', data: publicMerchant(merchant, operations) });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, error.statusCode || 400);
+        }
+        return;
+    }
+
+    // ========== 商家端登录与数据（只能访问自己门店） ==========
+    if (pathname === '/api/merchant/login' && req.method === 'POST') {
+        if (!enforceRateLimit(req, res, 'merchant-login', 10, 15 * 60 * 1000)) return;
+        const body = await parseBody(req);
+        const ip = clientIp(req);
+        if (merchantLoginBlocked(ip)) {
+            sendJSON(res, { code: 1, message: '登录失败次数过多，请 15 分钟后重试' }, 429);
+            return;
+        }
+        const operations = readOperationsStore();
+        const merchant = operations.merchants.find((row) => row.username === String(body && body.username || '').trim());
+        if (!merchant || !verifyMerchantPassword(body && body.password, merchant)) {
+            recordMerchantLoginFailure(ip);
+            sendJSON(res, { code: 1, message: '账号或密码错误' }, 401);
+            return;
+        }
+        if (merchant.status !== 'active') {
+            sendJSON(res, { code: 1, message: '商家账号已停用，请联系平台管理员' }, 403);
+            return;
+        }
+        merchantLoginAttempts.delete(ip);
+        merchant.lastLoginAt = new Date().toISOString();
+        writeOperationsStore(operations);
+        const maxAge = Math.max(1, Math.floor(MERCHANT_SESSION_TTL_MS / 1000));
+        sendJSON(res, { code: 0, username: merchant.username, name: merchant.name }, 200, {
+            'Set-Cookie': `${MERCHANT_COOKIE_NAME}=${createMerchantSession(merchant)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`
+        });
+        return;
+    }
+
+    if (pathname === '/api/merchant/logout' && req.method === 'POST') {
+        sendJSON(res, { code: 0 }, 200, {
+            'Set-Cookie': `${MERCHANT_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`
+        });
+        return;
+    }
+
+    if (pathname === '/api/merchant/session' && req.method === 'GET') {
+        const session = readMerchantSession(req);
+        if (!session) { sendJSON(res, { code: 0, authenticated: false }); return; }
+        const operations = readOperationsStore();
+        const merchant = operations.merchants.find((row) => row.id === session.id && row.status === 'active');
+        if (!merchant) { sendJSON(res, { code: 0, authenticated: false }); return; }
+        const profile = publicMerchant(merchant, operations);
+        sendJSON(res, { code: 0, authenticated: true, ...profile });
+        return;
+    }
+
+    if (pathname === '/api/merchant/overview' && req.method === 'GET') {
+        const auth = requireMerchant(req, res);
+        if (!auth) return;
+        const { merchant, operations } = auth;
+        const storeIds = merchant.storeIds;
+        const stores = operations.stores.filter((store) => storeIds.includes(store.id));
+        const devices = operations.devices
+            .filter((device) => device.storeId && storeIds.includes(device.storeId))
+            .map((device) => deviceWithStore(device, operations));
+        const orders = readOrderStore().orders.filter((order) => order.source !== 'test' && order.storeId && storeIds.includes(order.storeId));
+        const deviceStatusCounts = {};
+        for (const device of devices) deviceStatusCounts[device.status] = (deviceStatusCounts[device.status] || 0) + 1;
+        sendJSON(res, {
+            code: 0,
+            data: {
+                merchant: { id: merchant.id, username: merchant.username, name: merchant.name },
+                stores: stores.map((store) => ({
+                    ...store,
+                    deviceCount: devices.filter((device) => device.storeId === store.id).length
+                })),
+                devices,
+                deviceStatusCounts,
+                deviceStatusLabels: DEVICE_STATUS_LABELS,
+                orderCount: orders.length,
+                revenue: Number(orders.reduce((sum, order) => sum + Number(order.totalAmount || 0), 0).toFixed(2))
+            }
+        });
+        return;
+    }
+
+    if (pathname === '/api/merchant/orders' && req.method === 'GET') {
+        const auth = requireMerchant(req, res);
+        if (!auth) return;
+        const { merchant } = auth;
+        const storeIds = merchant.storeIds;
+        const page = Math.max(1, Number(url.searchParams.get('page') || 1));
+        const pageSize = Math.min(100, Math.max(1, Number(url.searchParams.get('pageSize') || 10)));
+        const status = String(url.searchParams.get('status') || '').trim();
+        const search = String(url.searchParams.get('search') || '').trim().toLowerCase();
+        let orders = readOrderStore().orders.filter((order) => order.source !== 'test' && order.storeId && storeIds.includes(order.storeId));
+        if (status) orders = orders.filter((order) => order.status === status || order.paymentStatus === status);
+        if (search) {
+            orders = orders.filter((order) => [order.orderId, order.deviceSn, ...(order.items || []).map((item) => item.name)]
+                .some((value) => String(value || '').toLowerCase().includes(search)));
+        }
+        const total = orders.length;
+        const data = orders.slice((page - 1) * pageSize, page * pageSize).map(publicOrder);
+        sendJSON(res, { code: 0, data, page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) });
         return;
     }
 
