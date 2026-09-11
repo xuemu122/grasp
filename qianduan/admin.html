@@ -1980,7 +1980,7 @@
                 <form onsubmit="return saveDevice(event)">
                     <input type="hidden" id="deviceFormId" value="${device ? esc(device.id) : ''}">
                     <div class="form-row">
-                        <div class="form-group"><label><span class="required">*</span> 序列号 SN</label><input class="form-input" id="deviceFormSn" value="${device ? esc(device.sn) : ''}" required placeholder="如：GRASP-ROBOT-01"></div>
+                        <div class="form-group"><label>序列号 SN</label><input class="form-input" id="deviceFormSn" value="${device ? esc(device.sn) : ''}" placeholder="留空自动生成"></div>
                         <div class="form-group"><label>设备名称</label><input class="form-input" id="deviceFormName" value="${device ? esc(device.name) : ''}" placeholder="如：1号机器人"></div>
                     </div>
                     <div class="form-row">
@@ -2003,8 +2003,8 @@
         async function saveDevice(event) {
             event.preventDefault();
             const id = document.getElementById('deviceFormId').value;
+            const snValue = document.getElementById('deviceFormSn').value.trim();
             const payload = {
-                sn: document.getElementById('deviceFormSn').value.trim(),
                 name: document.getElementById('deviceFormName').value.trim(),
                 model: document.getElementById('deviceFormModel').value.trim(),
                 status: document.getElementById('deviceFormStatus').value,
@@ -2012,6 +2012,7 @@
                 location: document.getElementById('deviceFormLocation').value.trim(),
                 notes: document.getElementById('deviceFormNotes').value.trim()
             };
+            if (snValue) payload.sn = snValue;
             try {
                 const res = await adminFetch(id ? `/api/admin/devices/${encodeURIComponent(id)}` : '/api/admin/devices', {
                     method: id ? 'PUT' : 'POST',
@@ -2020,7 +2021,8 @@
                 });
                 const json = await readAdminJson(res, '设备保存接口返回了无效数据');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '设备保存失败');
-                showToast(json.message || '设备已保存', 'success');
+                const createdSn = !id && json.data && json.data.sn ? json.data.sn : '';
+                showToast(createdSn ? `设备已创建，SN：${createdSn}` : (json.message || '设备已保存'), 'success');
                 closeAdminModal();
                 await Promise.all([loadDevices({ silent: true }), loadStores({ silent: true })]);
             } catch (error) {

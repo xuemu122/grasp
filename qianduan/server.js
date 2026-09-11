@@ -107,7 +107,28 @@ const INVENTORY_SCAN_FILE = process.env.INVENTORY_SCAN_FILE
 // 门店 / 设备（机器人）台账：云端统一登记，设备出库时绑定门店
 const OPERATIONS_DB_FILE = process.env.OPERATIONS_DB_FILE
     || path.join(path.dirname(PRODUCTS_DB_FILE), 'operations.json');
-const DEVICE_SN = String(process.env.DEVICE_SN || PAYMENT_DEVICE_SN || 'GRASP-ROBOT-01').trim();
+// 设备序列号读取顺序：环境变量 DEVICE_SN > 本地文件 > 默认值。
+// 盒子端把云端生成的 SN 写入本地文件后，可用 `cat /etc/grasp-qianduan.device-sn` 读取。
+const DEVICE_SN_FILE = process.env.DEVICE_SN_FILE || '/etc/grasp-qianduan.device-sn';
+const DEVICE_SN_FILE_FALLBACK = path.join(__dirname, 'data', 'device_sn');
+function readDeviceSnFile() {
+    for (const file of [DEVICE_SN_FILE, DEVICE_SN_FILE_FALLBACK]) {
+        try {
+            const value = String(fs.readFileSync(file, 'utf8') || '').trim();
+            if (value) return value;
+        } catch (error) { /* 文件不存在时忽略 */ }
+    }
+    return '';
+}
+function generateDeviceSn(devices) {
+    const used = new Set((Array.isArray(devices) ? devices : []).map((row) => String((row && row.sn) || '').toUpperCase()));
+    for (let i = 0; i < 20; i += 1) {
+        const candidate = `GRASP-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+        if (!used.has(candidate)) return candidate;
+    }
+    return `GRASP-${Date.now().toString(36).toUpperCase()}`;
+}
+const DEVICE_SN = String(process.env.DEVICE_SN || readDeviceSnFile() || PAYMENT_DEVICE_SN || 'GRASP-ROBOT-01').trim();
 const STORE_ID = String(process.env.STORE_ID || '').trim();
 const STORE_NAME = String(process.env.STORE_NAME || '').trim();
 const ORDER_TOKEN_SECRET = process.env.ORDER_TOKEN_SECRET || ADMIN_SESSION_SECRET;
@@ -2802,6 +2823,19 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ========== 设备管理 ==========
+    if (pathname === '/api/device/info' && req.method === 'GET') {
+        sendJSON(res, {
+            code: 0,
+            data: {
+                sn: DEVICE_SN,
+                storeId: STORE_ID || null,
+                storeName: STORE_NAME || null,
+                graspMode: ROBOT_GRASP_MODE
+            }
+        });
+        return;
+    }
+
     if (pathname === '/api/admin/devices' && req.method === 'GET') {
         if (!requireAdmin(req, res)) return;
         const operations = readOperationsStore();
@@ -2825,8 +2859,8 @@ const server = http.createServer(async (req, res) => {
         const body = await parseBody(req);
         try {
             const operations = readOperationsStore();
-            const sn = String(body && (body.sn || body.deviceSn) || '').trim();
-            if (!sn) throw new Error('设备序列号 SN 不能为空');
+            let sn = String(body && (body.sn || body.deviceSn) || '').trim();
+            if (!sn) sn = generateDeviceSn(operations.devices);
             if (operations.devices.some((device) => device.sn === sn)) throw new Error(`设备 SN 已存在: ${sn}`);
             let storeId = body && body.storeId ? String(body.storeId).trim() : null;
             if (storeId && !findStoreRecord(operations, storeId)) throw new Error('所选门店不存在');
