@@ -153,7 +153,7 @@ remotePort = 5061
 
 FRP 在线只表示隧道可用，不代表盒子后端或机械臂就绪。页面状态区分为：后端未连接、后端在线但机械臂待启动、机器人就绪、执行中和收起中。只有常驻 worker 输出“等待商品名”后才算机器人就绪。
 
-真实模式下请先确认机械臂、相机、货架层和放置点已经按主程序调好。详细的端口、完整 FRP 示例、WebSocket JSON 协议、部署步骤和排障命令见 [`qianduan/README.md`](qianduan/README.md)。
+真实模式下请先确认机械臂、相机、货架层和放置点已经按主程序调好。当前有两台分别放在不同门店的设备时，云端管理页的“设备管理/运营管理”可登记设备、办理出入库并划分门店归属，两台盒子需使用不同的 FRP 远程端口；完整步骤见 [`qianduan/README.md`](qianduan/README.md) 的“双设备 / 双门店部署说明”。详细的端口、完整 FRP 示例、WebSocket JSON 协议、部署步骤和排障命令也见 [`qianduan/README.md`](qianduan/README.md)；到服务器和 8083 站点 Nginx 的部署步骤见 [`qianduan/DEPLOY.md`](qianduan/DEPLOY.md)；Jetson 盒子的系统、依赖和注意事项见 [`JETSON_DEPLOY.md`](JETSON_DEPLOY.md)。
 
 手眼标定：
 

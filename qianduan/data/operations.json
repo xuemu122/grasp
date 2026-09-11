@@ -1,0 +1,80 @@
+{
+  "stores": [
+    {
+      "id": "STORE-001",
+      "name": "门店A",
+      "code": "ST-001",
+      "address": "",
+      "contact": "",
+      "phone": "",
+      "status": "active",
+      "notes": "示例门店，请按现场实际情况修改",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "STORE-002",
+      "name": "门店B",
+      "code": "ST-002",
+      "address": "",
+      "contact": "",
+      "phone": "",
+      "status": "active",
+      "notes": "示例门店，请按现场实际情况修改",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "devices": [
+    {
+      "id": "DEV-001",
+      "sn": "GRASP-ROBOT-01",
+      "name": "1号机器人",
+      "model": "DOBOT Nova5",
+      "status": "deployed",
+      "storeId": "STORE-001",
+      "storeName": "门店A",
+      "location": "",
+      "notes": "示例设备，请按现场实际情况修改",
+      "lastSeenAt": null,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "events": [
+        {
+          "type": "created",
+          "at": "2026-01-01T00:00:00.000Z",
+          "storeId": "STORE-001",
+          "storeName": "门店A",
+          "location": "",
+          "status": "deployed",
+          "notes": "创建设备档案"
+        }
+      ]
+    },
+    {
+      "id": "DEV-002",
+      "sn": "GRASP-ROBOT-02",
+      "name": "2号机器人",
+      "model": "DOBOT Nova5",
+      "status": "deployed",
+      "storeId": "STORE-002",
+      "storeName": "门店B",
+      "location": "",
+      "notes": "示例设备，请按现场实际情况修改",
+      "lastSeenAt": null,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "events": [
+        {
+          "type": "created",
+          "at": "2026-01-01T00:00:00.000Z",
+          "storeId": "STORE-002",
+          "storeName": "门店B",
+          "location": "",
+          "status": "deployed",
+          "notes": "创建设备档案"
+        }
+      ]
+    }
+  ]
+}

@@ -100,6 +100,12 @@ const ADMIN_SESSION_TTL_MS = Number(process.env.ADMIN_SESSION_TTL_MS || 8 * 60 *
 const ADMIN_COOKIE_NAME = 'grasp_admin_session';
 const INVENTORY_SCAN_FILE = process.env.INVENTORY_SCAN_FILE
     || path.join(path.dirname(PRODUCTS_DB_FILE), 'inventory_scan.json');
+// 门店 / 设备（机器人）台账：云端统一登记，设备出库时绑定门店
+const OPERATIONS_DB_FILE = process.env.OPERATIONS_DB_FILE
+    || path.join(path.dirname(PRODUCTS_DB_FILE), 'operations.json');
+const DEVICE_SN = String(process.env.DEVICE_SN || PAYMENT_DEVICE_SN || 'GRASP-ROBOT-01').trim();
+const STORE_ID = String(process.env.STORE_ID || '').trim();
+const STORE_NAME = String(process.env.STORE_NAME || '').trim();
 const ORDER_TOKEN_SECRET = process.env.ORDER_TOKEN_SECRET || ADMIN_SESSION_SECRET;
 const ORDER_TOKEN_TTL_MS = Number(process.env.ORDER_TOKEN_TTL_MS || 24 * 60 * 60 * 1000);
 // 语音点单大模型校正（ModelScope / OpenAI 兼容接口）
@@ -933,6 +939,143 @@ function updateQueuedCallback(orderId, update) {
     writeOrderCallbackOutbox(store);
 }
 
+// ========== 门店 / 设备台账 ==========
+const DEVICE_STATUS_LABELS = {
+    in_stock: '在库',
+    deployed: '已投放',
+    repair: '维修中',
+    retired: '已停用'
+};
+
+const DEVICE_EVENT_LABELS = {
+    created: '建档',
+    out: '出库',
+    in: '入库',
+    status: '状态变更',
+    updated: '信息更新'
+};
+
+function normalizeStoreRecord(raw, fallbackIndex = 1) {
+    const now = new Date().toISOString();
+    const id = String(raw && raw.id || `STORE-${String(fallbackIndex).padStart(3, '0')}`).trim();
+    return {
+        id,
+        name: String(raw && raw.name || '').trim(),
+        code: String(raw && raw.code || '').trim(),
+        address: String(raw && raw.address || '').trim(),
+        contact: String(raw && raw.contact || '').trim(),
+        phone: String(raw && raw.phone || '').trim(),
+        status: raw && raw.status === 'disabled' ? 'disabled' : 'active',
+        notes: String(raw && raw.notes || '').trim(),
+        createdAt: raw && raw.createdAt || now,
+        updatedAt: raw && raw.updatedAt || null
+    };
+}
+
+function normalizeDeviceEvent(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    return {
+        type: DEVICE_EVENT_LABELS[raw.type] ? raw.type : 'updated',
+        at: raw.at || new Date().toISOString(),
+        storeId: raw.storeId ? String(raw.storeId) : null,
+        storeName: raw.storeName ? String(raw.storeName) : null,
+        location: String(raw.location || '').trim(),
+        status: raw.status && DEVICE_STATUS_LABELS[raw.status] ? raw.status : null,
+        notes: String(raw.notes || '').trim()
+    };
+}
+
+function normalizeDeviceRecord(raw, fallbackIndex = 1) {
+    const now = new Date().toISOString();
+    const sn = String(raw && (raw.sn || raw.deviceSn) || '').trim();
+    const id = String(raw && raw.id || sn || `DEV-${String(fallbackIndex).padStart(3, '0')}`).trim();
+    let status = String(raw && raw.status || 'in_stock').trim().toLowerCase();
+    if (!DEVICE_STATUS_LABELS[status]) status = 'in_stock';
+    const storeId = raw && raw.storeId ? String(raw.storeId).trim() : null;
+    return {
+        id,
+        sn,
+        name: String(raw && raw.name || '').trim(),
+        model: String(raw && raw.model || '').trim(),
+        status,
+        storeId: storeId || null,
+        storeName: raw && raw.storeName ? String(raw.storeName).trim() : null,
+        location: String(raw && raw.location || '').trim(),
+        notes: String(raw && raw.notes || '').trim(),
+        lastSeenAt: raw && raw.lastSeenAt || null,
+        createdAt: raw && raw.createdAt || now,
+        updatedAt: raw && raw.updatedAt || null,
+        events: Array.isArray(raw && raw.events) ? raw.events.map(normalizeDeviceEvent).filter(Boolean).slice(-100) : []
+    };
+}
+
+function readOperationsStore() {
+    if (!fs.existsSync(OPERATIONS_DB_FILE)) return { stores: [], devices: [] };
+    try {
+        const data = JSON.parse(fs.readFileSync(OPERATIONS_DB_FILE, 'utf8'));
+        return {
+            stores: Array.isArray(data.stores) ? data.stores.map((row, index) => normalizeStoreRecord(row, index + 1)) : [],
+            devices: Array.isArray(data.devices) ? data.devices.map((row, index) => normalizeDeviceRecord(row, index + 1)) : []
+        };
+    } catch (error) {
+        log(`⚠️ 设备/门店数据读取失败: ${error.message}`);
+        return { stores: [], devices: [] };
+    }
+}
+
+function writeOperationsStore(store) {
+    fs.mkdirSync(path.dirname(OPERATIONS_DB_FILE), { recursive: true });
+    const tempFile = `${OPERATIONS_DB_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tempFile, JSON.stringify({
+        stores: store.stores || [],
+        devices: store.devices || []
+    }, null, 2), 'utf8');
+    fs.renameSync(tempFile, OPERATIONS_DB_FILE);
+}
+
+function nextOperationsId(rows, prefix) {
+    const used = new Set(rows.map((row) => row.id));
+    let index = rows.length + 1;
+    let id = `${prefix}-${String(index).padStart(3, '0')}`;
+    while (used.has(id)) {
+        index += 1;
+        id = `${prefix}-${String(index).padStart(3, '0')}`;
+    }
+    return id;
+}
+
+function findStoreRecord(store, id) {
+    return store.stores.find((row) => row.id === id) || null;
+}
+
+function findDeviceRecord(store, idOrSn) {
+    return store.devices.find((row) => row.id === idOrSn || (row.sn && row.sn === idOrSn)) || null;
+}
+
+function deviceWithStore(device, store) {
+    const bound = device.storeId ? findStoreRecord(store, device.storeId) : null;
+    return {
+        ...device,
+        statusLabel: DEVICE_STATUS_LABELS[device.status] || device.status,
+        storeName: bound ? bound.name : (device.storeName || null),
+        storeMissing: Boolean(device.storeId && !bound)
+    };
+}
+
+function pushDeviceEvent(device, event) {
+    device.events = Array.isArray(device.events) ? device.events : [];
+    device.events.push({
+        type: event.type,
+        at: event.at || new Date().toISOString(),
+        storeId: event.storeId || null,
+        storeName: event.storeName || null,
+        location: String(event.location || '').trim(),
+        status: event.status || device.status,
+        notes: String(event.notes || '').trim()
+    });
+    if (device.events.length > 100) device.events = device.events.slice(-100);
+}
+
 function orderStatusLabel(status) {
     return ({
         PENDING_PAYMENT: '待支付',
@@ -1038,7 +1181,11 @@ function publicOrder(order) {
         partiallyRefundedAt: order.partiallyRefundedAt || null,
         refundedAt: order.refundedAt || null,
         updatedAt: order.updatedAt || null,
-        source: order.source || 'web'
+        source: order.source || 'web',
+        deviceId: order.deviceId || null,
+        deviceSn: order.deviceSn || null,
+        storeId: order.storeId || null,
+        storeName: order.storeName || null
     };
 }
 
@@ -2016,6 +2163,27 @@ const server = http.createServer(async (req, res) => {
                 }
             }
 
+            const requestedStoreId = String(body && (body.storeId || body.store) || '').trim();
+            const requestedDeviceRef = String(body && (body.deviceId || body.device) || '').trim();
+            let resolvedStoreId = requestedStoreId || null;
+            let resolvedStoreName = STORE_NAME || null;
+            let resolvedDeviceId = requestedDeviceRef || null;
+            let resolvedDeviceSn = String(body && (body.deviceSn || body.device_sn) || '').trim() || null;
+            if (requestedDeviceRef || resolvedDeviceSn || resolvedStoreId) {
+                const operations = readOperationsStore();
+                const device = (requestedDeviceRef || resolvedDeviceSn)
+                    ? findDeviceRecord(operations, requestedDeviceRef || resolvedDeviceSn)
+                    : null;
+                if (device) {
+                    resolvedDeviceId = device.id;
+                    resolvedDeviceSn = resolvedDeviceSn || device.sn || null;
+                    resolvedStoreId = resolvedStoreId || device.storeId || null;
+                }
+                if (!resolvedStoreId && STORE_ID) resolvedStoreId = STORE_ID;
+                const boundStore = resolvedStoreId ? findStoreRecord(operations, resolvedStoreId) : null;
+                resolvedStoreName = (boundStore && boundStore.name) || resolvedStoreName || null;
+            }
+
             let order = {
                 orderId,
                 items: pricedItems,
@@ -2024,6 +2192,10 @@ const server = http.createServer(async (req, res) => {
                 paymentStatus: paymentMode === 'free' ? 'PAID' : 'PENDING_PAYMENT',
                 status: paymentMode === 'free' ? 'PAID' : 'PENDING_PAYMENT',
                 source: trustedTestRequest ? 'test' : String(body && body.source || 'web').slice(0, 32),
+                deviceId: resolvedDeviceId,
+                deviceSn: resolvedDeviceSn,
+                storeId: resolvedStoreId,
+                storeName: resolvedStoreName,
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString()
             };
@@ -2320,6 +2492,37 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    const orderAssignmentMatch = pathname.match(/^\/api\/admin\/orders\/([^/]+)\/assignment$/);
+    if (orderAssignmentMatch && req.method === 'PUT') {
+        if (!requireAdmin(req, res)) return;
+        const orderId = decodeURIComponent(orderAssignmentMatch[1]);
+        const body = await parseBody(req);
+        const order = orderById(orderId);
+        if (!order) { sendJSON(res, { code: 1, message: '订单不存在' }, 404); return; }
+        try {
+            const operations = readOperationsStore();
+            let storeId = body && body.storeId !== undefined ? String(body.storeId || '').trim() : (order.storeId || '');
+            let deviceId = body && body.deviceId !== undefined ? String(body.deviceId || '').trim() : (order.deviceId || '');
+            if (deviceId) {
+                const device = findDeviceRecord(operations, deviceId);
+                if (!device) throw new Error('设备不存在');
+                deviceId = device.id;
+                if (body && body.storeId === undefined && !storeId && device.storeId) storeId = device.storeId;
+                order.deviceSn = device.sn || order.deviceSn || null;
+            }
+            if (storeId && !findStoreRecord(operations, storeId)) throw new Error('门店不存在');
+            order.storeId = storeId || null;
+            order.deviceId = deviceId || null;
+            const boundStore = storeId ? findStoreRecord(operations, storeId) : null;
+            order.storeName = boundStore ? boundStore.name : null;
+            saveOrder(order);
+            sendJSON(res, { code: 0, message: '订单归属已更新', data: publicOrder(order) });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 400);
+        }
+        return;
+    }
+
     const adminOrderMatch = pathname.match(/^\/api\/admin\/orders(?:\/([^/]+))?(?:\/refund)?$/);
     if (adminOrderMatch && pathname.startsWith('/api/admin/orders')) {
         if (!requireAdmin(req, res)) return;
@@ -2365,17 +2568,316 @@ const server = http.createServer(async (req, res) => {
             const pageSize = Math.min(100, Math.max(1, Number(url.searchParams.get('pageSize') || url.searchParams.get('size') || 10)));
             const status = String(url.searchParams.get('status') || '').trim();
             const search = String(url.searchParams.get('search') || '').trim().toLowerCase();
+            const storeId = String(url.searchParams.get('storeId') || '').trim();
+            const deviceId = String(url.searchParams.get('deviceId') || '').trim();
+            const assigned = String(url.searchParams.get('assigned') || '').trim();
             const includeTest = url.searchParams.get('include_test') === '1';
             let orders = readOrderStore().orders;
             if (!includeTest) orders = orders.filter((item) => item.source !== 'test');
             if (status) orders = orders.filter((item) => item.status === status || item.paymentStatus === status);
-            if (search) orders = orders.filter((item) => [item.orderId, item.externalOrderId, ...(item.items || []).map((i) => i.name)].some((value) => String(value || '').toLowerCase().includes(search)));
+            if (search) orders = orders.filter((item) => [item.orderId, item.externalOrderId, item.storeName, item.deviceSn, ...(item.items || []).map((i) => i.name)].some((value) => String(value || '').toLowerCase().includes(search)));
+            if (storeId === 'unassigned') orders = orders.filter((item) => !item.storeId);
+            else if (storeId) orders = orders.filter((item) => item.storeId === storeId);
+            if (deviceId === 'unassigned') orders = orders.filter((item) => !item.deviceId);
+            else if (deviceId) orders = orders.filter((item) => item.deviceId === deviceId);
+            if (assigned === '1') orders = orders.filter((item) => item.storeId || item.deviceId);
+            else if (assigned === '0') orders = orders.filter((item) => !item.storeId && !item.deviceId);
             const total = orders.length;
             const data = orders.slice((page - 1) * pageSize, page * pageSize).map(publicOrder);
             sendJSON(res, { code: 0, data, page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) });
             return;
         }
         sendJSON(res, { code: 1, message: '订单接口方法不支持' }, 405);
+        return;
+    }
+
+    // ========== 门店管理 ==========
+    if (pathname === '/api/admin/stores' && req.method === 'GET') {
+        if (!requireAdmin(req, res)) return;
+        const operations = readOperationsStore();
+        const data = operations.stores.map((row) => ({
+            ...row,
+            deviceCount: operations.devices.filter((device) => device.storeId === row.id).length,
+            deployedCount: operations.devices.filter((device) => device.storeId === row.id && device.status === 'deployed').length
+        }));
+        sendJSON(res, { code: 0, data, total: data.length });
+        return;
+    }
+
+    if (pathname === '/api/admin/stores' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        const body = await parseBody(req);
+        try {
+            const operations = readOperationsStore();
+            const name = String(body && body.name || '').trim();
+            if (!name) throw new Error('门店名称不能为空');
+            if (operations.stores.some((row) => row.name === name)) throw new Error(`门店已存在: ${name}`);
+            const record = normalizeStoreRecord({
+                ...body,
+                id: nextOperationsId(operations.stores, 'STORE'),
+                name,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            });
+            operations.stores.push(record);
+            writeOperationsStore(operations);
+            sendJSON(res, { code: 0, message: '门店已创建', data: record }, 201);
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 400);
+        }
+        return;
+    }
+
+    const adminStoreMatch = pathname.match(/^\/api\/admin\/stores\/([^/]+)$/);
+    if (adminStoreMatch && ['PUT', 'DELETE'].includes(req.method)) {
+        if (!requireAdmin(req, res)) return;
+        const storeId = decodeURIComponent(adminStoreMatch[1]);
+        try {
+            const operations = readOperationsStore();
+            const record = findStoreRecord(operations, storeId);
+            if (!record) throw Object.assign(new Error('门店不存在'), { statusCode: 404 });
+            if (req.method === 'DELETE') {
+                const bound = operations.devices.filter((device) => device.storeId === storeId);
+                const force = url.searchParams.get('force') === '1';
+                if (bound.length && !force) {
+                    throw Object.assign(new Error(`该门店下还有 ${bound.length} 台设备，请先出库或转移后再删除`), { statusCode: 409 });
+                }
+                const now = new Date().toISOString();
+                for (const device of bound) {
+                    device.storeId = null;
+                    device.storeName = null;
+                    device.status = device.status === 'deployed' ? 'in_stock' : device.status;
+                    device.updatedAt = now;
+                    pushDeviceEvent(device, { type: 'in', at: now, location: device.location, notes: `门店 ${record.name} 已删除，设备自动回库` });
+                }
+                operations.stores = operations.stores.filter((row) => row.id !== storeId);
+                writeOperationsStore(operations);
+                sendJSON(res, { code: 0, message: '门店已删除' });
+                return;
+            }
+            const body = await parseBody(req);
+            const name = String(body && body.name !== undefined ? body.name : record.name).trim();
+            if (!name) throw new Error('门店名称不能为空');
+            if (operations.stores.some((row) => row.id !== storeId && row.name === name)) throw new Error(`门店名称重复: ${name}`);
+            const updated = normalizeStoreRecord({
+                ...record,
+                ...body,
+                id: storeId,
+                name,
+                updatedAt: new Date().toISOString()
+            });
+            operations.stores = operations.stores.map((row) => (row.id === storeId ? updated : row));
+            for (const device of operations.devices) {
+                if (device.storeId === storeId) device.storeName = updated.name;
+            }
+            writeOperationsStore(operations);
+            sendJSON(res, { code: 0, message: '门店已更新', data: updated });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, error.statusCode || 400);
+        }
+        return;
+    }
+
+    // ========== 设备管理 ==========
+    if (pathname === '/api/admin/devices' && req.method === 'GET') {
+        if (!requireAdmin(req, res)) return;
+        const operations = readOperationsStore();
+        const status = String(url.searchParams.get('status') || '').trim();
+        const storeId = String(url.searchParams.get('storeId') || '').trim();
+        const search = String(url.searchParams.get('search') || '').trim().toLowerCase();
+        let devices = operations.devices.map((device) => deviceWithStore(device, operations));
+        if (status) devices = devices.filter((device) => device.status === status);
+        if (storeId === 'unassigned') devices = devices.filter((device) => !device.storeId);
+        else if (storeId) devices = devices.filter((device) => device.storeId === storeId);
+        if (search) {
+            devices = devices.filter((device) => [device.id, device.sn, device.name, device.model, device.storeName, device.location]
+                .some((value) => String(value || '').toLowerCase().includes(search)));
+        }
+        sendJSON(res, { code: 0, data: devices, total: devices.length, statuses: DEVICE_STATUS_LABELS });
+        return;
+    }
+
+    if (pathname === '/api/admin/devices' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        const body = await parseBody(req);
+        try {
+            const operations = readOperationsStore();
+            const sn = String(body && (body.sn || body.deviceSn) || '').trim();
+            if (!sn) throw new Error('设备序列号 SN 不能为空');
+            if (operations.devices.some((device) => device.sn === sn)) throw new Error(`设备 SN 已存在: ${sn}`);
+            let storeId = body && body.storeId ? String(body.storeId).trim() : null;
+            if (storeId && !findStoreRecord(operations, storeId)) throw new Error('所选门店不存在');
+            const now = new Date().toISOString();
+            const record = normalizeDeviceRecord({
+                ...body,
+                id: nextOperationsId(operations.devices, 'DEV'),
+                sn,
+                name: String(body && body.name || '').trim() || sn,
+                storeId,
+                status: storeId ? 'deployed' : (body && body.status || 'in_stock'),
+                createdAt: now,
+                updatedAt: now
+            });
+            const boundStore = storeId ? findStoreRecord(operations, storeId) : null;
+            record.storeName = boundStore ? boundStore.name : null;
+            record.events = [];
+            pushDeviceEvent(record, { type: 'created', at: now, storeId: record.storeId, storeName: record.storeName, location: record.location, notes: '创建设备档案' });
+            operations.devices.push(record);
+            writeOperationsStore(operations);
+            sendJSON(res, { code: 0, message: '设备已创建', data: deviceWithStore(record, operations) }, 201);
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, 400);
+        }
+        return;
+    }
+
+    const adminDeviceMatch = pathname.match(/^\/api\/admin\/devices\/([^/]+)$/);
+    if (adminDeviceMatch && ['PUT', 'DELETE'].includes(req.method)) {
+        if (!requireAdmin(req, res)) return;
+        const deviceId = decodeURIComponent(adminDeviceMatch[1]);
+        try {
+            const operations = readOperationsStore();
+            const device = findDeviceRecord(operations, deviceId);
+            if (!device) throw Object.assign(new Error('设备不存在'), { statusCode: 404 });
+            if (req.method === 'DELETE') {
+                operations.devices = operations.devices.filter((row) => row.id !== device.id);
+                writeOperationsStore(operations);
+                sendJSON(res, { code: 0, message: '设备已删除' });
+                return;
+            }
+            const body = await parseBody(req);
+            const now = new Date().toISOString();
+            if (body && (body.sn || body.deviceSn) !== undefined) {
+                const sn = String(body.sn || body.deviceSn || '').trim();
+                if (!sn) throw new Error('设备序列号 SN 不能为空');
+                if (operations.devices.some((row) => row.id !== device.id && row.sn === sn)) throw new Error(`设备 SN 已存在: ${sn}`);
+                device.sn = sn;
+            }
+            if (body && body.name !== undefined) device.name = String(body.name || '').trim() || device.sn;
+            if (body && body.model !== undefined) device.model = String(body.model || '').trim();
+            if (body && body.location !== undefined) device.location = String(body.location || '').trim();
+            if (body && body.notes !== undefined) device.notes = String(body.notes || '').trim();
+            if (body && body.status !== undefined) {
+                const status = String(body.status || '').trim().toLowerCase();
+                if (!DEVICE_STATUS_LABELS[status]) throw new Error('设备状态无效');
+                device.status = status;
+            }
+            if (body && body.storeId !== undefined) {
+                const storeId = String(body.storeId || '').trim();
+                if (storeId && !findStoreRecord(operations, storeId)) throw new Error('所选门店不存在');
+                device.storeId = storeId || null;
+                const boundStore = storeId ? findStoreRecord(operations, storeId) : null;
+                device.storeName = boundStore ? boundStore.name : null;
+                if (storeId && (!body.status)) device.status = 'deployed';
+                if (!storeId && device.status === 'deployed') device.status = 'in_stock';
+            }
+            device.updatedAt = now;
+            pushDeviceEvent(device, { type: 'updated', at: now, storeId: device.storeId, storeName: device.storeName, location: device.location, notes: '更新设备信息' });
+            writeOperationsStore(operations);
+            sendJSON(res, { code: 0, message: '设备已更新', data: deviceWithStore(device, operations) });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, error.statusCode || 400);
+        }
+        return;
+    }
+
+    const deviceCheckoutMatch = pathname.match(/^\/api\/admin\/devices\/([^/]+)\/checkout$/);
+    if (deviceCheckoutMatch && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        const deviceId = decodeURIComponent(deviceCheckoutMatch[1]);
+        const body = await parseBody(req);
+        try {
+            const operations = readOperationsStore();
+            const device = findDeviceRecord(operations, deviceId);
+            if (!device) throw Object.assign(new Error('设备不存在'), { statusCode: 404 });
+            const storeId = String(body && body.storeId || '').trim();
+            if (!storeId) throw new Error('出库必须选择投放门店');
+            const boundStore = findStoreRecord(operations, storeId);
+            if (!boundStore) throw new Error('所选门店不存在');
+            const now = new Date().toISOString();
+            device.status = 'deployed';
+            device.storeId = storeId;
+            device.storeName = boundStore.name;
+            if (body && body.location !== undefined) device.location = String(body.location || '').trim();
+            device.updatedAt = now;
+            pushDeviceEvent(device, { type: 'out', at: now, storeId, storeName: boundStore.name, location: device.location, notes: body && body.notes });
+            writeOperationsStore(operations);
+            sendJSON(res, { code: 0, message: `设备已出库到 ${boundStore.name}`, data: deviceWithStore(device, operations) });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, error.statusCode || 400);
+        }
+        return;
+    }
+
+    const deviceCheckinMatch = pathname.match(/^\/api\/admin\/devices\/([^/]+)\/checkin$/);
+    if (deviceCheckinMatch && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        const deviceId = decodeURIComponent(deviceCheckinMatch[1]);
+        const body = await parseBody(req);
+        try {
+            const operations = readOperationsStore();
+            const device = findDeviceRecord(operations, deviceId);
+            if (!device) throw Object.assign(new Error('设备不存在'), { statusCode: 404 });
+            const now = new Date().toISOString();
+            const previousStore = device.storeName;
+            device.status = 'in_stock';
+            device.storeId = null;
+            device.storeName = null;
+            if (body && body.location !== undefined) device.location = String(body.location || '').trim();
+            device.updatedAt = now;
+            pushDeviceEvent(device, { type: 'in', at: now, location: device.location, notes: (body && body.notes) || (previousStore ? `从 ${previousStore} 入库` : '设备入库') });
+            writeOperationsStore(operations);
+            sendJSON(res, { code: 0, message: '设备已入库', data: deviceWithStore(device, operations) });
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, error.statusCode || 400);
+        }
+        return;
+    }
+
+    if (pathname === '/api/admin/operations/summary' && req.method === 'GET') {
+        if (!requireAdmin(req, res)) return;
+        const operations = readOperationsStore();
+        const orders = readOrderStore().orders.filter((order) => order.source !== 'test');
+        const deviceStatusCounts = Object.fromEntries(Object.keys(DEVICE_STATUS_LABELS).map((key) => [key, 0]));
+        for (const device of operations.devices) deviceStatusCounts[device.status] = (deviceStatusCounts[device.status] || 0) + 1;
+        const storeStats = operations.stores.map((row) => {
+            const devices = operations.devices.filter((device) => device.storeId === row.id);
+            const storeOrders = orders.filter((order) => order.storeId === row.id);
+            return {
+                ...row,
+                deviceCount: devices.length,
+                deployedCount: devices.filter((device) => device.status === 'deployed').length,
+                orderCount: storeOrders.length,
+                revenue: Number(storeOrders.reduce((sum, order) => sum + Number(order.totalAmount || 0), 0).toFixed(2))
+            };
+        });
+        const deviceStats = operations.devices.map((device) => {
+            const deviceOrders = orders.filter((order) => order.deviceId === device.id);
+            return {
+                id: device.id,
+                sn: device.sn,
+                name: device.name,
+                status: device.status,
+                statusLabel: DEVICE_STATUS_LABELS[device.status] || device.status,
+                storeId: device.storeId,
+                storeName: device.storeName,
+                orderCount: deviceOrders.length,
+                revenue: Number(deviceOrders.reduce((sum, order) => sum + Number(order.totalAmount || 0), 0).toFixed(2))
+            };
+        });
+        sendJSON(res, {
+            code: 0,
+            data: {
+                storeCount: operations.stores.length,
+                deviceCount: operations.devices.length,
+                deviceStatusCounts,
+                deviceStatusLabels: DEVICE_STATUS_LABELS,
+                storeStats,
+                deviceStats,
+                orderCount: orders.length,
+                unassignedOrderCount: orders.filter((order) => !order.storeId && !order.deviceId).length
+            }
+        });
         return;
     }
 

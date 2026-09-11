@@ -60,6 +60,10 @@ DOBOT_IP=192.168.5.1 python3 shelf_grasp.py
 
 本地模拟和测试不需要真实设备；真实密码、会话密钥和运行日志不应提交到仓库。
 
+盒子（Jetson）的系统准备、Python/Node 依赖、模型与标定文件放置和注意事项见
+[`JETSON_DEPLOY.md`](JETSON_DEPLOY.md)；服务器与 8083 站点 Nginx 部署见
+[`qianduan/DEPLOY.md`](qianduan/DEPLOY.md)。
+
 ## 清理边界
 
 可以清理的内容：`__pycache__/`、ROS2 `build/`/`log/`、本地 `.env`、运行日志和生成的调试图片。当前 `.gitignore` 已覆盖这些常见产物。

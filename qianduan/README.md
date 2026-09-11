@@ -26,6 +26,25 @@ GET  /api/admin/orders/:orderId
 POST /api/admin/orders/:orderId/refund   {"reason":"用户取消"}
 ```
 
+管理员页面新增设备与门店管理接口（均需管理员会话）：
+
+```text
+GET    /api/admin/stores
+POST   /api/admin/stores
+PUT    /api/admin/stores/:storeId
+DELETE /api/admin/stores/:storeId?force=1
+GET    /api/admin/devices?status=&storeId=&search=
+POST   /api/admin/devices
+PUT    /api/admin/devices/:deviceId
+DELETE /api/admin/devices/:deviceId
+POST   /api/admin/devices/:deviceId/checkout   {"storeId":"STORE-001","location":"一层大厅","notes":"..."}
+POST   /api/admin/devices/:deviceId/checkin    {"location":"总仓A区","notes":"..."}
+GET    /api/admin/operations/summary
+PUT    /api/admin/orders/:orderId/assignment   {"storeId":"STORE-001","deviceId":"DEV-001"}
+```
+
+设备状态为 `in_stock`（在库）、`deployed`（已投放）、`repair`（维修中）、`retired`（已停用）。出库会把设备状态改为 `deployed` 并绑定门店，入库会解绑门店并回到 `in_stock`；删除门店时其下设备会自动回库。订单 API 也支持 `storeId`、`deviceId`（含 `unassigned`）筛选。
+
 免费订单退款只恢复本地库存；真实订单退款会转发到 LyOrder `/api/WeChatPay/refund`。每笔退款持久化唯一 `refundRequestId`，并通过请求体与 `Idempotency-Key` 重复使用；LyOrder 应按该键幂等处理。部分退款请求同时携带 `partial=true`、元单位的 `refundAmount/totalAmount`，以及分单位的 `amount.refund/amount.total`；LyOrder 必须按明确金额退款，不能忽略这些字段后退整单。库存预占和恢复都具有持久化幂等标记。
 
 支付订单按单瓶记录履约。某一瓶识别、碰撞检查、导航或动作失败后，机器人先安全收起并继续尝试后续商品；全部单瓶任务结束后，只退款未交付商品并只恢复相应库存。每瓶成功放置后立即持久化交付记录，进程中途失败或执行超时也按该记录结算；只有一瓶都未交付时才整单退款。商品已经成功放置后，收起或回充失败不退该瓶。云端还会巡检付款后长期未开始执行、以及长时间停留在 `PROCESSING` 且没有 `placedAt` 的订单，默认均为 30 分钟后自动退款，用于覆盖页面关闭、盒子断电或进程崩溃。
@@ -76,7 +95,8 @@ ORDER_STATUS_CALLBACK_SECRET=<与云端相同>
 ## 文件
 
 - `index.html`、`style.css`、`script.js`：点单页面。
-- `admin.html`：商品管理页面。
+- `admin.html`：管理页面，包含仪表盘、商品、订单、设备管理、运营管理、自动巡架和底盘地图。
+- `data/operations.json`：设备与门店台账（出入库、门店归属），可通过 `OPERATIONS_DB_FILE` 调整路径。
 - `uploads/`：管理端上传的商品图片（默认与商品 JSON 位于同一数据目录）。
 - `server.js`：HTTP/API 与订单 WebSocket 服务。
 - `start.js`：初始化商品数据后启动 `server.js`。
@@ -86,6 +106,88 @@ ORDER_STATUS_CALLBACK_SECRET=<与云端相同>
 
 本地环境变量示例见 [`.env.example`](.env.example)。`.env` 只用于现场临时保存配置，已加入忽略列表；
 生产环境建议继续使用 `/etc/grasp-qianduan.env`，通过 `source` 注入进程环境，不要把真实密码和会话密钥提交到仓库。
+
+## 双设备 / 双门店部署说明
+
+> 本仓库到服务器、以及 8083 站点 Nginx 的具体部署步骤见 [`DEPLOY.md`](DEPLOY.md)。新页面仍在
+> `admin.html` 内、新接口都在 `/api/` 下，沿用现有 8083 站点的代理，无需新增端口。
+
+现在有两台机器人分别投放到两个不同的门店。推荐结构是“一台盒子对应一台设备和一个门店”，设备/门店台账由云端服务集中管理：
+
+```text
+门店A 点单页 (store-a.example.com) ─┐
+门店B 点单页 (store-b.example.com) ─┼─> 云端 Node :3100  商品/订单/设备门店台账
+云端管理中心 (admin.example.com)   ─┘
+门店A 点单页 /ws/ -> 云端 Nginx -> FRP 5061 -> 盒子A :3001 -> 机械臂A
+门店B 点单页 /ws/ -> 云端 Nginx -> FRP 5063 -> 盒子B :3001 -> 机械臂B
+```
+
+关键点：
+
+1. **每台盒子独立启动** `server.js`，端口都用 `3000/3001`，但 FRP 远程端口必须错开，例如盒子 A 用 `5060/5061`、盒子 B 用 `5062/5063`。
+2. **每台盒子写入自己的设备与门店标识**，订单会自动带上归属：
+   ```text
+   DEVICE_SN=GRASP-ROBOT-01
+   STORE_ID=STORE-001
+   STORE_NAME=门店A
+   ```
+   第二台改为 `GRASP-ROBOT-02` / `STORE-002` / `门店B`。
+3. **云端服务保存设备/门店台账**（`OPERATIONS_DB_FILE`，默认 `data/operations.json`）。首次启动可用仓库自带的示例文件，随后在管理页“运营管理”里把门店名称、地址、联系人改成现场真实信息，并在“设备管理”里核对两台设备的 SN。
+4. **按门店划分访问入口**：给每个门店一个独立域名或子路径，各自把 `/` 和 `/ws/` 代理到对应盒子；点单页链接带上门店与设备标识，订单就会归属到该门店/设备，例如：
+   ```text
+   https://store-a.example.com/?store=STORE-001&device=DEV-001
+   https://store-b.example.com/?store=STORE-002&device=DEV-002
+   ```
+   没有带参数时订单仍可创建，只是归属为空，可在“运营管理 → 订单归属”里手动划分。
+5. **设备出入库**：在“设备管理”或“运营管理”里对设备点“出库”并选择门店，即可把设备投放到门店并绑定归属；点“入库”则从门店收回并解除归属。两台设备可分别归属不同门店。
+6. **底盘/机械臂控制仍是单机能力**。地图、急停、巡架等页面请通过对应盒子自己的管理页操作（`http://<盒子IP>:3000/admin.html` 或该门店域名）；云端的“运营管理”只负责订单、门店和设备的集中台账。
+
+云端 `nginx.conf` 需要给每个门店增加一组 `/ws/` 转发，例如：
+
+```nginx
+# 门店A
+location ^~ /ws/ {
+    proxy_pass http://127.0.0.1:5061;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 86400s;
+}
+
+# 门店B（部署在另一个 server 块或子域名中）
+location ^~ /ws/ {
+    proxy_pass http://127.0.0.1:5063;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 86400s;
+}
+```
+
+两台盒子的 `frpc.toml` 除远程端口外完全相同（SSH、后台和 WebSocket 各一条），例如盒子 B：
+
+```toml
+[[proxies]]
+name = "edge_ssh_admin_b"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 22
+remotePort = 6002
+
+[[proxies]]
+name = "admin_backend_b"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 3000
+remotePort = 5062
+
+[[proxies]]
+name = "admin_order_ws_b"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 3001
+remotePort = 5063
+```
 
 ## 云端部署
 
@@ -173,6 +275,9 @@ Cookie 使用 `HttpOnly`、`Secure` 和 `SameSite=Strict`，默认有效期为 8
 巡架结果状态从盒子读取，但“保存扫描商品信息”使用云端 `/api/admin/inventory-products` 接口写入正式商品库。保存时只允许按唯一的已有商品名称更新货位；未知名称或重名记录会要求先在商品管理中确认，扫描结果不会创建商品，也不会覆盖图片、规格、分类等商品资料。
 
 ## 盒子部署
+
+> Jetson 盒子的系统安装、Python/Node 依赖、模型与标定文件、常见注意事项见仓库根目录
+> [`JETSON_DEPLOY.md`](../JETSON_DEPLOY.md)。
 
 ### 当前启动命令
 
@@ -436,6 +541,10 @@ __filter_preview__\n
 | `CHASSIS_NAVIGATION_POLL_MS` | `1000` | 导航状态轮询间隔 |
 | `GRASP_SCRIPT` | `../dipan/shelf_grasp.py` | 抓取脚本路径 |
 | `PRODUCTS_DB_FILE` | `data/products.json` | 商品 JSON 路径 |
+| `OPERATIONS_DB_FILE` | 商品 JSON 同目录下的 `operations.json` | 设备与门店台账 JSON 路径 |
+| `DEVICE_SN` | 与 `PAYMENT_DEVICE_SN` 相同 | 本盒子设备 SN，用于订单归属 |
+| `STORE_ID` | 空 | 本盒子所属门店 ID，用于订单归属 |
+| `STORE_NAME` | 空 | 本盒子所属门店名称，用于订单归属 |
 | `ROBOT_MAX_ITEM_QTY` | 已移除 | 商品数量只受商品库存限制 |
 | `ROBOT_MAX_ORDER_UNITS` | 已移除 | 整单数量只受各商品库存之和限制 |
 | `ROBOT_WORKER_READY_TIMEOUT_MS` | `90000` | worker 启动超时 |

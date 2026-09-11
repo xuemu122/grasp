@@ -801,7 +801,9 @@ async function submitOrder() {
             body: JSON.stringify({
                 items: items.map(item => ({ id: item.id, name: item.name, qty: item.qty })),
                 source: window.GRASP_TEST_MODE ? 'test' : 'web',
-                payment_mode: window.GRASP_TEST_MODE ? 'free' : undefined
+                payment_mode: window.GRASP_TEST_MODE ? 'free' : undefined,
+                storeId: new URLSearchParams(window.location.search).get('store') || undefined,
+                deviceId: new URLSearchParams(window.location.search).get('device') || undefined
             })
         });
         prepared = await res.json();
