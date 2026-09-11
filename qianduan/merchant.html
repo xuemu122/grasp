@@ -23,9 +23,8 @@
         .header-links span { color: rgba(255,255,255,0.9); font-size: 0.9rem; }
         .logout-button { border: 0; background: rgba(255,255,255,0.15); color: white; padding: 7px 14px; border-radius: 20px; cursor: pointer; font: inherit; font-size: 0.9rem; }
         .logout-button:hover { background: rgba(255,255,255,0.28); }
-        .container { max-width: 1200px; margin: 24px auto; padding: 0 24px; display: grid; gap: 20px; }
         .card { background: white; border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow-md); }
-        .card-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid var(--gray-100); display: flex; justify-content: space-between; align-items: center; }
+        .card-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid var(--gray-100); display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
         .card-title .count { font-size: 0.85rem; font-weight: 500; color: var(--gray-400); }
         .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 4px; }
         .stat { padding: 14px; border: 1px solid var(--gray-200); border-radius: 8px; background: var(--gray-50); }
@@ -39,7 +38,7 @@
         table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
         thead { background: var(--gray-50); }
         th { padding: 12px 10px; text-align: left; font-weight: 600; color: var(--gray-600); border-bottom: 2px solid var(--gray-200); white-space: nowrap; }
-        td { padding: 10px; border-bottom: 1px solid var(--gray-100); }
+        td { padding: 10px; border-bottom: 1px solid var(--gray-100); vertical-align: middle; }
         tr:hover { background: var(--gray-50); }
         .status-badge { padding: 3px 10px; border-radius: 12px; font-size: 0.78rem; font-weight: 600; display: inline-block; }
         .status-badge.on { background: var(--success-light); color: #065F46; }
@@ -73,10 +72,6 @@
         .form-input:focus { border-color: var(--primary); }
         .login-error { min-height: 22px; margin-bottom: 8px; color: var(--danger); font-size: 0.85rem; }
         .login-submit { width: 100%; justify-content: center; }
-        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: 2000; display: flex; align-items: center; justify-content: center; }
-        .modal-overlay[hidden] { display: none; }
-        .modal { background: white; border-radius: var(--radius); padding: 26px; width: 92%; max-width: 560px; max-height: 88vh; overflow-y: auto; box-shadow: var(--shadow-lg); }
-        .modal h3 { margin-bottom: 16px; font-size: 1.1rem; }
         .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
         .form-select { width: 100%; padding: 10px 12px; border: 2px solid var(--gray-200); border-radius: 8px; font-size: 0.9rem; outline: none; background: white; font-family: inherit; }
         .form-select:focus { border-color: var(--primary); }
@@ -85,7 +80,29 @@
         .btn-danger:hover { background: var(--danger-light); }
         .image-preview { width: 100%; aspect-ratio: 4/3; border: 2px dashed var(--gray-200); border-radius: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; background: var(--gray-50); color: var(--gray-400); font-size: 0.8rem; }
         .image-preview img { width: 100%; height: 100%; object-fit: contain; }
-        .actions { display: flex; gap: 6px; white-space: nowrap; }
+
+        /* 商家后台侧边栏布局 */
+        .mc-shell { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 20px; max-width: 1440px; margin: 20px auto; padding: 0 24px; align-items: start; }
+        .mc-sidebar { position: sticky; top: 84px; background: white; border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow-md); display: flex; flex-direction: column; gap: 4px; }
+        .mc-nav-title { font-size: 0.78rem; color: var(--gray-400); font-weight: 700; letter-spacing: 0.05em; padding: 6px 10px 10px; }
+        .mc-nav-item { width: 100%; border: 0; background: transparent; color: var(--gray-700); text-align: left; padding: 11px 12px; border-radius: 7px; cursor: pointer; font: inherit; font-size: 0.9rem; }
+        .mc-nav-item:hover { background: var(--gray-100); }
+        .mc-nav-item.active { background: var(--primary-light); color: var(--primary); font-weight: 700; }
+        .mc-content { min-width: 0; }
+        .mc-page[hidden] { display: none; }
+        .mc-page { display: flex; flex-direction: column; gap: 20px; }
+        .mc-product-grid { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 20px; align-items: start; }
+        .mc-form-card { position: sticky; top: 84px; max-height: calc(100vh - 104px); overflow-y: auto; }
+        .product-thumb { width: 46px; height: 46px; border-radius: 6px; object-fit: cover; border: 1px solid var(--gray-200); display: block; background: var(--gray-50); }
+        .product-thumb.fallback { display: flex; align-items: center; justify-content: center; font-size: 1.3rem; }
+        @media (max-width: 1000px) {
+            .mc-shell { grid-template-columns: 1fr; }
+            .mc-sidebar { position: static; flex-direction: row; flex-wrap: wrap; overflow-x: auto; }
+            .mc-nav-title { display: none; }
+            .mc-nav-item { width: auto; white-space: nowrap; }
+            .mc-product-grid { grid-template-columns: 1fr; }
+            .mc-form-card { position: static; max-height: none; }
+        }
         @media (max-width: 640px) { .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     </style>
 </head>
@@ -115,83 +132,195 @@
         </div>
     </header>
 
-    <div class="container" id="merchantMain" hidden>
-        <div class="card">
-            <div class="card-title"><span>经营概览</span><span class="count" id="refreshStatus">-</span></div>
-            <div class="summary">
-                <div class="stat"><div class="stat-label">订单总数</div><div class="stat-value" id="statOrders">-</div></div>
-                <div class="stat"><div class="stat-label">营业额</div><div class="stat-value" id="statRevenue">-</div></div>
-                <div class="stat"><div class="stat-label">门店数</div><div class="stat-value" id="statStores">-</div></div>
-                <div class="stat"><div class="stat-label">设备数</div><div class="stat-value" id="statDevices">-</div></div>
-                <div class="stat"><div class="stat-label">商品数</div><div class="stat-value" id="statProducts">-</div></div>
-            </div>
-        </div>
+    <div class="mc-shell" id="merchantMain" hidden>
+        <aside class="mc-sidebar">
+            <div class="mc-nav-title">商家后台</div>
+            <button class="mc-nav-item active" type="button" data-page="dashboard" onclick="switchMerchantPage('dashboard')">仪表盘</button>
+            <button class="mc-nav-item" type="button" data-page="products" onclick="switchMerchantPage('products')">商品管理</button>
+            <button class="mc-nav-item" type="button" data-page="devices" onclick="switchMerchantPage('devices')">设备管理</button>
+            <button class="mc-nav-item" type="button" data-page="orders" onclick="switchMerchantPage('orders')">订单管理</button>
+            <button class="mc-nav-item" type="button" data-page="inventory-scan" onclick="switchMerchantPage('inventory-scan')">自动巡架</button>
+            <button class="mc-nav-item" type="button" data-page="chassis" onclick="switchMerchantPage('chassis')">底盘与地图</button>
+        </aside>
 
-        <div class="card">
-            <div class="card-title"><span>我的门店 <span class="count" id="storeCount">0 家</span></span></div>
-            <div class="store-grid" id="storeGrid"><div class="empty-state">加载中...</div></div>
-        </div>
+        <main class="mc-content" id="mcContent">
+            <section class="mc-page" data-page="dashboard">
+                <div class="card">
+                    <div class="card-title"><span>经营概览</span><span class="count" id="refreshStatus">-</span></div>
+                    <div class="summary">
+                        <div class="stat"><div class="stat-label">订单总数</div><div class="stat-value" id="statOrders">-</div></div>
+                        <div class="stat"><div class="stat-label">营业额</div><div class="stat-value" id="statRevenue">-</div></div>
+                        <div class="stat"><div class="stat-label">门店数</div><div class="stat-value" id="statStores">-</div></div>
+                        <div class="stat"><div class="stat-label">设备数</div><div class="stat-value" id="statDevices">-</div></div>
+                        <div class="stat"><div class="stat-label">商品数</div><div class="stat-value" id="statProducts">-</div></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title"><span>我的门店 <span class="count" id="storeCount">0 家</span></span></div>
+                    <div class="store-grid" id="storeGrid"><div class="empty-state">加载中...</div></div>
+                </div>
+            </section>
 
-        <div class="card">
-            <div class="card-title"><span>我的商品 <span class="count" id="productCount">0 件</span></span>
-                <span>
-                    <button class="btn btn-primary btn-sm" type="button" onclick="openProductModal()">+ 新增商品</button>
-                    <button class="btn btn-primary btn-sm" type="button" onclick="loadMerchantProducts()">刷新</button>
-                </span>
-            </div>
-            <div class="toolbar">
-                <input class="search-box" id="productSearch" placeholder="搜索商品名称 / 规格 / 分类" onkeydown="if(event.key === 'Enter') loadMerchantProducts()">
-            </div>
-            <div class="table-wrapper">
-                <table>
-                    <thead><tr><th>商品</th><th>分类 / 规格</th><th>价格</th><th>库存</th><th>状态</th><th>操作</th></tr></thead>
-                    <tbody id="productBody"><tr><td colspan="6" class="loading">加载中...</td></tr></tbody>
-                </table>
-            </div>
-        </div>
+            <section class="mc-page" data-page="products" hidden>
+                <div class="mc-product-grid">
+                    <div class="card">
+                        <div class="card-title"><span>商品管理 <span class="count" id="productCount">0 件</span></span>
+                            <button class="btn btn-primary btn-sm" type="button" onclick="loadMerchantProducts()">刷新</button>
+                        </div>
+                        <div class="toolbar">
+                            <input class="search-box" id="productSearch" placeholder="搜索商品名称 / 规格 / 分类" onkeydown="if(event.key === 'Enter') loadMerchantProducts()">
+                            <select class="select-box" id="productStatusFilter" onchange="renderProducts()">
+                                <option value="">全部状态</option>
+                                <option value="1">在售</option>
+                                <option value="0">下架</option>
+                            </select>
+                        </div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead><tr><th>图片</th><th>商品</th><th>分类 / 规格</th><th>价格</th><th>库存</th><th>状态</th><th>操作</th></tr></thead>
+                                <tbody id="productBody"><tr><td colspan="7" class="loading">加载中...</td></tr></tbody>
+                            </table>
+                        </div>
+                        <div class="pagination">
+                            <button id="productPrev" type="button" onclick="changeProductPage(productPage - 1)">上一页</button>
+                            <span id="productPageInfo">第 1 / 1 页</span>
+                            <button id="productNext" type="button" onclick="changeProductPage(productPage + 1)">下一页</button>
+                        </div>
+                    </div>
 
-        <div class="card">
-            <div class="card-title"><span>我的设备 <span class="count" id="deviceCount">0 台</span></span></div>
-            <div class="table-wrapper">
-                <table>
-                    <thead><tr><th>设备</th><th>SN</th><th>状态</th><th>存放位置</th></tr></thead>
-                    <tbody id="deviceBody"><tr><td colspan="4" class="loading">加载中...</td></tr></tbody>
-                </table>
-            </div>
-        </div>
+                    <div class="card mc-form-card">
+                        <div class="card-title"><span id="productFormTitle">新增商品</span>
+                            <button class="btn btn-primary btn-sm" type="button" onclick="resetProductForm()">清空</button>
+                        </div>
+                        <form onsubmit="return saveMerchantProduct(event)">
+                            <div class="form-group"><label><span style="color:var(--danger)">*</span> 商品名称</label><input class="form-input" id="productFormName" required></div>
+                            <div class="form-group"><label>归属门店</label><span id="productFormStoreWrap"></span></div>
+                            <div class="form-row">
+                                <div class="form-group"><label>规格</label><input class="form-input" id="productFormSpec" placeholder="如：330ml/罐"></div>
+                                <div class="form-group"><label>分类</label><input class="form-input" id="productFormCategory"></div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group"><label>生产商</label><input class="form-input" id="productFormManufacturer"></div>
+                                <div class="form-group"><label>图标 Emoji</label><input class="form-input" id="productFormEmoji" value="📦"></div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group"><label><span style="color:var(--danger)">*</span> 价格</label><input class="form-input" id="productFormPrice" type="number" step="0.01" min="0" value="0" required></div>
+                                <div class="form-group"><label><span style="color:var(--danger)">*</span> 库存</label><input class="form-input" id="productFormStock" type="number" min="0" value="100" required></div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group"><label>货架位置</label><input class="form-input" id="productFormLocation" placeholder="如：饮料区A货架第2层"></div>
+                                <div class="form-group"><label>货架层</label><input class="form-input" id="productFormShelfLayer" type="number" min="1" max="10"></div>
+                            </div>
+                            <div class="form-group"><label>状态</label><select class="form-select" id="productFormStatus">
+                                <option value="1" selected>在售</option>
+                                <option value="0">下架</option>
+                            </select></div>
+                            <div class="form-row">
+                                <div class="form-group"><label>正面图片</label>
+                                    <div class="image-preview" id="productPhotoFrontPreview">未选择</div>
+                                    <input type="hidden" id="productPhotoFront">
+                                    <input type="file" accept="image/jpeg,image/png,image/webp" onchange="uploadMerchantImage('front', this)">
+                                </div>
+                                <div class="form-group"><label>反面图片</label>
+                                    <div class="image-preview" id="productPhotoBackPreview">未选择</div>
+                                    <input type="hidden" id="productPhotoBack">
+                                    <input type="file" accept="image/jpeg,image/png,image/webp" onchange="uploadMerchantImage('back', this)">
+                                </div>
+                            </div>
+                            <div class="modal-actions">
+                                <button type="submit" class="btn btn-primary" id="productFormSubmit">新增商品</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </section>
 
-        <div class="card">
-            <div class="card-title"><span>我的订单 <span class="count" id="orderCount">0 条</span></span>
-                <button class="btn btn-primary btn-sm" type="button" onclick="loadOrders(1)">刷新</button>
-            </div>
-            <div class="toolbar">
-                <input class="search-box" id="orderSearch" placeholder="搜索订单号 / 商品 / 设备" onkeydown="if(event.key === 'Enter') loadOrders(1)">
-                <select class="select-box" id="orderStatus" onchange="loadOrders(1)">
-                    <option value="">全部状态</option>
-                    <option value="PENDING_PAYMENT">待支付</option>
-                    <option value="PAID">已支付</option>
-                    <option value="PROCESSING">抓取中</option>
-                    <option value="COMPLETED">已完成</option>
-                    <option value="REFUNDED">已退款</option>
-                    <option value="FAILED">失败</option>
-                </select>
-            </div>
-            <div class="table-wrapper">
-                <table>
-                    <thead><tr><th>订单号</th><th>商品</th><th>金额</th><th>设备</th><th>状态</th><th>创建时间</th></tr></thead>
-                    <tbody id="orderBody"><tr><td colspan="6" class="loading">加载中...</td></tr></tbody>
-                </table>
-            </div>
-            <div class="pagination">
-                <button id="orderPrev" type="button" onclick="loadOrders(orderPage - 1)">上一页</button>
-                <span id="orderPageInfo">第 1 / 1 页</span>
-                <button id="orderNext" type="button" onclick="loadOrders(orderPage + 1)">下一页</button>
-            </div>
-        </div>
-    </div>
+            <section class="mc-page" data-page="devices" hidden>
+                <div class="card">
+                    <div class="card-title"><span>设备管理 <span class="count" id="deviceCount">0 台</span></span></div>
+                    <div class="table-wrapper">
+                        <table>
+                            <thead><tr><th>设备</th><th>SN</th><th>状态</th><th>存放位置</th></tr></thead>
+                            <tbody id="deviceBody"><tr><td colspan="4" class="loading">加载中...</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
 
-    <div class="modal-overlay" id="productModalOverlay" hidden>
-        <div class="modal" id="productModal"></div>
+            <section class="mc-page" data-page="orders" hidden>
+                <div class="card">
+                    <div class="card-title"><span>订单管理 <span class="count" id="orderCount">0 条</span></span>
+                        <button class="btn btn-primary btn-sm" type="button" onclick="loadOrders(1)">刷新</button>
+                    </div>
+                    <div class="toolbar">
+                        <input class="search-box" id="orderSearch" placeholder="搜索订单号 / 商品 / 设备" onkeydown="if(event.key === 'Enter') loadOrders(1)">
+                        <select class="select-box" id="orderStatus" onchange="loadOrders(1)">
+                            <option value="">全部状态</option>
+                            <option value="PENDING_PAYMENT">待支付</option>
+                            <option value="PAID">已支付</option>
+                            <option value="PROCESSING">抓取中</option>
+                            <option value="COMPLETED">已完成</option>
+                            <option value="REFUNDED">已退款</option>
+                            <option value="FAILED">失败</option>
+                        </select>
+                    </div>
+                    <div class="table-wrapper">
+                        <table>
+                            <thead><tr><th>订单号</th><th>商品</th><th>金额</th><th>设备</th><th>状态</th><th>创建时间</th></tr></thead>
+                            <tbody id="orderBody"><tr><td colspan="6" class="loading">加载中...</td></tr></tbody>
+                        </table>
+                    </div>
+                    <div class="pagination">
+                        <button id="orderPrev" type="button" onclick="loadOrders(orderPage - 1)">上一页</button>
+                        <span id="orderPageInfo">第 1 / 1 页</span>
+                        <button id="orderNext" type="button" onclick="loadOrders(orderPage + 1)">下一页</button>
+                    </div>
+                </div>
+            </section>
+
+            <section class="mc-page" data-page="inventory-scan" hidden>
+                <div class="card">
+                    <div class="card-title"><span>自动巡架识别 <span class="count" id="mcScanProgress">尚未开始</span></span>
+                        <span class="status-badge warn" id="mcScanBadge">未运行</span>
+                    </div>
+                    <p id="mcScanMessage" style="color:var(--gray-500);font-size:0.84rem;margin-bottom:10px;">配置货架底盘点位后，可按货架顺序识别每架第 1、第 2 层（不抓取）。</p>
+                    <div class="toolbar">
+                        <button class="btn btn-primary" type="button" id="mcScanStart" onclick="mcStartScan()">开始自动巡架</button>
+                        <button class="btn btn-danger" type="button" id="mcScanStop" onclick="mcStopScan()" disabled>停止巡架</button>
+                        <button class="btn btn-primary btn-sm" type="button" onclick="mcLoadScan(true)">刷新</button>
+                    </div>
+                    <div class="table-wrapper">
+                        <table>
+                            <thead><tr><th>货架</th><th>点位序号</th><th>层数</th><th>识别主商品</th><th>数量/总数</th><th>底盘点位</th><th>填写商品名称</th></tr></thead>
+                            <tbody id="mcScanBody"><tr><td colspan="7" class="empty-state">完成巡架后将在这里生成商品信息表单</td></tr></tbody>
+                        </table>
+                    </div>
+                    <div class="toolbar" style="margin-top:10px;justify-content:flex-end;">
+                        <button class="btn btn-primary" type="button" onclick="mcSaveScanResults()">保存识别结果</button>
+                    </div>
+                </div>
+            </section>
+
+            <section class="mc-page" data-page="chassis" hidden>
+                <div class="card">
+                    <div class="card-title"><span>底盘与地图 <span class="count" id="mcMarkerCount">0 个点位</span></span>
+                        <button class="btn btn-primary btn-sm" type="button" onclick="mcLoadChassis()">刷新地图</button>
+                    </div>
+                    <div class="toolbar">
+                        <select class="select-box" id="mcMapFloor" onchange="mcUpdateMarkerOptions(); mcRenderMap();"></select>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:0.88rem;"><input type="checkbox" id="mcNavToggle" onchange="mcSaveNavConfig()"> 抓取前导航</label>
+                        <select class="select-box" id="mcPlaceMarker" onchange="mcSaveNavConfig()"></select>
+                    </div>
+                    <p class="empty-state" id="mcMapStatus" style="text-align:left;padding:0 0 8px;">尚未读取底盘地图</p>
+                    <div id="mcMap" style="position:relative;width:100%;height:min(60vh,620px);min-height:320px;overflow:hidden;border:1px solid var(--gray-200);border-radius:8px;background:#CBD5E1;">暂无地图数据</div>
+                    <div class="toolbar" style="margin-top:10px;align-items:center;">
+                        <select class="select-box" id="mcDebugMarker" style="min-width:220px;"><option value="">选择底盘点位</option></select>
+                        <button class="btn btn-primary btn-sm" type="button" onclick="mcNavigate(document.getElementById('mcDebugMarker').value, this)">前往点位</button>
+                        <span id="mcDebugStatus" style="color:var(--gray-500);font-size:0.82rem;">可从地图或下拉框选择点位进行调试</span>
+                    </div>
+                </div>
+            </section>
+        </main>
     </div>
 
     <div id="toastContainer"></div>
@@ -202,8 +331,12 @@
             PLACED: '已放置', PARTIAL_REFUNDING: '部分退款中', PARTIALLY_COMPLETED: '部分交付',
             REFUNDING: '退款中', REFUNDED: '已退款', PAYMENT_FAILED: '支付创建失败', FAILED: '失败', CLOSED: '已关闭'
         };
+        const MERCHANT_PAGES = new Set(['dashboard', 'products', 'devices', 'orders', 'inventory-scan', 'chassis']);
+        const PRODUCT_PAGE_SIZE = 8;
         let orderPage = 1;
         let orderTotalPages = 1;
+        let productPage = 1;
+        let editingProductId = null;
         let merchantProducts = [];
         let merchantStores = [];
 
@@ -220,12 +353,16 @@
             }
         });
 
-        document.getElementById('productModalOverlay').addEventListener('click', (event) => {
-            if (event.target.id === 'productModalOverlay') closeProductModal();
-        });
-        document.addEventListener('keydown', (event) => {
-            if (event.key === 'Escape' && !document.getElementById('productModalOverlay').hidden) closeProductModal();
-        });
+        function switchMerchantPage(page) {
+            const target = MERCHANT_PAGES.has(page) ? page : 'dashboard';
+            document.querySelectorAll('.mc-page').forEach((section) => { section.hidden = section.dataset.page !== target; });
+            document.querySelectorAll('.mc-nav-item').forEach((item) => { item.classList.toggle('active', item.dataset.page === target); });
+            if (target === 'products') loadMerchantProducts();
+            if (target === 'devices' || target === 'dashboard') loadOverview();
+            if (target === 'orders') loadOrders(orderPage || 1);
+            if (target === 'inventory-scan') mcLoadScan();
+            if (target === 'chassis') { mcLoadChassis(); mcLoadNavConfig(); }
+        }
 
         async function loginMerchant(event) {
             event.preventDefault();
@@ -261,8 +398,9 @@
             document.getElementById('loginOverlay').hidden = true;
             document.getElementById('merchantMain').hidden = false;
             document.getElementById('merchantName').textContent = profile.name || profile.username || '';
+            switchMerchantPage('dashboard');
             await loadOverview();
-            await Promise.all([loadMerchantProducts(), loadOrders(1)]);
+            await Promise.all([loadMerchantProducts(), loadOrders(1), mcLoadScan()]);
         }
 
         function showLogin(message = '') {
@@ -312,15 +450,16 @@
                 document.getElementById('storeCount').textContent = `${(data.stores || []).length} 家`;
                 merchantStores = data.stores || [];
                 document.getElementById('deviceCount').textContent = `${(data.devices || []).length} 台`;
-                renderStores(data.stores || [], data.deviceStatusLabels || {});
+                renderStores(data.stores || []);
                 renderDevices(data.devices || []);
+                document.getElementById('productFormStoreWrap').innerHTML = storeSelectHtml(editingProductId ? currentEditingStoreId() : '');
                 document.getElementById('refreshStatus').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
             } catch (error) {
                 showToast(error.message, 'error');
             }
         }
 
-        function renderStores(stores, statusLabelsMap) {
+        function renderStores(stores) {
             const grid = document.getElementById('storeGrid');
             if (!stores.length) { grid.innerHTML = '<div class="empty-state">尚未绑定门店，请联系平台管理员</div>'; return; }
             grid.innerHTML = stores.map((store) => `
@@ -356,90 +495,112 @@
                 merchantProducts = json.data || [];
                 document.getElementById('productCount').textContent = `${json.total} 件`;
                 document.getElementById('statProducts').textContent = String(json.total);
-                if (!merchantProducts.length) { body.innerHTML = '<tr><td colspan="6" class="empty-state">暂无商品</td></tr>'; return; }
-                body.innerHTML = merchantProducts.map((product) => `<tr>
-                    <td><strong>${esc(product.name)}</strong><br><small>${esc(product.manufacturer) || '-'}</small></td>
-                    <td>${esc(product.category) || '-'}<br><small>${esc(product.spec) || '无规格'}</small></td>
-                    <td style="color:var(--primary);font-weight:700;">¥${Number(product.price || 0).toFixed(2)}</td>
-                    <td>${Number(product.stock || 0)}</td>
-                    <td><span class="status-badge ${Number(product.status) === 1 ? 'on' : 'off'}">${Number(product.status) === 1 ? '在售' : '下架'}</span></td>
-                    <td><div class="actions">
-                        <button class="btn btn-primary btn-sm" type="button" onclick="openProductModal(${product.id})">编辑</button>
-                        <button class="btn btn-danger btn-sm" type="button" onclick="deleteMerchantProduct(${product.id})">删除</button>
-                    </div></td>
-                </tr>`).join('');
+                productPage = 1;
+                renderProducts();
             } catch (error) {
-                body.innerHTML = `<tr><td colspan="6" class="empty-state">${esc(error.message)}</td></tr>`;
+                body.innerHTML = `<tr><td colspan="7" class="empty-state">${esc(error.message)}</td></tr>`;
             }
         }
 
-        function closeProductModal() {
-            document.getElementById('productModalOverlay').hidden = true;
-            document.getElementById('productModal').innerHTML = '';
+        function productThumb(product) {
+            if (product.photo_front) {
+                return `<img class="product-thumb" src="${esc(product.photo_front)}" alt="${esc(product.name)}" loading="lazy">`;
+            }
+            return `<span class="product-thumb fallback">${esc(product.emoji) || '📦'}</span>`;
+        }
+
+        function filteredProducts() {
+            const status = document.getElementById('productStatusFilter').value;
+            if (status === '') return merchantProducts;
+            return merchantProducts.filter((product) => String(Number(product.status) === 1 ? 1 : 0) === status);
+        }
+
+        function renderProducts() {
+            const body = document.getElementById('productBody');
+            const list = filteredProducts();
+            const totalPages = Math.max(1, Math.ceil(list.length / PRODUCT_PAGE_SIZE));
+            if (productPage > totalPages) productPage = totalPages;
+            if (productPage < 1) productPage = 1;
+            const start = (productPage - 1) * PRODUCT_PAGE_SIZE;
+            const rows = list.slice(start, start + PRODUCT_PAGE_SIZE);
+            document.getElementById('productPageInfo').textContent = `第 ${productPage} / ${totalPages} 页`;
+            document.getElementById('productPrev').disabled = productPage <= 1;
+            document.getElementById('productNext').disabled = productPage >= totalPages;
+            if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="empty-state">暂无商品</td></tr>'; return; }
+            body.innerHTML = rows.map((product) => `<tr>
+                <td>${productThumb(product)}</td>
+                <td><strong>${esc(product.name)}</strong><br><small>${esc(product.manufacturer) || '-'}</small></td>
+                <td>${esc(product.category) || '-'}<br><small>${esc(product.spec) || '无规格'}</small></td>
+                <td style="color:var(--primary);font-weight:700;">¥${Number(product.price || 0).toFixed(2)}</td>
+                <td>${Number(product.stock || 0)}</td>
+                <td><span class="status-badge ${Number(product.status) === 1 ? 'on' : 'off'}">${Number(product.status) === 1 ? '在售' : '下架'}</span></td>
+                <td><div class="actions">
+                    <button class="btn btn-primary btn-sm" type="button" onclick="editMerchantProduct(${product.id})">编辑</button>
+                    <button class="btn btn-danger btn-sm" type="button" onclick="deleteMerchantProduct(${product.id})">删除</button>
+                </div></td>
+            </tr>`).join('');
+        }
+
+        function changeProductPage(page) {
+            const totalPages = Math.max(1, Math.ceil(filteredProducts().length / PRODUCT_PAGE_SIZE));
+            productPage = Math.min(Math.max(1, page), totalPages);
+            renderProducts();
         }
 
         function storeSelectHtml(selectedId) {
             if (merchantStores.length <= 1) {
                 const store = merchantStores[0];
-                return `<input type="hidden" id="productFormStore" value="${store ? esc(store.id) : ''}">`;
+                return `<input type="hidden" id="productFormStore" value="${store ? esc(store.id) : ''}"><div class="form-input" style="background:var(--gray-50);">${store ? esc(store.name) : '未绑定门店'}</div>`;
             }
             return `<select class="form-select" id="productFormStore">${merchantStores.map((store) => `<option value="${esc(store.id)}"${store.id === selectedId ? ' selected' : ''}>${esc(store.name)}</option>`).join('')}</select>`;
         }
 
-        function emojiDefault(product) {
-            return product && product.emoji ? product.emoji : '📦';
+        function currentEditingStoreId() {
+            const product = merchantProducts.find((row) => row.id === editingProductId);
+            return product ? product.storeId : '';
         }
 
-        function openProductModal(productId = null) {
-            const product = productId ? merchantProducts.find((row) => row.id === productId) : null;
-            if (productId && !product) { showToast('商品不存在，请刷新', 'error'); return; }
-            if (!merchantStores.length) { showToast('尚未绑定门店，请联系平台管理员', 'error'); return; }
-            const value = (key, fallback = '') => (product && product[key] !== undefined && product[key] !== null ? product[key] : fallback);
-            document.getElementById('productModal').innerHTML = `
-                <h3>${product ? '编辑商品' : '新增商品'}</h3>
-                <form onsubmit="return saveMerchantProduct(event, ${product ? product.id : 'null'})">
-                    <div class="form-row">
-                        <div class="form-group"><label><span style="color:var(--danger)">*</span> 商品名称</label><input class="form-input" id="productFormName" value="${esc(value('name'))}" required></div>
-                        <div class="form-group"><label>归属门店</label>${storeSelectHtml(product ? product.storeId : '')}</div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group"><label>规格</label><input class="form-input" id="productFormSpec" value="${esc(value('spec'))}" placeholder="如：330ml/罐"></div>
-                        <div class="form-group"><label>分类</label><input class="form-input" id="productFormCategory" value="${esc(value('category'))}"></div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group"><label>生产商</label><input class="form-input" id="productFormManufacturer" value="${esc(value('manufacturer'))}"></div>
-                        <div class="form-group"><label>图标 Emoji</label><input class="form-input" id="productFormEmoji" value="${esc(emojiDefault(product))}"></div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group"><label><span style="color:var(--danger)">*</span> 价格</label><input class="form-input" id="productFormPrice" type="number" step="0.01" min="0" value="${value('price', 0)}" required></div>
-                        <div class="form-group"><label><span style="color:var(--danger)">*</span> 库存</label><input class="form-input" id="productFormStock" type="number" min="0" value="${value('stock', 100)}" required></div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group"><label>货架位置</label><input class="form-input" id="productFormLocation" value="${esc(value('location'))}" placeholder="如：饮料区A货架第2层"></div>
-                        <div class="form-group"><label>货架层</label><input class="form-input" id="productFormShelfLayer" type="number" min="1" max="10" value="${value('shelf_layer', '')}"></div>
-                    </div>
-                    <div class="form-group"><label>状态</label><select class="form-select" id="productFormStatus">
-                        <option value="1"${Number(value('status', 1)) === 1 ? ' selected' : ''}>在售</option>
-                        <option value="0"${Number(value('status', 1)) === 0 ? ' selected' : ''}>下架</option>
-                    </select></div>
-                    <div class="form-row">
-                        <div class="form-group"><label>正面图片</label>
-                            <div class="image-preview" id="productPhotoFrontPreview">${value('photo_front') ? `<img src="${esc(value('photo_front'))}" alt="正面">` : '未选择'}</div>
-                            <input type="hidden" id="productPhotoFront" value="${esc(value('photo_front'))}">
-                            <input type="file" accept="image/jpeg,image/png,image/webp" onchange="uploadMerchantImage('front', this)">
-                        </div>
-                        <div class="form-group"><label>反面图片</label>
-                            <div class="image-preview" id="productPhotoBackPreview">${value('photo_back') ? `<img src="${esc(value('photo_back'))}" alt="反面">` : '未选择'}</div>
-                            <input type="hidden" id="productPhotoBack" value="${esc(value('photo_back'))}">
-                            <input type="file" accept="image/jpeg,image/png,image/webp" onchange="uploadMerchantImage('back', this)">
-                        </div>
-                    </div>
-                    <div class="modal-actions">
-                        <button type="button" class="btn btn-danger" onclick="closeProductModal()">取消</button>
-                        <button type="submit" class="btn btn-primary">保存</button>
-                    </div>
-                </form>`;
-            document.getElementById('productModalOverlay').hidden = false;
+        function escapeAttr(value) { return esc(value).replace(/"/g, '&quot;'); }
+
+        function editMerchantProduct(productId) {
+            const product = merchantProducts.find((row) => row.id === productId);
+            if (!product) { showToast('商品不存在，请刷新', 'error'); return; }
+            editingProductId = productId;
+            document.getElementById('productFormTitle').textContent = '编辑商品';
+            document.getElementById('productFormSubmit').textContent = '保存修改';
+            const value = (key, fallback = '') => (product[key] !== undefined && product[key] !== null ? product[key] : fallback);
+            document.getElementById('productFormName').value = value('name');
+            document.getElementById('productFormSpec').value = value('spec');
+            document.getElementById('productFormCategory').value = value('category');
+            document.getElementById('productFormManufacturer').value = value('manufacturer');
+            document.getElementById('productFormEmoji').value = value('emoji', '📦');
+            document.getElementById('productFormPrice').value = value('price', 0);
+            document.getElementById('productFormStock').value = value('stock', 100);
+            document.getElementById('productFormLocation').value = value('location');
+            document.getElementById('productFormShelfLayer').value = value('shelf_layer', '');
+            document.getElementById('productFormStatus').value = String(Number(value('status', 1)) === 1 ? 1 : 0);
+            document.getElementById('productFormStoreWrap').innerHTML = storeSelectHtml(product.storeId || '');
+            document.getElementById('productPhotoFront').value = value('photo_front');
+            document.getElementById('productPhotoBack').value = value('photo_back');
+            document.getElementById('productPhotoFrontPreview').innerHTML = product.photo_front ? `<img src="${escapeAttr(product.photo_front)}" alt="正面">` : '未选择';
+            document.getElementById('productPhotoBackPreview').innerHTML = product.photo_back ? `<img src="${escapeAttr(product.photo_back)}" alt="反面">` : '未选择';
+            switchMerchantPage('products');
+        }
+
+        function resetProductForm() {
+            editingProductId = null;
+            document.getElementById('productFormTitle').textContent = '新增商品';
+            document.getElementById('productFormSubmit').textContent = '新增商品';
+            ['productFormName', 'productFormSpec', 'productFormCategory', 'productFormManufacturer', 'productFormLocation', 'productFormShelfLayer'].forEach((id) => { document.getElementById(id).value = ''; });
+            document.getElementById('productFormEmoji').value = '📦';
+            document.getElementById('productFormPrice').value = '0';
+            document.getElementById('productFormStock').value = '100';
+            document.getElementById('productFormStatus').value = '1';
+            document.getElementById('productPhotoFront').value = '';
+            document.getElementById('productPhotoBack').value = '';
+            document.getElementById('productPhotoFrontPreview').innerHTML = '未选择';
+            document.getElementById('productPhotoBackPreview').innerHTML = '未选择';
+            document.getElementById('productFormStoreWrap').innerHTML = storeSelectHtml('');
         }
 
         async function uploadMerchantImage(side, input) {
@@ -454,7 +615,7 @@
                 const id = side === 'front' ? 'productPhotoFront' : 'productPhotoBack';
                 const previewId = side === 'front' ? 'productPhotoFrontPreview' : 'productPhotoBackPreview';
                 document.getElementById(id).value = json.url;
-                document.getElementById(previewId).innerHTML = `<img src="${esc(json.url)}" alt="${side}">`;
+                document.getElementById(previewId).innerHTML = `<img src="${escapeAttr(json.url)}" alt="${side}">`;
             } catch (error) {
                 showToast(error.message, 'error');
             } finally {
@@ -462,7 +623,7 @@
             }
         }
 
-        async function saveMerchantProduct(event, productId) {
+        async function saveMerchantProduct(event) {
             event.preventDefault();
             const storeField = document.getElementById('productFormStore');
             const payload = {
@@ -481,15 +642,15 @@
             };
             if (storeField) payload.storeId = storeField.value;
             try {
-                const res = await merchantFetch(productId ? `/api/merchant/products/${productId}` : '/api/merchant/products', {
-                    method: productId ? 'PUT' : 'POST',
+                const res = await merchantFetch(editingProductId ? `/api/merchant/products/${editingProductId}` : '/api/merchant/products', {
+                    method: editingProductId ? 'PUT' : 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
                 const json = await res.json();
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '保存失败');
                 showToast(json.message || '商品已保存', 'success');
-                closeProductModal();
+                resetProductForm();
                 await loadMerchantProducts();
             } catch (error) {
                 showToast(error.message, 'error');
@@ -542,6 +703,314 @@
                 }).join('');
             } catch (error) {
                 body.innerHTML = `<tr><td colspan="6" class="empty-state">${esc(error.message)}</td></tr>`;
+            }
+        }
+
+        // ===== 自动巡架 / 底盘与地图（云端代管，转发到本店盒子）=====
+        let mcMapData = { map: {}, markers: [] };
+        let mcNavConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'fangzhi' };
+        let mcScanData = { shelves: [], task: { status: 'idle', results: [] }, running: false };
+        let mcScanTimer = null;
+        let mcNavTimer = null;
+        let mcDraft = new Map();
+        let mcDraftDirty = false;
+
+        async function mcFetch(url, options = {}) {
+            const res = await fetch(url, { ...options, credentials: 'same-origin' });
+            if (res.status === 401) {
+                let message = '';
+                try { message = (await res.clone().json()).message || ''; } catch (error) { /* ignore */ }
+                if (message.includes('商家')) { showLogin('登录已过期，请重新登录'); throw new Error('登录已过期'); }
+                showToast('盒子端管理员会话配置不一致', 'error');
+                throw new Error('盒子端管理员会话配置不一致');
+            }
+            return res;
+        }
+
+        async function mcLoadChassis() {
+            const status = document.getElementById('mcMapStatus');
+            status.textContent = '正在读取底盘地图...';
+            try {
+                const res = await mcFetch('/api/merchant/console/chassis/map', { cache: 'no-store' });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '地图读取失败');
+                mcMapData = json.data || { map: {}, markers: [] };
+                const map = mcMapData.map || {};
+                const markers = mcMapData.markers || [];
+                document.getElementById('mcMarkerCount').textContent = `${markers.length} 个点位`;
+                const raster = mcMapData.raster || {};
+                status.textContent = `${map.map_name || map.hotel_id || '当前地图'} · 第${map.floor || '-'}层 · ${raster.available ? '栅格已加载' : '暂无栅格图'}`;
+                const floors = [...new Set(markers.map((marker) => marker.floor).filter(Boolean))].sort((a, b) => a - b);
+                const floorSelect = document.getElementById('mcMapFloor');
+                floorSelect.innerHTML = floors.length
+                    ? floors.map((floor) => `<option value="${floor}">第${floor}层</option>`).join('')
+                    : '<option value="">当前楼层</option>';
+                if (floors.includes(Number(map.floor))) floorSelect.value = String(map.floor);
+                mcUpdateMarkerOptions();
+                mcRenderMap();
+            } catch (error) {
+                status.textContent = error.message;
+                document.getElementById('mcMap').innerHTML = '<div style="padding:16px;color:#475569;">底盘地图暂不可用</div>';
+            }
+        }
+
+        function mcMarkerList() {
+            const floor = Number(document.getElementById('mcMapFloor').value || 0);
+            return (mcMapData.markers || [])
+                .filter((marker) => !floor || marker.floor === floor)
+                .sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh-CN'));
+        }
+
+        function mcUpdateMarkerOptions() {
+            const markers = mcMarkerList();
+            const debug = document.getElementById('mcDebugMarker');
+            debug.innerHTML = '<option value="">选择底盘点位</option>'
+                + markers.map((marker) => `<option value="${esc(marker.name)}">${esc(marker.name)}</option>`).join('');
+            const place = document.getElementById('mcPlaceMarker');
+            const selected = mcNavConfig.place_marker || 'fangzhi';
+            const names = markers.map((marker) => marker.name);
+            if (!names.includes(selected)) names.push(selected);
+            place.innerHTML = names
+                .map((name) => `<option value="${esc(name)}"${name === selected ? ' selected' : ''}>${esc(name)}</option>`)
+                .join('');
+        }
+
+        function mcRenderMap() {
+            const container = document.getElementById('mcMap');
+            const raster = mcMapData.raster || {};
+            if (raster.available && raster.image_url) {
+                const url = String(raster.image_url).replace('/api/chassis/', '/api/merchant/console/chassis/') + `&r=${Date.now()}`;
+                container.innerHTML = `<img src="${esc(url)}" alt="底盘地图" style="width:100%;height:100%;object-fit:contain;display:block;">`;
+            } else {
+                const markers = mcMarkerList();
+                container.innerHTML = `<div style="padding:16px;color:#475569;">暂无栅格图。点位：${markers.map((marker) => esc(marker.name)).join('、') || '无'}</div>`;
+            }
+        }
+
+        async function mcLoadNavConfig() {
+            try {
+                const res = await mcFetch('/api/merchant/console/chassis/navigation-config', { cache: 'no-store' });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '导航设置读取失败');
+                mcNavConfig = {
+                    navigation_enabled: Boolean(json.data && json.data.navigation_enabled),
+                    auto_return_charge: !(json.data && json.data.auto_return_charge === false),
+                    place_marker: (json.data && json.data.place_marker) || 'fangzhi'
+                };
+                document.getElementById('mcNavToggle').checked = mcNavConfig.navigation_enabled;
+                mcUpdateMarkerOptions();
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function mcSaveNavConfig() {
+            try {
+                const res = await mcFetch('/api/merchant/console/chassis/navigation-config', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        enabled: document.getElementById('mcNavToggle').checked,
+                        place_marker: document.getElementById('mcPlaceMarker').value
+                    })
+                });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '导航设置保存失败');
+                mcNavConfig = {
+                    navigation_enabled: Boolean(json.data && json.data.navigation_enabled),
+                    auto_return_charge: !(json.data && json.data.auto_return_charge === false),
+                    place_marker: (json.data && json.data.place_marker) || 'fangzhi'
+                };
+                showToast('导航设置已保存', 'success');
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function mcNavigate(marker, button) {
+            if (!marker) { showToast('请先选择点位', 'error'); return; }
+            if (button) button.disabled = true;
+            try {
+                const res = await mcFetch('/api/merchant/console/chassis/navigate-marker', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ marker })
+                });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '导航失败');
+                showToast(json.message || '导航指令已发送', 'success');
+                mcPollNavTask();
+            } catch (error) {
+                showToast(error.message, 'error');
+            } finally {
+                if (button) button.disabled = false;
+            }
+        }
+
+        async function mcPollNavTask() {
+            if (mcNavTimer) clearTimeout(mcNavTimer);
+            try {
+                const res = await mcFetch('/api/merchant/console/chassis/navigation-task', { cache: 'no-store' });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '读取导航状态失败');
+                const task = json.data || { status: 'idle' };
+                const label = !task || task.status === 'idle'
+                    ? '可从地图或下拉框选择点位进行调试'
+                    : (task.message || (task.status === 'completed' ? '底盘已到达目标点位' : '底盘导航失败'));
+                document.getElementById('mcDebugStatus').textContent = label;
+                if (task.status === 'running') mcNavTimer = setTimeout(mcPollNavTask, 1500);
+            } catch (error) {
+                document.getElementById('mcDebugStatus').textContent = error.message;
+            }
+        }
+
+        function mcShelfNames() {
+            const names = (mcScanData.shelves || []).map((row) => String(row.shelf || '').toUpperCase()).filter(Boolean);
+            return names.length ? names : ['A', 'B', 'C', 'D'];
+        }
+
+        function mcShelfOptions(selected) {
+            return mcShelfNames()
+                .map((name) => `<option value="${name}"${String(selected).toUpperCase() === name ? ' selected' : ''}>${name}货架</option>`)
+                .join('');
+        }
+
+        function mcMarkerOptions(selected) {
+            const names = mcMarkerList().map((marker) => marker.name);
+            if (selected && !names.includes(selected)) names.push(selected);
+            return ['<option value="">选择点位</option>']
+                .concat(names.map((name) => `<option value="${esc(name)}"${name === selected ? ' selected' : ''}>${esc(name)}</option>`))
+                .join('');
+        }
+
+        function mcResultKey(row) {
+            return `${String(row.shelf || '').toUpperCase()}:${Number(row.point || 0)}:${Number(row.layer || 0)}`;
+        }
+
+        function mcCaptureDraft() {
+            const next = new Map(mcDraft);
+            document.querySelectorAll('.mc-result-row').forEach((tr) => {
+                next.set(tr.dataset.key, {
+                    shelf: tr.querySelector('[data-field="shelf"]').value,
+                    point: Number(tr.querySelector('[data-field="point"]').value),
+                    layer: Number(tr.querySelector('[data-field="layer"]').value),
+                    marker: tr.querySelector('[data-field="marker"]').value,
+                    name: tr.querySelector('[data-field="name"]').value
+                });
+            });
+            mcDraft = next;
+            mcDraftDirty = true;
+        }
+
+        function mcRenderScan() {
+            const body = document.getElementById('mcScanBody');
+            if (mcDraftDirty) mcCaptureDraft();
+            const results = [...((mcScanData.task && mcScanData.task.results) || [])].sort((a, b) =>
+                String(a.shelf).localeCompare(String(b.shelf), 'zh-CN') || Number(a.point || 0) - Number(b.point || 0) || a.layer - b.layer);
+            if (!results.length) { body.innerHTML = '<tr><td colspan="7" class="empty-state">暂无识别结果</td></tr>'; return; }
+            body.innerHTML = results.map((row) => {
+                const key = mcResultKey(row);
+                const draft = mcDraft.get(key) || {};
+                const shelf = draft.shelf || row.shelf;
+                const point = Number(draft.point != null ? draft.point : (row.point || 1));
+                const layer = Number(draft.layer != null ? draft.layer : (row.layer || 1));
+                const marker = draft.marker != null ? draft.marker : row.marker;
+                const name = draft.name != null ? draft.name : row.dominant_name;
+                const pointOptions = [1, 2, 3, 4, 5, 6]
+                    .map((n) => `<option value="${n}"${point === n ? ' selected' : ''}>点位${n}</option>`).join('');
+                const layerOptions = [1, 2]
+                    .map((n) => `<option value="${n}"${layer === n ? ' selected' : ''}>第${n}层</option>`).join('');
+                return `<tr class="mc-result-row" data-key="${esc(key)}">
+                    <td><select class="form-select" data-field="shelf" onchange="mcCaptureDraft()">${mcShelfOptions(shelf)}</select></td>
+                    <td><select class="form-select" data-field="point" onchange="mcCaptureDraft()">${pointOptions}</select></td>
+                    <td><select class="form-select" data-field="layer" onchange="mcCaptureDraft()">${layerOptions}</select></td>
+                    <td><strong>${esc(row.dominant_name) || '未识别'}</strong></td>
+                    <td>${Number(row.count) || 0} / ${Number(row.total) || 0}</td>
+                    <td><select class="form-select" data-field="marker" onchange="mcCaptureDraft()">${mcMarkerOptions(marker)}</select></td>
+                    <td><input class="form-input" data-field="name" value="${esc(name)}" placeholder="填写商品名称" oninput="mcCaptureDraft()"></td>
+                </tr>`;
+            }).join('');
+        }
+
+        function mcUpdateScanControls() {
+            const task = mcScanData.task || { status: 'idle' };
+            const running = mcScanData.running || ['running', 'stopping'].includes(task.status);
+            const labels = { idle: '未运行', running: '识别中', stopping: '停止中', completed: '已完成', canceled: '已停止', failed: '失败' };
+            const badge = document.getElementById('mcScanBadge');
+            badge.textContent = labels[task.status] || task.status;
+            badge.className = `status-badge ${task.status === 'completed' ? 'on' : (task.status === 'failed' ? 'off' : 'warn')}`;
+            document.getElementById('mcScanProgress').textContent = task.status === 'idle' ? '尚未开始' : `${Number(task.progress) || 0}%`;
+            document.getElementById('mcScanMessage').textContent = task.message || '尚未开始巡架识别';
+            document.getElementById('mcScanStart').disabled = running;
+            document.getElementById('mcScanStop').disabled = !running;
+            if (mcScanTimer) clearTimeout(mcScanTimer);
+            mcScanTimer = running ? setTimeout(mcLoadScan, 1500) : null;
+        }
+
+        async function mcLoadScan(showResultToast = false) {
+            try {
+                const res = await mcFetch('/api/merchant/console/inventory-scan', { cache: 'no-store' });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '巡架状态读取失败');
+                mcScanData = json.data || { shelves: [], task: { status: 'idle', results: [] }, running: false };
+                mcRenderScan();
+                mcUpdateScanControls();
+                if (showResultToast) showToast('巡架状态已刷新', 'success');
+            } catch (error) {
+                if (showResultToast) showToast(error.message, 'error');
+                if (mcScanTimer) { clearTimeout(mcScanTimer); mcScanTimer = null; }
+            }
+        }
+
+        async function mcStartScan() {
+            try {
+                const res = await mcFetch('/api/merchant/console/inventory-scan/start', { method: 'POST' });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '巡架启动失败');
+                mcDraft = new Map();
+                mcDraftDirty = false;
+                showToast('巡架识别已启动', 'success');
+                await mcLoadScan();
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function mcStopScan() {
+            if (!window.confirm('确认停止当前巡架识别吗？机器人会在当前动作结束后停止。')) return;
+            try {
+                const res = await mcFetch('/api/merchant/console/inventory-scan/stop', { method: 'POST' });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '停止巡架失败');
+                showToast(json.message || '已发送停止指令', 'success');
+                await mcLoadScan();
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function mcSaveScanResults() {
+            mcCaptureDraft();
+            const rows = [...document.querySelectorAll('.mc-result-row')].map((tr) => ({
+                shelf: tr.querySelector('[data-field="shelf"]').value,
+                point: Number(tr.querySelector('[data-field="point"]').value),
+                layer: Number(tr.querySelector('[data-field="layer"]').value),
+                marker: tr.querySelector('[data-field="marker"]').value,
+                name: tr.querySelector('[data-field="name"]').value.trim()
+            })).filter((row) => row.name);
+            if (!rows.length) { showToast('请至少填写一个商品名称', 'error'); return; }
+            try {
+                const res = await mcFetch('/api/merchant/console/inventory-products', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rows })
+                });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '保存失败');
+                showToast(json.message || '已保存', 'success');
+                await mcLoadScan();
+            } catch (error) {
+                showToast(error.message, 'error');
             }
         }
     </script>

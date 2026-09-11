@@ -102,6 +102,11 @@ const ADMIN_COOKIE_NAME = 'grasp_admin_session';
 const MERCHANT_SESSION_SECRET = process.env.MERCHANT_SESSION_SECRET || ADMIN_SESSION_SECRET;
 const MERCHANT_SESSION_TTL_MS = Number(process.env.MERCHANT_SESSION_TTL_MS || 8 * 60 * 60 * 1000);
 const MERCHANT_COOKIE_NAME = 'grasp_merchant_session';
+// 云端代管：商家页的「自动巡架 / 底盘与地图」请求转发到本店盒子的 FRP 入口。
+// 盒子把 3000 通过 FRP 暴露在云端 127.0.0.1:5060；BOX_PROXY_BASE_URL 可覆盖。
+const BOX_PROXY_BASE_URL = String(process.env.BOX_PROXY_BASE_URL || 'http://127.0.0.1:5060').replace(/\/+$/, '');
+// 该盒子对应的门店；只有绑定此门店的商家才能操作（留空则不校验）。
+const BOX_PROXY_STORE_ID = String(process.env.BOX_PROXY_STORE_ID || 'STORE-001').trim();
 const INVENTORY_SCAN_FILE = process.env.INVENTORY_SCAN_FILE
     || path.join(path.dirname(PRODUCTS_DB_FILE), 'inventory_scan.json');
 // 门店 / 设备（机器人）台账：云端统一登记，设备出库时绑定门店
@@ -655,6 +660,29 @@ function requireMerchant(req, res) {
         return null;
     }
     return { merchant, operations };
+}
+
+// 把请求转发给盒子（用共享密钥即时签发一个管理员会话，盒子端校验通过）。
+async function proxyToBox(req, res, targetPath) {
+    const headers = { Cookie: `${ADMIN_COOKIE_NAME}=${createAdminSession()}` };
+    const init = { method: req.method, headers, redirect: 'manual' };
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+        const body = await parseBody(req);
+        headers['Content-Type'] = 'application/json';
+        init.body = JSON.stringify(body == null ? {} : body);
+    }
+    try {
+        const upstream = await fetch(`${BOX_PROXY_BASE_URL}${targetPath}`, init);
+        const buffer = Buffer.from(await upstream.arrayBuffer());
+        res.writeHead(upstream.status, {
+            'Content-Type': upstream.headers.get('content-type') || 'application/json',
+            'Content-Length': buffer.length,
+            'Cache-Control': 'private, no-store'
+        });
+        res.end(buffer);
+    } catch (error) {
+        sendJSON(res, { code: 1, message: `盒子服务不可达: ${error.message}` }, 502);
+    }
 }
 
 function clientIp(req) {
@@ -3313,6 +3341,25 @@ const server = http.createServer(async (req, res) => {
         const total = orders.length;
         const data = orders.slice((page - 1) * pageSize, page * pageSize).map(publicOrder);
         sendJSON(res, { code: 0, data, page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) });
+        return;
+    }
+
+    // 商家端「自动巡架 / 底盘与地图」：云端代管转发到本店盒子。
+    if (pathname.startsWith('/api/merchant/console/')) {
+        const auth = requireMerchant(req, res);
+        if (!auth) return;
+        if (BOX_PROXY_STORE_ID) {
+            const storeIds = Array.isArray(auth.merchant.storeIds) ? auth.merchant.storeIds : [];
+            if (!storeIds.includes(BOX_PROXY_STORE_ID)) {
+                sendJSON(res, { code: 1, message: '当前商家未绑定该门店设备，无法操作' }, 403);
+                return;
+            }
+        }
+        const subPath = pathname.slice('/api/merchant/console'.length);
+        const boxPath = (subPath.startsWith('/inventory-scan') || subPath.startsWith('/inventory-products'))
+            ? `/api/admin${subPath}`
+            : `/api${subPath}`;
+        await proxyToBox(req, res, `${boxPath}${url.search}`);
         return;
     }
 

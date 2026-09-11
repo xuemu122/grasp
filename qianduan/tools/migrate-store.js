@@ -27,7 +27,7 @@ function parseArgs(argv) {
 
 function resolveFile(envKey, fallback) {
     const fromEnv = process.env[envKey];
-    if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
+    if (fromEnv && String(fromEnv).trim()) return String(fromEnv).trim();
     return fallback;
 }
 
