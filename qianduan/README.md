@@ -63,10 +63,19 @@ GET    /api/merchant/session
 POST   /api/merchant/login    {"username":"storeA","password":"..."}
 POST   /api/merchant/logout
 GET    /api/merchant/overview
+GET    /api/merchant/products?search=&category=
+POST   /api/merchant/products             {"name":"...","price":8,"stock":100,"storeId":"STORE-001",...}
+PUT    /api/merchant/products/:id
+DELETE /api/merchant/products/:id
+POST   /api/merchant/uploads              （商品图片，multipart/form-data，字段名 file）
 GET    /api/merchant/orders?page=1&pageSize=10&status=&search=
 ```
 
-商家接口只返回 `storeIds` 内门店的订单与设备，无法调用任何 `/api/admin/*` 接口。商家端会话使用独立 Cookie `grasp_merchant_session`，签名密钥为 `MERCHANT_SESSION_SECRET`（未配置时复用 `ADMIN_SESSION_SECRET`）。
+商家接口只返回、且只能修改 `storeIds` 内门店的订单、设备与商品，无法调用任何 `/api/admin/*` 接口：
+商品新增会强制归属到自己的门店，修改/删除他人门店商品返回 403。设备对商家只读。
+商家端会话使用独立 Cookie `grasp_merchant_session`，签名密钥为 `MERCHANT_SESSION_SECRET`（未配置时复用 `ADMIN_SESSION_SECRET`）。
+
+商品现在带 `storeId`（归属门店）：平台在 `admin.html` 商品表单里选择“归属门店”，商家端“我的商品”只显示自己门店的商品。现有仓库示例商品统一归属 `STORE-001`（北校区）。平台商品接口 `GET /api/products` 也支持 `storeId` 筛选。
 
 免费订单退款只恢复本地库存；真实订单退款会转发到 LyOrder `/api/WeChatPay/refund`。每笔退款持久化唯一 `refundRequestId`，并通过请求体与 `Idempotency-Key` 重复使用；LyOrder 应按该键幂等处理。部分退款请求同时携带 `partial=true`、元单位的 `refundAmount/totalAmount`，以及分单位的 `amount.refund/amount.total`；LyOrder 必须按明确金额退款，不能忽略这些字段后退整单。库存预占和恢复都具有持久化幂等标记。
 

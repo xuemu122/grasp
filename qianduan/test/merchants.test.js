@@ -40,7 +40,7 @@ test('merchant login is scoped to the stores it owns', async (t) => {
     const ordersFile = path.join(tempDir, 'orders.json');
     const chassisSettingsFile = path.join(tempDir, 'chassis_settings.json');
     fs.writeFileSync(productsFile, JSON.stringify({
-        products: [{ id: 1, name: '测试咖啡', stock: 10, status: 1, price: 8, location: '测试区A货架第2层', chassis_marker: 'shelf-a' }]
+        products: [{ id: 1, name: '测试咖啡', stock: 10, status: 1, price: 8, location: '测试区A货架第2层', chassis_marker: 'shelf-a', storeId: 'STORE-001' }]
     }));
     t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
@@ -142,6 +142,43 @@ test('merchant login is scoped to the stores it owns', async (t) => {
     assert.equal(overview.json.data.stores.length, 1);
     assert.equal(overview.json.data.stores[0].id, storeA.json.data.id);
     assert.equal(overview.json.data.orderCount, 1);
+    assert.equal(overview.json.data.productCount, 1);
+
+    const merchantProducts = await requestJson(`${baseUrl}/api/merchant/products`, { cookie: merchantCookie });
+    assert.equal(merchantProducts.json.total, 1);
+    assert.equal(merchantProducts.json.data[0].storeId, storeA.json.data.id);
+
+    const edited = await requestJson(`${baseUrl}/api/merchant/products/1`, {
+        method: 'PUT', cookie: merchantCookie, body: { price: 9.5, stock: 3, status: 0 }
+    });
+    assert.equal(edited.response.status, 200);
+    assert.equal(edited.json.data.price, 9.5);
+    assert.equal(edited.json.data.status, 0);
+
+    const createdProduct = await requestJson(`${baseUrl}/api/merchant/products`, {
+        method: 'POST', cookie: merchantCookie, body: { name: '商家新增商品', price: 5, stock: 20, storeId: storeA.json.data.id }
+    });
+    assert.equal(createdProduct.response.status, 201);
+    assert.equal(createdProduct.json.data.storeId, storeA.json.data.id);
+
+    const crossStoreCreate = await requestJson(`${baseUrl}/api/merchant/products`, {
+        method: 'POST', cookie: merchantCookie, body: { name: '越权商品', price: 5, stock: 1, storeId: storeB.json.data.id }
+    });
+    assert.equal(crossStoreCreate.response.status, 400);
+
+    const foreignProduct = await requestJson(`${baseUrl}/api/products`, {
+        method: 'POST', cookie: adminCookie, body: { name: '门店B商品', price: 6, stock: 5, storeId: storeB.json.data.id }
+    });
+    assert.equal(foreignProduct.response.status, 200);
+    const foreignEdit = await requestJson(`${baseUrl}/api/merchant/products/${foreignProduct.json.id}`, {
+        method: 'PUT', cookie: merchantCookie, body: { price: 1 }
+    });
+    assert.equal(foreignEdit.response.status, 403);
+
+    const deletedProduct = await requestJson(`${baseUrl}/api/merchant/products/${createdProduct.json.data.id}`, {
+        method: 'DELETE', cookie: merchantCookie
+    });
+    assert.equal(deletedProduct.response.status, 200);
 
     const forbiddenAdmin = await requestJson(`${baseUrl}/api/admin/devices`, { cookie: merchantCookie });
     assert.equal(forbiddenAdmin.response.status, 401);

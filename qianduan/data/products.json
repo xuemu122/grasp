@@ -20,7 +20,8 @@
       "emoji": "🥤",
       "price": 4,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 5,
@@ -42,7 +43,8 @@
       "emoji": "🥤",
       "price": 4,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 7,
@@ -64,7 +66,8 @@
       "emoji": "💧",
       "price": 2,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 21,
@@ -86,7 +89,8 @@
       "emoji": "🥛",
       "price": 6,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 22,
@@ -108,7 +112,8 @@
       "emoji": "⚡",
       "price": 5,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 23,
@@ -130,7 +135,8 @@
       "emoji": "☕",
       "price": 8,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 24,
@@ -152,7 +158,8 @@
       "emoji": "📦",
       "price": 0,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 25,
@@ -174,7 +181,8 @@
       "emoji": "📦",
       "price": 0,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 26,
@@ -196,7 +204,8 @@
       "emoji": "📦",
       "price": 0,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 27,
@@ -218,7 +227,8 @@
       "emoji": "📦",
       "price": 0,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 28,
@@ -240,7 +250,8 @@
       "emoji": "📦",
       "price": 0,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 29,
@@ -262,7 +273,8 @@
       "emoji": "📦",
       "price": 0,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 30,
@@ -284,7 +296,8 @@
       "emoji": "📦",
       "price": 0,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 31,
@@ -306,7 +319,8 @@
       "emoji": "📦",
       "price": 0,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 32,
@@ -328,7 +342,8 @@
       "emoji": "📦",
       "price": 0,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 33,
@@ -350,7 +365,8 @@
       "emoji": "📦",
       "price": 0,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 34,
@@ -372,7 +388,8 @@
       "emoji": "📦",
       "price": 0,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 35,
@@ -394,7 +411,8 @@
       "emoji": "📦",
       "price": 0,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     },
     {
       "id": 36,
@@ -416,7 +434,8 @@
       "emoji": "📦",
       "price": 0,
       "stock": 100,
-      "status": 1
+      "status": 1,
+      "storeId": "STORE-001"
     }
   ],
   "completedOrders": {},

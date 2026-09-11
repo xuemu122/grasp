@@ -540,11 +540,19 @@
                         </select>
                     </div>
                 </div>
-                <div class="form-group">
-                    <label>底盘导航点位</label>
-                    <select class="form-select" id="formChassisMarker" onchange="renderChassisMap()">
-                        <option value="">未设置</option>
-                    </select>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>底盘导航点位</label>
+                        <select class="form-select" id="formChassisMarker" onchange="renderChassisMap()">
+                            <option value="">未设置</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>归属门店</label>
+                        <select class="form-select" id="formStore">
+                            <option value="">未归属</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="form-row-3">
                     <div class="form-group">
@@ -1770,12 +1778,28 @@
 
         function syncStoreSelects() {
             const select = document.getElementById('deviceStoreFilter');
+            if (select) {
+                const current = select.value;
+                const options = storeRecords.map((store) => `<option value="${esc(store.id)}">${esc(store.name)}</option>`).join('');
+                select.innerHTML = `<option value="">全部门店</option>` + options;
+                select.value = current;
+                if (select.value !== current) select.value = '';
+            }
+            updateProductStoreOptions();
+        }
+
+        function storeNameFor(id) {
+            const store = storeRecords.find((row) => row.id === id);
+            return store ? store.name : '';
+        }
+
+        function updateProductStoreOptions(selectedId = null) {
+            const select = document.getElementById('formStore');
             if (!select) return;
-            const current = select.value;
+            const current = selectedId === null ? select.value : selectedId;
             const options = storeRecords.map((store) => `<option value="${esc(store.id)}">${esc(store.name)}</option>`).join('');
-            select.innerHTML = `<option value="">全部门店</option>` + options;
+            select.innerHTML = '<option value="">未归属</option>' + options;
             select.value = current;
-            if (select.value !== current) select.value = '';
         }
 
         // ========== 门店管理 ==========
@@ -2337,7 +2361,7 @@
                             <div class="product-main"><strong>${esc(p.name)}</strong><span class="product-meta">${esc(p.spec) || '无规格'} · ${esc(p.manufacturer) || '无生产商'}</span></div>
                         </div></td>
                         <td>${esc(p.category) || '-'}<span class="product-meta">${esc(p.packaging) || '未设置包装'}</span></td>
-                        <td class="product-shelf">${esc(p.location) || '未设置位置'}<span class="product-meta"><span class="status-badge ${shelfLayerClass(p.location)}">${esc(shelfLayerLabel(p.location))}</span> · ${esc(p.chassis_marker) || '无底盘点位'} · (${p.shelf_x}, ${p.shelf_y}, ${p.shelf_z})</span></td>
+                        <td class="product-shelf">${esc(p.location) || '未设置位置'}<span class="product-meta"><span class="status-badge ${shelfLayerClass(p.location)}">${esc(shelfLayerLabel(p.location))}</span> · ${esc(p.chassis_marker) || '无底盘点位'} · (${p.shelf_x}, ${p.shelf_y}, ${p.shelf_z})</span><span class="product-meta">归属门店：${esc(storeNameFor(p.storeId)) || '未归属'}</span></td>
                         <td style="color:var(--primary);font-weight:700;">¥${p.price}<span class="product-meta">库存 ${Number(p.stock) || 0}</span></td>
                         <td><span class="status-badge ${p.status==1?'on':'off'}">${p.status==1?'在售':'下架'}</span></td>
                         <td>
@@ -2476,6 +2500,7 @@
                 document.getElementById('formShelfX').value = p.shelf_x || 0;
                 document.getElementById('formShelfY').value = p.shelf_y || 0;
                 document.getElementById('formShelfZ').value = p.shelf_z || 50;
+                updateProductStoreOptions(p.storeId || '');
                 document.getElementById('formPrice').value = p.price || 0;
                 document.getElementById('formStock').value = p.stock || 100;
                 setProductImage('front', p.photo_front || '');
@@ -2502,6 +2527,7 @@
             document.getElementById('formShelfZ').value = 50;
             document.getElementById('formShelfLayer').value = '';
                 updateChassisMarkerOptions('');
+            updateProductStoreOptions('');
             document.getElementById('formStock').value = 100;
             document.getElementById('formStatus').value = 1;
             document.getElementById('formTitle').textContent = '➕ 新增商品';
@@ -2536,6 +2562,7 @@
                     document.getElementById('formShelfLayer').value
                 ),
                 chassis_marker: document.getElementById('formChassisMarker').value,
+                storeId: document.getElementById('formStore').value,
                 shelf_x: parseInt(document.getElementById('formShelfX').value) || 0,
                 shelf_y: parseInt(document.getElementById('formShelfY').value) || 0,
                 shelf_z: parseInt(document.getElementById('formShelfZ').value) || 50,

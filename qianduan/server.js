@@ -702,6 +702,7 @@ function normalizeProduct(raw, fallbackId = 1) {
         photo_front: raw.photo_front || '',
         photo_back: raw.photo_back || '',
         location: raw.location || '',
+        storeId: String(raw.storeId || raw.store_id || '').trim(),
         chassis_marker: raw.chassis_marker || raw.marker_name || '',
         shelf_number: Number.isInteger(shelfNumber) && shelfNumber >= 1 && shelfNumber <= 7 ? shelfNumber : null,
         shelf_zone: String(raw.shelf_zone || raw.shelfZone || '').trim().toUpperCase(),
@@ -2187,8 +2188,12 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    if (pathname === '/api/admin/uploads' && req.method === 'POST') {
-        if (!requireAdmin(req, res)) return;
+    if ((pathname === '/api/admin/uploads' || pathname === '/api/merchant/uploads') && req.method === 'POST') {
+        if (pathname === '/api/merchant/uploads') {
+            if (!requireMerchant(req, res)) return;
+        } else if (!requireAdmin(req, res)) {
+            return;
+        }
         try {
             const image = await parseBinaryBody(req, PRODUCT_UPLOAD_MAX_BYTES);
             if (image.length === 0) {
@@ -3159,6 +3164,7 @@ const server = http.createServer(async (req, res) => {
             .filter((device) => device.storeId && storeIds.includes(device.storeId))
             .map((device) => deviceWithStore(device, operations));
         const orders = readOrderStore().orders.filter((order) => order.source !== 'test' && order.storeId && storeIds.includes(order.storeId));
+        const products = readProducts().filter((product) => product.storeId && storeIds.includes(product.storeId));
         const deviceStatusCounts = {};
         for (const device of devices) deviceStatusCounts[device.status] = (deviceStatusCounts[device.status] || 0) + 1;
         sendJSON(res, {
@@ -3167,15 +3173,91 @@ const server = http.createServer(async (req, res) => {
                 merchant: { id: merchant.id, username: merchant.username, name: merchant.name },
                 stores: stores.map((store) => ({
                     ...store,
-                    deviceCount: devices.filter((device) => device.storeId === store.id).length
+                    deviceCount: devices.filter((device) => device.storeId === store.id).length,
+                    productCount: products.filter((product) => product.storeId === store.id).length
                 })),
                 devices,
                 deviceStatusCounts,
                 deviceStatusLabels: DEVICE_STATUS_LABELS,
+                productCount: products.length,
                 orderCount: orders.length,
                 revenue: Number(orders.reduce((sum, order) => sum + Number(order.totalAmount || 0), 0).toFixed(2))
             }
         });
+        return;
+    }
+
+    if ((pathname === '/api/merchant/products' || /^\/api\/merchant\/products\/\d+$/.test(pathname))) {
+        const auth = requireMerchant(req, res);
+        if (!auth) return;
+        const { merchant } = auth;
+        const storeIds = merchant.storeIds;
+        const productIdMatch = pathname.match(/^\/api\/merchant\/products\/(\d+)$/);
+
+        if (pathname === '/api/merchant/products' && req.method === 'GET') {
+            const search = String(url.searchParams.get('search') || '').trim().toLowerCase();
+            const category = String(url.searchParams.get('category') || '').trim();
+            let products = readProducts().filter((product) => product.storeId && storeIds.includes(product.storeId));
+            if (category) products = products.filter((product) => product.category === category);
+            if (search) {
+                products = products.filter((product) => [product.name, product.spec, product.category, product.manufacturer]
+                    .some((value) => String(value || '').toLowerCase().includes(search)));
+            }
+            sendJSON(res, { code: 0, data: products, total: products.length });
+            return;
+        }
+
+        if (pathname === '/api/merchant/products' && req.method === 'POST') {
+            const body = await parseBody(req);
+            if (!body || !String(body.name || '').trim()) { sendJSON(res, { code: 1, message: '商品名称不能为空' }, 400); return; }
+            try {
+                const storeId = String(body.storeId || (storeIds.length === 1 ? storeIds[0] : '') || '').trim();
+                if (!storeId || !storeIds.includes(storeId)) throw new Error('只能把商品添加到自己的门店');
+                const products = readProducts();
+                const product = normalizeProduct({ ...body, storeId, id: nextProductId(products) });
+                products.push(product);
+                writeProducts(products);
+                log(`➕ 商家新增商品: ${product.name} (id=${product.id}, store=${storeId})`);
+                sendJSON(res, { code: 0, message: '商品已添加', data: product }, 201);
+            } catch (error) {
+                sendJSON(res, { code: 1, message: error.message }, 400);
+            }
+            return;
+        }
+
+        if (productIdMatch && (req.method === 'PUT' || req.method === 'DELETE')) {
+            const products = readProducts();
+            const index = products.findIndex((item) => String(item.id) === productIdMatch[1]);
+            if (index < 0) { sendJSON(res, { code: 1, message: '商品不存在' }, 404); return; }
+            if (!products[index].storeId || !storeIds.includes(products[index].storeId)) {
+                sendJSON(res, { code: 1, message: '无权操作该商品' }, 403);
+                return;
+            }
+            if (req.method === 'DELETE') {
+                writeProducts(products.filter((item) => String(item.id) !== productIdMatch[1]));
+                sendJSON(res, { code: 0, message: '商品已删除' });
+                return;
+            }
+            const body = await parseBody(req);
+            if (!body) { sendJSON(res, { code: 1, message: '无效数据' }, 400); return; }
+            try {
+                const allowed = ['name','spec','packaging','category','manufacturer','photo_front','photo_back','location','chassis_marker','shelf_number','shelf_zone','shelf_layer','shelf_x','shelf_y','shelf_z','emoji','price','stock','status'];
+                const patch = {};
+                for (const key of allowed) {
+                    if (body[key] !== undefined) patch[key] = body[key];
+                }
+                if (Object.keys(patch).length === 0) { sendJSON(res, { code: 1, message: '没有要更新的字段' }, 400); return; }
+                products[index] = normalizeProduct({ ...products[index], ...patch, id: products[index].id, storeId: products[index].storeId });
+                writeProducts(products);
+                log(`✏️ 商家更新商品 id=${productIdMatch[1]}`);
+                sendJSON(res, { code: 0, message: '商品已更新', data: products[index] });
+            } catch (error) {
+                sendJSON(res, { code: 1, message: error.message }, 400);
+            }
+            return;
+        }
+
+        sendJSON(res, { code: 1, message: '商品接口方法不支持' }, 405);
         return;
     }
 
@@ -3353,8 +3435,11 @@ const server = http.createServer(async (req, res) => {
         try {
             const search = url.searchParams.get('search') || '';
             const category = url.searchParams.get('category') || '';
+            const storeId = url.searchParams.get('storeId') || '';
             const includeInactive = url.searchParams.get('include_inactive') === '1' && Boolean(readAdminSession(req));
-            const source = includeInactive ? readProducts() : readProducts().filter((item) => Number(item.status) === 1);
+            let source = includeInactive ? readProducts() : readProducts().filter((item) => Number(item.status) === 1);
+            if (storeId === 'unassigned') source = source.filter((item) => !item.storeId);
+            else if (storeId) source = source.filter((item) => item.storeId === storeId);
             const rows = filterProducts(source, { search, category });
             sendJSON(res, { code: 0, data: rows, total: rows.length });
         } catch (e) {
@@ -3407,7 +3492,7 @@ const server = http.createServer(async (req, res) => {
             const products = readProducts();
             const index = products.findIndex((item) => String(item.id) === updateMatch[1]);
             if (index < 0) { sendJSON(res, { code: 1, message: '商品不存在' }, 404); return; }
-            const allowed = ['name','spec','packaging','category','manufacturer','photo_front','photo_back','location','chassis_marker','shelf_number','shelf_zone','shelf_layer','shelf_x','shelf_y','shelf_z','emoji','price','stock','status'];
+            const allowed = ['name','spec','packaging','category','manufacturer','photo_front','photo_back','location','storeId','store_id','chassis_marker','shelf_number','shelf_zone','shelf_layer','shelf_x','shelf_y','shelf_z','emoji','price','stock','status'];
             const patch = {};
             for (const key of allowed) {
                 if (body[key] !== undefined) {

@@ -27,7 +27,7 @@
         .card { background: white; border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow-md); }
         .card-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid var(--gray-100); display: flex; justify-content: space-between; align-items: center; }
         .card-title .count { font-size: 0.85rem; font-weight: 500; color: var(--gray-400); }
-        .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 4px; }
+        .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 4px; }
         .stat { padding: 14px; border: 1px solid var(--gray-200); border-radius: 8px; background: var(--gray-50); }
         .stat-label { color: var(--gray-500); font-size: 0.78rem; }
         .stat-value { margin-top: 5px; color: var(--gray-900); font-size: 1.35rem; font-weight: 700; }
@@ -73,6 +73,19 @@
         .form-input:focus { border-color: var(--primary); }
         .login-error { min-height: 22px; margin-bottom: 8px; color: var(--danger); font-size: 0.85rem; }
         .login-submit { width: 100%; justify-content: center; }
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: 2000; display: flex; align-items: center; justify-content: center; }
+        .modal-overlay[hidden] { display: none; }
+        .modal { background: white; border-radius: var(--radius); padding: 26px; width: 92%; max-width: 560px; max-height: 88vh; overflow-y: auto; box-shadow: var(--shadow-lg); }
+        .modal h3 { margin-bottom: 16px; font-size: 1.1rem; }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .form-select { width: 100%; padding: 10px 12px; border: 2px solid var(--gray-200); border-radius: 8px; font-size: 0.9rem; outline: none; background: white; font-family: inherit; }
+        .form-select:focus { border-color: var(--primary); }
+        .modal-actions { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; }
+        .btn-danger { background: transparent; color: var(--danger); border: 2px solid var(--danger); }
+        .btn-danger:hover { background: var(--danger-light); }
+        .image-preview { width: 100%; aspect-ratio: 4/3; border: 2px dashed var(--gray-200); border-radius: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; background: var(--gray-50); color: var(--gray-400); font-size: 0.8rem; }
+        .image-preview img { width: 100%; height: 100%; object-fit: contain; }
+        .actions { display: flex; gap: 6px; white-space: nowrap; }
         @media (max-width: 640px) { .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     </style>
 </head>
@@ -110,12 +123,31 @@
                 <div class="stat"><div class="stat-label">营业额</div><div class="stat-value" id="statRevenue">-</div></div>
                 <div class="stat"><div class="stat-label">门店数</div><div class="stat-value" id="statStores">-</div></div>
                 <div class="stat"><div class="stat-label">设备数</div><div class="stat-value" id="statDevices">-</div></div>
+                <div class="stat"><div class="stat-label">商品数</div><div class="stat-value" id="statProducts">-</div></div>
             </div>
         </div>
 
         <div class="card">
             <div class="card-title"><span>我的门店 <span class="count" id="storeCount">0 家</span></span></div>
             <div class="store-grid" id="storeGrid"><div class="empty-state">加载中...</div></div>
+        </div>
+
+        <div class="card">
+            <div class="card-title"><span>我的商品 <span class="count" id="productCount">0 件</span></span>
+                <span>
+                    <button class="btn btn-primary btn-sm" type="button" onclick="openProductModal()">+ 新增商品</button>
+                    <button class="btn btn-primary btn-sm" type="button" onclick="loadMerchantProducts()">刷新</button>
+                </span>
+            </div>
+            <div class="toolbar">
+                <input class="search-box" id="productSearch" placeholder="搜索商品名称 / 规格 / 分类" onkeydown="if(event.key === 'Enter') loadMerchantProducts()">
+            </div>
+            <div class="table-wrapper">
+                <table>
+                    <thead><tr><th>商品</th><th>分类 / 规格</th><th>价格</th><th>库存</th><th>状态</th><th>操作</th></tr></thead>
+                    <tbody id="productBody"><tr><td colspan="6" class="loading">加载中...</td></tr></tbody>
+                </table>
+            </div>
         </div>
 
         <div class="card">
@@ -158,6 +190,10 @@
         </div>
     </div>
 
+    <div class="modal-overlay" id="productModalOverlay" hidden>
+        <div class="modal" id="productModal"></div>
+    </div>
+
     <div id="toastContainer"></div>
 
     <script>
@@ -168,6 +204,8 @@
         };
         let orderPage = 1;
         let orderTotalPages = 1;
+        let merchantProducts = [];
+        let merchantStores = [];
 
         document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('loginForm').addEventListener('submit', loginMerchant);
@@ -180,6 +218,13 @@
             } catch (error) {
                 document.getElementById('loginError').textContent = '无法连接服务';
             }
+        });
+
+        document.getElementById('productModalOverlay').addEventListener('click', (event) => {
+            if (event.target.id === 'productModalOverlay') closeProductModal();
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && !document.getElementById('productModalOverlay').hidden) closeProductModal();
         });
 
         async function loginMerchant(event) {
@@ -216,7 +261,8 @@
             document.getElementById('loginOverlay').hidden = true;
             document.getElementById('merchantMain').hidden = false;
             document.getElementById('merchantName').textContent = profile.name || profile.username || '';
-            await Promise.all([loadOverview(), loadOrders(1)]);
+            await loadOverview();
+            await Promise.all([loadMerchantProducts(), loadOrders(1)]);
         }
 
         function showLogin(message = '') {
@@ -262,7 +308,9 @@
                 document.getElementById('statRevenue').textContent = `¥${Number(data.revenue || 0).toFixed(2)}`;
                 document.getElementById('statStores').textContent = String((data.stores || []).length);
                 document.getElementById('statDevices').textContent = String((data.devices || []).length);
+                document.getElementById('statProducts').textContent = String(data.productCount || 0);
                 document.getElementById('storeCount').textContent = `${(data.stores || []).length} 家`;
+                merchantStores = data.stores || [];
                 document.getElementById('deviceCount').textContent = `${(data.devices || []).length} 台`;
                 renderStores(data.stores || [], data.deviceStatusLabels || {});
                 renderDevices(data.devices || []);
@@ -294,6 +342,172 @@
                 <td><span class="status-badge ${device.status === 'deployed' ? 'on' : (device.status === 'in_stock' ? 'warn' : 'off')}">${esc(device.statusLabel || device.status)}</span></td>
                 <td>${esc(device.location) || '-'}</td>
             </tr>`).join('');
+        }
+
+        async function loadMerchantProducts() {
+            const body = document.getElementById('productBody');
+            const params = new URLSearchParams();
+            const search = document.getElementById('productSearch').value.trim();
+            if (search) params.set('search', search);
+            try {
+                const res = await merchantFetch(`/api/merchant/products?${params.toString()}`, { cache: 'no-store' });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '商品读取失败');
+                merchantProducts = json.data || [];
+                document.getElementById('productCount').textContent = `${json.total} 件`;
+                document.getElementById('statProducts').textContent = String(json.total);
+                if (!merchantProducts.length) { body.innerHTML = '<tr><td colspan="6" class="empty-state">暂无商品</td></tr>'; return; }
+                body.innerHTML = merchantProducts.map((product) => `<tr>
+                    <td><strong>${esc(product.name)}</strong><br><small>${esc(product.manufacturer) || '-'}</small></td>
+                    <td>${esc(product.category) || '-'}<br><small>${esc(product.spec) || '无规格'}</small></td>
+                    <td style="color:var(--primary);font-weight:700;">¥${Number(product.price || 0).toFixed(2)}</td>
+                    <td>${Number(product.stock || 0)}</td>
+                    <td><span class="status-badge ${Number(product.status) === 1 ? 'on' : 'off'}">${Number(product.status) === 1 ? '在售' : '下架'}</span></td>
+                    <td><div class="actions">
+                        <button class="btn btn-primary btn-sm" type="button" onclick="openProductModal(${product.id})">编辑</button>
+                        <button class="btn btn-danger btn-sm" type="button" onclick="deleteMerchantProduct(${product.id})">删除</button>
+                    </div></td>
+                </tr>`).join('');
+            } catch (error) {
+                body.innerHTML = `<tr><td colspan="6" class="empty-state">${esc(error.message)}</td></tr>`;
+            }
+        }
+
+        function closeProductModal() {
+            document.getElementById('productModalOverlay').hidden = true;
+            document.getElementById('productModal').innerHTML = '';
+        }
+
+        function storeSelectHtml(selectedId) {
+            if (merchantStores.length <= 1) {
+                const store = merchantStores[0];
+                return `<input type="hidden" id="productFormStore" value="${store ? esc(store.id) : ''}">`;
+            }
+            return `<select class="form-select" id="productFormStore">${merchantStores.map((store) => `<option value="${esc(store.id)}"${store.id === selectedId ? ' selected' : ''}>${esc(store.name)}</option>`).join('')}</select>`;
+        }
+
+        function emojiDefault(product) {
+            return product && product.emoji ? product.emoji : '📦';
+        }
+
+        function openProductModal(productId = null) {
+            const product = productId ? merchantProducts.find((row) => row.id === productId) : null;
+            if (productId && !product) { showToast('商品不存在，请刷新', 'error'); return; }
+            if (!merchantStores.length) { showToast('尚未绑定门店，请联系平台管理员', 'error'); return; }
+            const value = (key, fallback = '') => (product && product[key] !== undefined && product[key] !== null ? product[key] : fallback);
+            document.getElementById('productModal').innerHTML = `
+                <h3>${product ? '编辑商品' : '新增商品'}</h3>
+                <form onsubmit="return saveMerchantProduct(event, ${product ? product.id : 'null'})">
+                    <div class="form-row">
+                        <div class="form-group"><label><span style="color:var(--danger)">*</span> 商品名称</label><input class="form-input" id="productFormName" value="${esc(value('name'))}" required></div>
+                        <div class="form-group"><label>归属门店</label>${storeSelectHtml(product ? product.storeId : '')}</div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>规格</label><input class="form-input" id="productFormSpec" value="${esc(value('spec'))}" placeholder="如：330ml/罐"></div>
+                        <div class="form-group"><label>分类</label><input class="form-input" id="productFormCategory" value="${esc(value('category'))}"></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>生产商</label><input class="form-input" id="productFormManufacturer" value="${esc(value('manufacturer'))}"></div>
+                        <div class="form-group"><label>图标 Emoji</label><input class="form-input" id="productFormEmoji" value="${esc(emojiDefault(product))}"></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label><span style="color:var(--danger)">*</span> 价格</label><input class="form-input" id="productFormPrice" type="number" step="0.01" min="0" value="${value('price', 0)}" required></div>
+                        <div class="form-group"><label><span style="color:var(--danger)">*</span> 库存</label><input class="form-input" id="productFormStock" type="number" min="0" value="${value('stock', 100)}" required></div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group"><label>货架位置</label><input class="form-input" id="productFormLocation" value="${esc(value('location'))}" placeholder="如：饮料区A货架第2层"></div>
+                        <div class="form-group"><label>货架层</label><input class="form-input" id="productFormShelfLayer" type="number" min="1" max="10" value="${value('shelf_layer', '')}"></div>
+                    </div>
+                    <div class="form-group"><label>状态</label><select class="form-select" id="productFormStatus">
+                        <option value="1"${Number(value('status', 1)) === 1 ? ' selected' : ''}>在售</option>
+                        <option value="0"${Number(value('status', 1)) === 0 ? ' selected' : ''}>下架</option>
+                    </select></div>
+                    <div class="form-row">
+                        <div class="form-group"><label>正面图片</label>
+                            <div class="image-preview" id="productPhotoFrontPreview">${value('photo_front') ? `<img src="${esc(value('photo_front'))}" alt="正面">` : '未选择'}</div>
+                            <input type="hidden" id="productPhotoFront" value="${esc(value('photo_front'))}">
+                            <input type="file" accept="image/jpeg,image/png,image/webp" onchange="uploadMerchantImage('front', this)">
+                        </div>
+                        <div class="form-group"><label>反面图片</label>
+                            <div class="image-preview" id="productPhotoBackPreview">${value('photo_back') ? `<img src="${esc(value('photo_back'))}" alt="反面">` : '未选择'}</div>
+                            <input type="hidden" id="productPhotoBack" value="${esc(value('photo_back'))}">
+                            <input type="file" accept="image/jpeg,image/png,image/webp" onchange="uploadMerchantImage('back', this)">
+                        </div>
+                    </div>
+                    <div class="modal-actions">
+                        <button type="button" class="btn btn-danger" onclick="closeProductModal()">取消</button>
+                        <button type="submit" class="btn btn-primary">保存</button>
+                    </div>
+                </form>`;
+            document.getElementById('productModalOverlay').hidden = false;
+        }
+
+        async function uploadMerchantImage(side, input) {
+            const file = input.files && input.files[0];
+            if (!file) return;
+            const form = new FormData();
+            form.append('file', file);
+            try {
+                const res = await fetch('/api/merchant/uploads', { method: 'POST', body: form, credentials: 'same-origin' });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '上传失败');
+                const id = side === 'front' ? 'productPhotoFront' : 'productPhotoBack';
+                const previewId = side === 'front' ? 'productPhotoFrontPreview' : 'productPhotoBackPreview';
+                document.getElementById(id).value = json.url;
+                document.getElementById(previewId).innerHTML = `<img src="${esc(json.url)}" alt="${side}">`;
+            } catch (error) {
+                showToast(error.message, 'error');
+            } finally {
+                input.value = '';
+            }
+        }
+
+        async function saveMerchantProduct(event, productId) {
+            event.preventDefault();
+            const storeField = document.getElementById('productFormStore');
+            const payload = {
+                name: document.getElementById('productFormName').value.trim(),
+                spec: document.getElementById('productFormSpec').value.trim(),
+                category: document.getElementById('productFormCategory').value.trim(),
+                manufacturer: document.getElementById('productFormManufacturer').value.trim(),
+                emoji: document.getElementById('productFormEmoji').value.trim() || '📦',
+                price: parseFloat(document.getElementById('productFormPrice').value) || 0,
+                stock: parseInt(document.getElementById('productFormStock').value, 10) || 0,
+                location: document.getElementById('productFormLocation').value.trim(),
+                shelf_layer: parseInt(document.getElementById('productFormShelfLayer').value, 10) || null,
+                status: parseInt(document.getElementById('productFormStatus').value, 10),
+                photo_front: document.getElementById('productPhotoFront').value,
+                photo_back: document.getElementById('productPhotoBack').value
+            };
+            if (storeField) payload.storeId = storeField.value;
+            try {
+                const res = await merchantFetch(productId ? `/api/merchant/products/${productId}` : '/api/merchant/products', {
+                    method: productId ? 'PUT' : 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '保存失败');
+                showToast(json.message || '商品已保存', 'success');
+                closeProductModal();
+                await loadMerchantProducts();
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+            return false;
+        }
+
+        async function deleteMerchantProduct(productId) {
+            if (!window.confirm('确定删除该商品吗？')) return;
+            try {
+                const res = await merchantFetch(`/api/merchant/products/${productId}`, { method: 'DELETE' });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '删除失败');
+                showToast('商品已删除', 'success');
+                await loadMerchantProducts();
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
         }
 
         async function loadOrders(page) {
