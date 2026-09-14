@@ -103,28 +103,103 @@ const MERCHANT_SESSION_SECRET = process.env.MERCHANT_SESSION_SECRET || ADMIN_SES
 const MERCHANT_SESSION_TTL_MS = Number(process.env.MERCHANT_SESSION_TTL_MS || 8 * 60 * 60 * 1000);
 const MERCHANT_COOKIE_NAME = 'grasp_merchant_session';
 // 云端代管：商家页的「自动巡架 / 底盘与地图」请求转发到本店盒子的 FRP 入口。
-// 盒子把 3000 通过 FRP 暴露在云端 127.0.0.1:5060；BOX_PROXY_BASE_URL 可覆盖。
-const BOX_PROXY_BASE_URL = String(process.env.BOX_PROXY_BASE_URL || 'http://127.0.0.1:5060').replace(/\/+$/, '');
-// 该盒子对应的门店；只有绑定此门店的商家才能操作（留空则不校验）。
-const BOX_PROXY_STORE_ID = String(process.env.BOX_PROXY_STORE_ID || 'STORE-001').trim();
-// 设备在线状态：云端按固定间隔探测盒子 /api/device/info，只探测由云端的那个盒子。
-// 只有显式配置 BOX_PROXY_BASE_URL 时才启用轮询，避免盒子进程反向探测自己。
-const BOX_PROXY_ENABLED = Boolean(process.env.BOX_PROXY_BASE_URL);
+// 多盒子用 BOX_PROXY_MAP=STORE-001=http://127.0.0.1:5060,STORE-002=http://127.0.0.1:5062
+// 单盒子兼容：只配 BOX_PROXY_BASE_URL（+ BOX_PROXY_STORE_ID）时自动生成一条映射。
+function parseBoxProxyMap(raw) {
+    const map = new Map();
+    for (const part of String(raw || '').split(',')) {
+        const item = part.trim();
+        if (!item) continue;
+        const eq = item.indexOf('=');
+        if (eq <= 0) continue;
+        const storeId = item.slice(0, eq).trim();
+        const baseUrl = item.slice(eq + 1).trim().replace(/\/+$/, '');
+        if (storeId && baseUrl) map.set(storeId, baseUrl);
+    }
+    return map;
+}
+const BOX_PROXY_MAP = parseBoxProxyMap(process.env.BOX_PROXY_MAP);
+if (!BOX_PROXY_MAP.size && process.env.BOX_PROXY_BASE_URL) {
+    const fallbackStoreId = String(process.env.BOX_PROXY_STORE_ID || '').trim() || '__default__';
+    BOX_PROXY_MAP.set(fallbackStoreId, String(process.env.BOX_PROXY_BASE_URL).replace(/\/+$/, ''));
+}
+const BOX_PROXY_ENABLED = BOX_PROXY_MAP.size > 0;
+// 每个门店盒子的订单 WebSocket 目标；默认按 HTTP 端口 +1 推导（5060->5061），也可用
+// BOX_PROXY_WS_MAP=STORE-001=ws://127.0.0.1:5061/ws/,STORE-002=ws://127.0.0.1:5063/ws/ 覆盖。
+function parseBoxWsMap(raw) {
+    const map = new Map();
+    for (const part of String(raw || '').split(',')) {
+        const item = part.trim();
+        if (!item) continue;
+        const eq = item.indexOf('=');
+        if (eq <= 0) continue;
+        const storeId = item.slice(0, eq).trim();
+        const wsUrl = item.slice(eq + 1).trim();
+        if (storeId && wsUrl) map.set(storeId, wsUrl);
+    }
+    return map;
+}
+const BOX_PROXY_WS_MAP = parseBoxWsMap(process.env.BOX_PROXY_WS_MAP);
+if (!BOX_PROXY_WS_MAP.size) {
+    for (const [storeId, baseUrl] of BOX_PROXY_MAP) {
+        try {
+            const parsed = new URL(baseUrl);
+            const port = Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80)) + 1;
+            BOX_PROXY_WS_MAP.set(storeId, `${parsed.protocol === 'https:' ? 'wss' : 'ws'}://${parsed.hostname}:${port}/ws/`);
+        } catch (error) { /* 忽略无法解析的地址 */ }
+    }
+}
+function resolveStoreWsTarget(storeParam) {
+    if (!BOX_PROXY_WS_MAP.size) return null;
+    const id = String(storeParam || '').trim();
+    if (id && BOX_PROXY_WS_MAP.has(id)) return { storeId: id, wsUrl: BOX_PROXY_WS_MAP.get(id) };
+    if (BOX_PROXY_WS_MAP.has('__default__')) return { storeId: '__default__', wsUrl: BOX_PROXY_WS_MAP.get('__default__') };
+    const first = BOX_PROXY_WS_MAP.entries().next();
+    return first.done ? null : { storeId: first.value[0], wsUrl: first.value[1] };
+}
 const DEVICE_ONLINE_POLL_MS = Math.max(5000, Number(process.env.DEVICE_ONLINE_POLL_MS || 15000));
 const DEVICE_ONLINE_TIMEOUT_MS = Math.max(500, Number(process.env.DEVICE_ONLINE_TIMEOUT_MS || 3000));
 const DEVICE_ONLINE_STALE_MS = Math.max(DEVICE_ONLINE_POLL_MS, Number(process.env.DEVICE_ONLINE_STALE_MS || 45000));
-const boxPresence = {
-    enabled: BOX_PROXY_ENABLED,
-    online: false,
-    sn: '',
-    storeId: null,
-    storeName: null,
-    graspMode: null,
-    checkedAt: null,
-    lastSeenAt: null,
-    error: BOX_PROXY_ENABLED ? '尚未探测' : '未配置 BOX_PROXY_BASE_URL'
-};
-let boxPresenceProbeRunning = false;
+// 每个门店盒子一份在线状态（key = 门店编号；未绑定门店时用 '__default__'）。
+const boxPresences = new Map();
+for (const [storeId, baseUrl] of BOX_PROXY_MAP) {
+    boxPresences.set(storeId, {
+        enabled: true,
+        storeId,
+        baseUrl,
+        online: false,
+        sn: '',
+        storeName: null,
+        graspMode: null,
+        checkedAt: null,
+        lastSeenAt: null,
+        error: '尚未探测'
+    });
+}
+
+// 按门店找到对应盒子；未配置该门店时，若只有一个「默认盒子」则兜底。
+function boxForStore(storeId) {
+    const id = String(storeId || '').trim();
+    if (id && BOX_PROXY_MAP.has(id)) return { storeId: id, baseUrl: BOX_PROXY_MAP.get(id) };
+    if (BOX_PROXY_MAP.has('__default__')) return { storeId: '__default__', baseUrl: BOX_PROXY_MAP.get('__default__') };
+    return null;
+}
+
+// 为商家挑选可操作的盒子：优先 cookie 里请求的门店，其次商家绑定的第一个有盒子的门店。
+function resolveMerchantBox(merchant, requestedStoreId) {
+    const storeIds = Array.isArray(merchant && merchant.storeIds) ? merchant.storeIds : [];
+    const wanted = String(requestedStoreId || '').trim();
+    if (wanted) {
+        if (!storeIds.includes(wanted)) return null;
+        const baseUrl = BOX_PROXY_MAP.get(wanted);
+        return baseUrl ? { storeId: wanted, baseUrl } : null;
+    }
+    for (const storeId of storeIds) {
+        if (BOX_PROXY_MAP.has(storeId)) return { storeId, baseUrl: BOX_PROXY_MAP.get(storeId) };
+    }
+    if (BOX_PROXY_MAP.has('__default__')) return { storeId: '__default__', baseUrl: BOX_PROXY_MAP.get('__default__') };
+    return null;
+}
 const INVENTORY_SCAN_FILE = process.env.INVENTORY_SCAN_FILE
     || path.join(path.dirname(PRODUCTS_DB_FILE), 'inventory_scan.json');
 // 门店 / 设备（机器人）台账：云端统一登记，设备出库时绑定门店
@@ -682,11 +757,11 @@ function requireMerchant(req, res) {
 
 // 用 Node 的 http/https 直连盒子：Node 的全局 fetch（undici）会拦截 5060/5061/6000 这类
 // 「危险端口」，而 FRP 映射恰好用 5060，所以访问盒子不能走 fetch。
-function boxHttpRequest(targetPath, { method = 'GET', headers = {}, body, timeout = DEVICE_ONLINE_TIMEOUT_MS } = {}) {
+function boxHttpRequest(baseUrl, targetPath, { method = 'GET', headers = {}, body, timeout = DEVICE_ONLINE_TIMEOUT_MS } = {}) {
     return new Promise((resolve, reject) => {
         let target;
         try {
-            target = new URL(`${BOX_PROXY_BASE_URL}${targetPath}`);
+            target = new URL(`${baseUrl}${targetPath}`);
         } catch (error) {
             reject(error);
             return;
@@ -716,8 +791,8 @@ function boxHttpRequest(targetPath, { method = 'GET', headers = {}, body, timeou
     });
 }
 
-// 把请求转发给盒子（用共享密钥即时签发一个管理员会话，盒子端校验通过）。
-async function proxyToBox(req, res, targetPath) {
+// 把请求转发给指定盒子（用共享密钥即时签发一个管理员会话，盒子端校验通过）。
+async function proxyToBox(req, res, baseUrl, targetPath) {
     const headers = { Cookie: `${ADMIN_COOKIE_NAME}=${createAdminSession()}` };
     let body;
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -726,7 +801,7 @@ async function proxyToBox(req, res, targetPath) {
         body = Buffer.from(JSON.stringify(parsed == null ? {} : parsed));
     }
     try {
-        const upstream = await boxHttpRequest(targetPath, { method: req.method, headers, body, timeout: 15000 });
+        const upstream = await boxHttpRequest(baseUrl, targetPath, { method: req.method, headers, body, timeout: 15000 });
         res.writeHead(upstream.status, {
             'Content-Type': upstream.headers['content-type'] || 'application/json',
             'Content-Length': upstream.body.length,
@@ -738,12 +813,49 @@ async function proxyToBox(req, res, targetPath) {
     }
 }
 
-// 探测盒子是否在线：能读到 /api/device/info 即视为在线，并记录盒子自报的 SN / 门店。
-async function probeBoxPresence() {
-    if (!BOX_PROXY_ENABLED || boxPresenceProbeRunning) return;
-    boxPresenceProbeRunning = true;
+// 把浏览器的订单 WebSocket 双向转发到对应门店的盒子（云端代管；盒子 WS 不受 fetch 坏端口限制）。
+function proxyWsToBox(client, wsUrl) {
+    let upstream;
     try {
-        const response = await boxHttpRequest('/api/device/info', { method: 'GET', timeout: DEVICE_ONLINE_TIMEOUT_MS });
+        upstream = new WebSocket(wsUrl, { perMessageDeflate: false, handshakeTimeout: 8000 });
+    } catch (error) {
+        sendMessage(client, { type: 'error', message: `盒子 WebSocket 连接失败: ${error.message}` });
+        try { client.close(); } catch (e) { /* ignore */ }
+        return;
+    }
+    const pending = [];
+    let upstreamOpen = false;
+    upstream.on('open', () => {
+        upstreamOpen = true;
+        for (const frame of pending.splice(0)) {
+            try { upstream.send(frame.data, { binary: frame.binary }); } catch (e) { /* ignore */ }
+        }
+    });
+    client.on('message', (data, isBinary) => {
+        if (upstreamOpen && upstream.readyState === WebSocket.OPEN) {
+            upstream.send(data, { binary: isBinary });
+        } else {
+            pending.push({ data, binary: isBinary });
+        }
+    });
+    upstream.on('message', (data, isBinary) => {
+        if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
+    });
+    client.on('close', () => { try { upstream.close(); } catch (e) { /* ignore */ } });
+    client.on('error', () => { try { upstream.terminate(); } catch (e) { /* ignore */ } });
+    upstream.on('close', () => { try { client.close(); } catch (e) { /* ignore */ } });
+    upstream.on('error', (error) => {
+        sendMessage(client, { type: 'error', message: `盒子 WebSocket 错误: ${error.message}` });
+        try { client.close(); } catch (e) { /* ignore */ }
+    });
+}
+
+// 探测单个盒子是否在线：能读到 /api/device/info 即视为在线，并记录盒子自报的 SN / 门店。
+async function probeBoxPresence(entry) {
+    if (!entry || entry.probing) return;
+    entry.probing = true;
+    try {
+        const response = await boxHttpRequest(entry.baseUrl, '/api/device/info', { method: 'GET', timeout: DEVICE_ONLINE_TIMEOUT_MS });
         let payload = null;
         try { payload = JSON.parse(response.body.toString('utf8')); } catch (error) { payload = null; }
         if (response.status !== 200 || !payload || payload.code !== 0) {
@@ -751,38 +863,46 @@ async function probeBoxPresence() {
         }
         const info = payload.data || {};
         const now = new Date().toISOString();
-        boxPresence.online = true;
-        boxPresence.sn = String(info.sn || '').trim();
-        boxPresence.storeId = info.storeId || null;
-        boxPresence.storeName = info.storeName || null;
-        boxPresence.graspMode = info.graspMode || null;
-        boxPresence.checkedAt = now;
-        boxPresence.lastSeenAt = now;
-        boxPresence.error = '';
+        entry.online = true;
+        entry.sn = String(info.sn || '').trim();
+        entry.storeName = info.storeName || null;
+        entry.graspMode = info.graspMode || null;
+        entry.checkedAt = now;
+        entry.lastSeenAt = now;
+        entry.error = '';
     } catch (error) {
-        boxPresence.online = false;
-        boxPresence.checkedAt = new Date().toISOString();
-        boxPresence.error = error.message;
+        entry.online = false;
+        entry.checkedAt = new Date().toISOString();
+        entry.error = error.message;
     } finally {
-        boxPresenceProbeRunning = false;
+        entry.probing = false;
     }
 }
 
-function boxPresenceSnapshot() {
-    return { ...boxPresence };
+function probeAllBoxes() {
+    for (const entry of boxPresences.values()) probeBoxPresence(entry);
 }
 
-// 单个设备的在线状态：只有 SN 与在线盒子一致，且最近一次心跳未过期，才判定在线。
+function boxPresenceSnapshots() {
+    return [...boxPresences.values()].map(({ probing, ...rest }) => ({ ...rest }));
+}
+
+// 单个设备的在线状态：找到它所属门店的盒子，SN 一致且最近一次心跳未过期才算在线。
 function devicePresence(device) {
+    const box = boxForStore(device && device.storeId);
+    if (!box) return { online: false, known: false, checkedAt: null, lastSeenAt: null, storeId: null };
+    const presence = boxPresences.get(box.storeId);
+    if (!presence) return { online: false, known: false, checkedAt: null, lastSeenAt: null, storeId: box.storeId };
     const sn = String(device && device.sn || '').trim();
-    const matches = Boolean(sn) && sn === boxPresence.sn;
-    const fresh = boxPresence.online && boxPresence.lastSeenAt
-        && (Date.now() - Date.parse(boxPresence.lastSeenAt) <= DEVICE_ONLINE_STALE_MS);
+    const matches = Boolean(sn) && sn === presence.sn;
+    const fresh = presence.online && presence.lastSeenAt
+        && (Date.now() - Date.parse(presence.lastSeenAt) <= DEVICE_ONLINE_STALE_MS);
     return {
         online: matches && fresh,
         known: matches,
-        checkedAt: boxPresence.checkedAt,
-        lastSeenAt: matches ? boxPresence.lastSeenAt : null
+        checkedAt: presence.checkedAt,
+        lastSeenAt: matches ? presence.lastSeenAt : null,
+        storeId: box.storeId
     };
 }
 
@@ -2303,7 +2423,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     const url = new URL(req.url, `http://localhost:${PORT}`);
-    const pathname = url.pathname;
+    let pathname = url.pathname;
+    // test.html 会把接口打到 /test-api/*；这里对齐到 /api/*，并标记为测试请求（免支付）。
+    let testModeRequest = false;
+    if (pathname === '/test-api' || pathname.startsWith('/test-api/')) {
+        testModeRequest = true;
+        pathname = `/api${pathname.slice('/test-api'.length)}`;
+    }
 
     // ========== REST API 路由 ==========
     if (pathname === '/api/admin/session' && req.method === 'GET') {
@@ -2426,7 +2552,9 @@ const server = http.createServer(async (req, res) => {
             });
             const totalAmount = Number(pricedItems.reduce((sum, item) => sum + item.lineTotal, 0).toFixed(2));
             const orderId = `ORD-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-            const trustedTestRequest = String(req.headers['x-grasp-test-mode'] || '') === '1';
+            // 测试页免支付需要：nginx 注入的信任头，或 /test-api 且已登录平台管理员。
+            const trustedTestRequest = String(req.headers['x-grasp-test-mode'] || '') === '1'
+                || (testModeRequest && Boolean(readAdminSession(req)));
             const paymentMode = trustedTestRequest ? 'free' : PAYMENT_MODE;
             if (!['free', 'lyorder'].includes(paymentMode)) throw new Error(`不支持的支付模式: ${paymentMode}`);
             if (paymentMode === 'lyorder') {
@@ -2973,7 +3101,7 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/api/admin/device-presence' && req.method === 'GET') {
         if (!requireAdmin(req, res)) return;
-        sendJSON(res, { code: 0, data: boxPresenceSnapshot() });
+        sendJSON(res, { code: 0, data: boxPresenceSnapshots() });
         return;
     }
 
@@ -2991,7 +3119,7 @@ const server = http.createServer(async (req, res) => {
             devices = devices.filter((device) => [device.id, device.sn, device.name, device.model, device.storeName, device.location]
                 .some((value) => String(value || '').toLowerCase().includes(search)));
         }
-        sendJSON(res, { code: 0, data: devices, total: devices.length, statuses: DEVICE_STATUS_LABELS, presence: boxPresenceSnapshot() });
+        sendJSON(res, { code: 0, data: devices, total: devices.length, statuses: DEVICE_STATUS_LABELS, presence: boxPresenceSnapshots() });
         return;
     }
 
@@ -3319,13 +3447,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/merchant/session' && req.method === 'GET') {
-        const session = readMerchantSession(req);
-        if (!session) { sendJSON(res, { code: 0, authenticated: false }); return; }
         const operations = readOperationsStore();
-        const merchant = operations.merchants.find((row) => row.id === session.id && row.status === 'active');
-        if (!merchant) { sendJSON(res, { code: 0, authenticated: false }); return; }
+        const loginAvailable = operations.merchants.some((row) => row.status === 'active');
+        const session = readMerchantSession(req);
+        const merchant = session
+            ? operations.merchants.find((row) => row.id === session.id && row.status === 'active')
+            : null;
+        if (!merchant) { sendJSON(res, { code: 0, authenticated: false, loginAvailable }); return; }
         const profile = publicMerchant(merchant, operations);
-        sendJSON(res, { code: 0, authenticated: true, ...profile });
+        sendJSON(res, { code: 0, authenticated: true, loginAvailable: true, ...profile });
         return;
     }
 
@@ -3354,7 +3484,7 @@ const server = http.createServer(async (req, res) => {
                 devices,
                 deviceStatusCounts,
                 deviceStatusLabels: DEVICE_STATUS_LABELS,
-                presence: boxPresenceSnapshot(),
+                presence: boxPresenceSnapshots().filter((entry) => entry.storeId === '__default__' || storeIds.includes(entry.storeId)),
                 onlineDeviceCount: devices.filter((device) => device.online).length,
                 productCount: products.length,
                 orderCount: orders.length,
@@ -3463,18 +3593,16 @@ const server = http.createServer(async (req, res) => {
     if (pathname.startsWith('/api/merchant/console/')) {
         const auth = requireMerchant(req, res);
         if (!auth) return;
-        if (BOX_PROXY_STORE_ID) {
-            const storeIds = Array.isArray(auth.merchant.storeIds) ? auth.merchant.storeIds : [];
-            if (!storeIds.includes(BOX_PROXY_STORE_ID)) {
-                sendJSON(res, { code: 1, message: '当前商家未绑定该门店设备，无法操作' }, 403);
-                return;
-            }
+        const target = resolveMerchantBox(auth.merchant, url.searchParams.get('storeId'));
+        if (!target) {
+            sendJSON(res, { code: 1, message: '当前商家未绑定可用设备，无法操作' }, 403);
+            return;
         }
         const subPath = pathname.slice('/api/merchant/console'.length);
         const boxPath = (subPath.startsWith('/inventory-scan') || subPath.startsWith('/inventory-products'))
             ? `/api/admin${subPath}`
             : `/api${subPath}`;
-        await proxyToBox(req, res, `${boxPath}${url.search}`);
+        await proxyToBox(req, res, target.baseUrl, `${boxPath}${url.search}`);
         return;
     }
 
@@ -4163,9 +4291,10 @@ server.listen(PORT, HOST, () => {
         flushOrderCallbackOutbox({ force: true }).catch((error) => log(`⚠️ 完成回调队列启动重试失败: ${error.message}`));
     }
     if (BOX_PROXY_ENABLED) {
-        probeBoxPresence();
-        setInterval(probeBoxPresence, DEVICE_ONLINE_POLL_MS).unref();
-        log(`设备在线探测: 每 ${Math.round(DEVICE_ONLINE_POLL_MS / 1000)}s 探测 ${BOX_PROXY_BASE_URL}/api/device/info`);
+        probeAllBoxes();
+        setInterval(probeAllBoxes, DEVICE_ONLINE_POLL_MS).unref();
+        const targets = [...BOX_PROXY_MAP.entries()].map(([storeId, baseUrl]) => `${storeId}=${baseUrl}`).join(', ');
+        log(`设备在线探测: 每 ${Math.round(DEVICE_ONLINE_POLL_MS / 1000)}s 探测 ${targets}`);
     }
     const chassisSettings = readChassisSettings();
     log(`底盘接口: ${CHASSIS_HOST}:${CHASSIS_PORT}，栅格地图: ${CHASSIS_MAP_HTTP_PROTOCOL}://${CHASSIS_MAP_HTTP_HOST}:${CHASSIS_MAP_HTTP_PORT}`);
@@ -4376,7 +4505,22 @@ async function rejectOrderWithRefund(ws, msg, reason) {
     sendMessage(ws, { type: 'error', orderId: orderId || undefined, message, refundTriggered });
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, request) => {
+    // 云端：按 ?store= 把订单 WebSocket 双向转发到对应门店的盒子。
+    if (BOX_PROXY_ENABLED) {
+        let storeParam = '';
+        try {
+            storeParam = new URL(request.url, `http://${request.headers.host || 'localhost'}`).searchParams.get('store') || '';
+        } catch (error) { storeParam = ''; }
+        const target = resolveStoreWsTarget(storeParam);
+        if (target) {
+            log(`🔀 订单 WebSocket 转发到门店 ${target.storeId}: ${target.wsUrl}`);
+            ws.isAlive = true;
+            ws.on('pong', () => { ws.isAlive = true; });
+            proxyWsToBox(ws, target.wsUrl);
+            return;
+        }
+    }
     log('✅ 前端已连接');
     ws.isAlive = true;
     ws.on('pong', () => { ws.isAlive = true; });

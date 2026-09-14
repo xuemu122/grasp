@@ -17,6 +17,15 @@ let currentOrderPayload = null;
 let orderRetryTimer = null;
 let shelfLayers = {};        // 货架层位姿缓存 { "1": {pose:[...], name:"第1层"}, ... }
 
+// ========== 商家 / 门店 / 设备上下文 ==========
+let orderMerchant = null;        // 当前登录的商家资料（含 stores）
+let orderStoreList = [];         // [{ id, name }]
+let orderDeviceList = [];        // 该商家各门店的设备
+let orderSelectedStoreId = '';
+let orderSelectedDeviceId = '';
+let orderLoginResolve = null;    // 登录成功后的 resolve
+let orderAuthMode = 'merchant';  // 'merchant' | 'admin'（test.html 用管理员登录）
+
 // ========== WebSocket 连接 ==========
 let ws = null;
 let wsConnected = false;
@@ -199,7 +208,8 @@ function syncOrderButton() {
 function connectWebSocket() {
     if (ws && [WebSocket.OPEN, WebSocket.CONNECTING].includes(ws.readyState)) return;
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(`${wsProtocol}//${window.location.host}/ws/`);
+    const storeQuery = orderSelectedStoreId ? `?store=${encodeURIComponent(orderSelectedStoreId)}` : '';
+    const socket = new WebSocket(`${wsProtocol}//${window.location.host}/ws/${storeQuery}`);
     const generation = ++wsGeneration;
     wsConnectedAt = Date.now();
     const connectTimeout = setTimeout(() => {
@@ -407,6 +417,9 @@ async function init() {
         window.visualViewport.addEventListener('scroll', syncModalViewport);
     }
     syncOrderButton();
+    const loginForm = document.getElementById('orderLoginForm');
+    if (loginForm) loginForm.addEventListener('submit', submitOrderLogin);
+    await ensureOrderContext();
     connectWebSocket();
     await refreshCatalog();
     bindSearch();
@@ -464,7 +477,8 @@ async function loadCategories(render = true) {
 // ========== 加载商品 ==========
 async function loadProducts(render = true) {
     try {
-        const res = await fetch(graspApi('/products'));
+        const storeQuery = orderSelectedStoreId ? `?storeId=${encodeURIComponent(orderSelectedStoreId)}` : '';
+        const res = await fetch(graspApi(`/products${storeQuery}`));
         const data = await res.json();
         if (data.code === 0) {
             products = data.data || [];
@@ -802,8 +816,8 @@ async function submitOrder() {
                 items: items.map(item => ({ id: item.id, name: item.name, qty: item.qty })),
                 source: window.GRASP_TEST_MODE ? 'test' : 'web',
                 payment_mode: window.GRASP_TEST_MODE ? 'free' : undefined,
-                storeId: new URLSearchParams(window.location.search).get('store') || undefined,
-                deviceId: new URLSearchParams(window.location.search).get('device') || undefined
+                storeId: orderSelectedStoreId || undefined,
+                deviceId: orderSelectedDeviceId || undefined
             })
         });
         prepared = await res.json();
@@ -1927,6 +1941,296 @@ function speakText(text) {
         utter.volume = 1;
         window.speechSynthesis.speak(utter);
     }, 100);
+}
+
+// ========== 商家登录 / 门店设备上下文 ==========
+// 登录与门店接口始终走 /api（测试页也走 /api，避免 /test-api 缺少对应路由）。
+function orderApiUrl(pathname) {
+    return `/api${pathname}`;
+}
+
+async function ensureOrderContext() {
+    const params = new URLSearchParams(window.location.search);
+    const urlStore = params.get('store') || '';
+    const urlDevice = params.get('device') || '';
+    // 测试页（test.html / ?mode=free）用平台管理员登录，登录后才免支付测试。
+    if (window.GRASP_TEST_MODE) {
+        await ensureAdminTestContext();
+        if (urlStore && !orderSelectedStoreId) orderSelectedStoreId = urlStore;
+        if (urlDevice && !orderSelectedDeviceId) orderSelectedDeviceId = urlDevice;
+        renderOrderContext();
+        return;
+    }
+    // 商家会话 Cookie 是 Secure 的，http（盒子本地/局域网触摸屏）无法保持登录，跳过登录。
+    if (window.location.protocol !== 'https:') {
+        orderSelectedStoreId = urlStore;
+        orderSelectedDeviceId = urlDevice;
+        renderOrderContext();
+        return;
+    }
+    let session = null;
+    try {
+        const res = await fetch(orderApiUrl('/merchant/session'), { cache: 'no-store' });
+        session = await res.json();
+    } catch (error) {
+        session = null;
+    }
+    if (!session || (!session.authenticated && !session.loginAvailable)) {
+        // 没有商家体系（例如盒子本地直连）：退回 URL 参数
+        orderSelectedStoreId = urlStore;
+        orderSelectedDeviceId = urlDevice;
+        renderOrderContext();
+        return;
+    }
+    if (session.authenticated) {
+        await applyOrderMerchant(session);
+    } else {
+        showOrderLogin();
+        const profile = await new Promise((resolve) => { orderLoginResolve = resolve; });
+        hideOrderLogin();
+        if (profile) await applyOrderMerchant(profile);
+    }
+    if (urlStore && !orderSelectedStoreId) orderSelectedStoreId = urlStore;
+    if (urlDevice && !orderSelectedDeviceId) orderSelectedDeviceId = urlDevice;
+    renderOrderContext();
+}
+
+function showOrderLogin(message = '', mode = orderAuthMode) {
+    orderAuthMode = mode;
+    const overlay = document.getElementById('orderLoginOverlay');
+    if (!overlay) return;
+    overlay.hidden = false;
+    const titleEl = document.getElementById('orderLoginTitle');
+    const descEl = document.getElementById('orderLoginDesc');
+    const userLabel = document.getElementById('orderLoginUsernameLabel');
+    if (orderAuthMode === 'admin') {
+        if (titleEl) titleEl.textContent = '测试页登录';
+        if (descEl) descEl.textContent = '请使用平台管理员账号登录后测试';
+        if (userLabel) userLabel.textContent = '管理员账号';
+    } else {
+        if (titleEl) titleEl.textContent = '门店点单登录';
+        if (descEl) descEl.textContent = '请使用平台分配的商家账号登录';
+        if (userLabel) userLabel.textContent = '商家账号';
+    }
+    const error = document.getElementById('orderLoginError');
+    if (error) error.textContent = message;
+}
+
+function hideOrderLogin() {
+    const overlay = document.getElementById('orderLoginOverlay');
+    if (overlay) overlay.hidden = true;
+}
+
+async function submitOrderLogin(event) {
+    event.preventDefault();
+    const button = document.getElementById('orderLoginSubmit');
+    const error = document.getElementById('orderLoginError');
+    if (button) button.disabled = true;
+    if (error) error.textContent = '';
+    const isAdmin = orderAuthMode === 'admin';
+    const loginPath = isAdmin ? '/admin/login' : '/merchant/login';
+    const sessionPath = isAdmin ? '/admin/session' : '/merchant/session';
+    try {
+        const res = await fetch(orderApiUrl(loginPath), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                username: document.getElementById('orderLoginUsername').value.trim(),
+                password: document.getElementById('orderLoginPassword').value
+            })
+        });
+        const json = await res.json();
+        if (!res.ok || json.code !== 0) {
+            if (error) error.textContent = json.message || '登录失败';
+            return;
+        }
+        document.getElementById('orderLoginPassword').value = '';
+        const profileRes = await fetch(orderApiUrl(sessionPath), { cache: 'no-store' });
+        const profile = await profileRes.json();
+        if (orderLoginResolve) {
+            const resolve = orderLoginResolve;
+            orderLoginResolve = null;
+            resolve(profile && profile.authenticated ? profile : json);
+        }
+    } catch (error2) {
+        if (error) error.textContent = '网络错误，请稍后重试';
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
+async function logoutOrderMerchant() {
+    const isAdmin = orderAuthMode === 'admin';
+    try {
+        await fetch(orderApiUrl(isAdmin ? '/admin/logout' : '/merchant/logout'), { method: 'POST' });
+    } catch (error) { /* ignore */ }
+    orderMerchant = null;
+    orderStoreList = [];
+    orderDeviceList = [];
+    orderSelectedStoreId = '';
+    orderSelectedDeviceId = '';
+    const userInput = document.getElementById('orderLoginUsername');
+    if (userInput) userInput.value = '';
+    renderOrderContext();
+    showOrderLogin('已退出登录', isAdmin ? 'admin' : 'merchant');
+    const profile = await new Promise((resolve) => { orderLoginResolve = resolve; });
+    hideOrderLogin();
+    if (!profile) return;
+    if (isAdmin) {
+        await loadAdminTestContext();
+    } else {
+        await applyOrderMerchant(profile);
+    }
+    await refreshCatalog();
+    reconnectWebSocketForStore();
+    renderOrderContext();
+}
+
+async function ensureAdminTestContext() {
+    let session = null;
+    try {
+        const res = await fetch(orderApiUrl('/admin/session'), { cache: 'no-store' });
+        session = await res.json();
+    } catch (error) { session = null; }
+    if (!session || !session.authenticated) {
+        showOrderLogin('', 'admin');
+        await new Promise((resolve) => { orderLoginResolve = resolve; });
+        hideOrderLogin();
+    }
+    await loadAdminTestContext();
+}
+
+async function loadAdminTestContext() {
+    orderMerchant = { name: '管理员测试', username: 'admin' };
+    orderStoreList = [];
+    try {
+        const res = await fetch(orderApiUrl('/admin/stores'), { cache: 'no-store' });
+        const json = await res.json();
+        if (res.ok && json.code === 0) {
+            orderStoreList = (json.data || []).map((store) => ({ id: store.id, name: store.name }));
+        }
+    } catch (error) { /* ignore */ }
+    const params = new URLSearchParams(window.location.search);
+    const urlStore = params.get('store') || '';
+    if (urlStore && orderStoreList.some((store) => store.id === urlStore)) {
+        orderSelectedStoreId = urlStore;
+    } else if (!orderStoreList.some((store) => store.id === orderSelectedStoreId)) {
+        orderSelectedStoreId = orderStoreList.length ? orderStoreList[0].id : '';
+    }
+
+    orderDeviceList = [];
+    try {
+        const res = await fetch(orderApiUrl('/admin/devices'), { cache: 'no-store' });
+        const json = await res.json();
+        if (res.ok && json.code === 0) orderDeviceList = json.data || [];
+    } catch (error) { /* ignore */ }
+    const visible = orderDeviceList.filter((device) => !orderSelectedStoreId || device.storeId === orderSelectedStoreId);
+    const urlDevice = params.get('device') || '';
+    const match = urlDevice ? visible.find((device) => device.id === urlDevice || device.sn === urlDevice) : null;
+    if (match) {
+        orderSelectedDeviceId = match.id;
+    } else if (!visible.some((device) => device.id === orderSelectedDeviceId)) {
+        const online = visible.find((device) => device.online);
+        orderSelectedDeviceId = (online || visible[0] || {}).id || '';
+    }
+}
+
+async function applyOrderMerchant(profile) {
+    orderMerchant = profile || null;
+    orderStoreList = Array.isArray(profile && profile.stores) ? profile.stores : [];
+    const params = new URLSearchParams(window.location.search);
+    const urlStore = params.get('store') || '';
+    if (urlStore && orderStoreList.some((store) => store.id === urlStore)) {
+        orderSelectedStoreId = urlStore;
+    } else if (!orderStoreList.some((store) => store.id === orderSelectedStoreId)) {
+        orderSelectedStoreId = orderStoreList.length ? orderStoreList[0].id : '';
+    }
+    await loadOrderDevices();
+}
+
+async function loadOrderDevices() {
+    orderDeviceList = [];
+    try {
+        const res = await fetch(orderApiUrl('/merchant/overview'), { cache: 'no-store' });
+        const json = await res.json();
+        if (res.ok && json.code === 0) orderDeviceList = (json.data && json.data.devices) || [];
+    } catch (error) { /* ignore */ }
+    const visible = orderDeviceList.filter((device) => !orderSelectedStoreId || device.storeId === orderSelectedStoreId);
+    const urlDevice = new URLSearchParams(window.location.search).get('device') || '';
+    const urlMatch = urlDevice
+        ? visible.find((device) => device.id === urlDevice || device.sn === urlDevice)
+        : null;
+    if (urlMatch) {
+        orderSelectedDeviceId = urlMatch.id;
+    } else if (!visible.some((device) => device.id === orderSelectedDeviceId)) {
+        const online = visible.find((device) => device.online);
+        orderSelectedDeviceId = (online || visible[0] || {}).id || '';
+    }
+}
+
+function renderOrderContext() {
+    const bar = document.getElementById('orderContext');
+    if (!bar) return;
+    const hasContext = Boolean(orderMerchant) || orderStoreList.length > 0 || Boolean(orderSelectedStoreId) || Boolean(orderSelectedDeviceId);
+    bar.hidden = !hasContext;
+    const nameEl = document.getElementById('orderMerchantName');
+    if (nameEl) nameEl.textContent = orderMerchant ? (orderMerchant.name || orderMerchant.username || '') : '';
+    const storeSelect = document.getElementById('orderStoreSelect');
+    if (storeSelect) {
+        storeSelect.innerHTML = orderStoreList
+            .map((store) => `<option value="${escapeHtml(store.id)}">${escapeHtml(store.name || store.id)}</option>`)
+            .join('');
+        if (orderSelectedStoreId) storeSelect.value = orderSelectedStoreId;
+        storeSelect.disabled = orderStoreList.length <= 1;
+    }
+    renderOrderDeviceSelect();
+    const logoutBtn = document.getElementById('orderLogoutBtn');
+    if (logoutBtn) logoutBtn.hidden = !orderMerchant;
+}
+
+function renderOrderDeviceSelect() {
+    const deviceSelect = document.getElementById('orderDeviceSelect');
+    if (!deviceSelect) return;
+    const visible = orderDeviceList.filter((device) => !orderSelectedStoreId || device.storeId === orderSelectedStoreId);
+    deviceSelect.innerHTML = visible.length
+        ? visible.map((device) => {
+            const label = `${escapeHtml(device.name || device.id)} · ${device.online ? '在线' : '离线'}${device.sn ? ` · ${escapeHtml(device.sn)}` : ''}`;
+            return `<option value="${escapeHtml(device.id)}">${label}</option>`;
+        }).join('')
+        : '<option value="">（该门店暂无设备）</option>';
+    if (orderSelectedDeviceId) deviceSelect.value = orderSelectedDeviceId;
+    const selected = visible.find((device) => device.id === orderSelectedDeviceId);
+    const statusEl = document.getElementById('orderDeviceStatus');
+    if (statusEl) {
+        statusEl.textContent = selected ? (selected.online ? '在线' : '离线') : '';
+        statusEl.className = `order-context-device-status ${selected && selected.online ? 'on' : 'off'}`;
+    }
+}
+
+async function onOrderStoreChange() {
+    const storeSelect = document.getElementById('orderStoreSelect');
+    orderSelectedStoreId = storeSelect ? storeSelect.value : '';
+    await loadOrderDevices();
+    renderOrderContext();
+    reconnectWebSocketForStore();
+    await refreshCatalog();
+}
+
+function reconnectWebSocketForStore() {
+    wsGeneration += 1;
+    if (ws) {
+        try { ws.close(); } catch (error) { /* ignore */ }
+    }
+    ws = null;
+    stopWebSocketHeartbeat();
+    wsConnected = false;
+    scheduleWebSocketReconnect(0);
+}
+
+function onOrderDeviceChange() {
+    const deviceSelect = document.getElementById('orderDeviceSelect');
+    orderSelectedDeviceId = deviceSelect ? deviceSelect.value : '';
+    renderOrderDeviceSelect();
 }
 
 // ========== 启动 ==========

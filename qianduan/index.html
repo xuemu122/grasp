@@ -1,14 +1,32 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>机器人智能点单平台</title>
 
-    <link rel="stylesheet" href="style.css?v=voice-36">
+    <link rel="stylesheet" href="style.css?v=voice-37">
 
 </head>
 <body>
+    <!-- 商家登录 -->
+    <div class="order-login-overlay" id="orderLoginOverlay" hidden>
+        <form class="order-login-panel" id="orderLoginForm">
+            <h1 id="orderLoginTitle">门店点单登录</h1>
+            <p id="orderLoginDesc">请使用平台分配的商家账号登录</p>
+            <div class="order-login-field">
+                <label for="orderLoginUsername" id="orderLoginUsernameLabel">商家账号</label>
+                <input class="order-login-input" id="orderLoginUsername" autocomplete="username" required autofocus>
+            </div>
+            <div class="order-login-field">
+                <label for="orderLoginPassword">密码</label>
+                <input class="order-login-input" id="orderLoginPassword" type="password" autocomplete="current-password" required>
+            </div>
+            <div class="order-login-error" id="orderLoginError" role="alert"></div>
+            <button class="btn-submit" id="orderLoginSubmit" type="submit">登录</button>
+        </form>
+    </div>
+
     <!-- 熄屏/唤醒页面 -->
     <div class="splash-screen" id="splashScreen">
         <div class="splash-content">
@@ -48,6 +66,19 @@
             </div>
         </div>
     </header>
+
+    <!-- 门店 / 设备上下文 -->
+    <div class="order-context" id="orderContext" hidden>
+        <span class="order-context-merchant" id="orderMerchantName"></span>
+        <label class="order-context-field">门店
+            <select id="orderStoreSelect" onchange="onOrderStoreChange()"></select>
+        </label>
+        <label class="order-context-field">设备
+            <select id="orderDeviceSelect" onchange="onOrderDeviceChange()"></select>
+        </label>
+        <span class="order-context-device-status" id="orderDeviceStatus"></span>
+        <button type="button" class="order-context-logout" id="orderLogoutBtn" onclick="logoutOrderMerchant()">退出</button>
+    </div>
 
     <!-- 主内容区 -->
     <div class="page-layout">
@@ -115,6 +146,6 @@
         <div class="toast-content" id="toastContent"></div>
     </div>
 
-    <script src="script.js?v=voice-36"></script>
+    <script src="script.js?v=voice-37"></script>
 </body>
 </html>
