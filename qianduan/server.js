@@ -680,24 +680,59 @@ function requireMerchant(req, res) {
     return { merchant, operations };
 }
 
+// 用 Node 的 http/https 直连盒子：Node 的全局 fetch（undici）会拦截 5060/5061/6000 这类
+// 「危险端口」，而 FRP 映射恰好用 5060，所以访问盒子不能走 fetch。
+function boxHttpRequest(targetPath, { method = 'GET', headers = {}, body, timeout = DEVICE_ONLINE_TIMEOUT_MS } = {}) {
+    return new Promise((resolve, reject) => {
+        let target;
+        try {
+            target = new URL(`${BOX_PROXY_BASE_URL}${targetPath}`);
+        } catch (error) {
+            reject(error);
+            return;
+        }
+        const transport = target.protocol === 'https:' ? https : http;
+        const request = transport.request({
+            protocol: target.protocol,
+            hostname: target.hostname,
+            port: target.port || (target.protocol === 'https:' ? 443 : 80),
+            path: `${target.pathname}${target.search}`,
+            method,
+            headers
+        }, (response) => {
+            const chunks = [];
+            response.on('data', (chunk) => chunks.push(chunk));
+            response.on('end', () => resolve({
+                status: response.statusCode,
+                headers: response.headers,
+                body: Buffer.concat(chunks)
+            }));
+            response.on('error', reject);
+        });
+        request.on('error', reject);
+        if (timeout) request.setTimeout(timeout, () => request.destroy(new Error('探测超时')));
+        if (body !== undefined && body !== null) request.write(body);
+        request.end();
+    });
+}
+
 // 把请求转发给盒子（用共享密钥即时签发一个管理员会话，盒子端校验通过）。
 async function proxyToBox(req, res, targetPath) {
     const headers = { Cookie: `${ADMIN_COOKIE_NAME}=${createAdminSession()}` };
-    const init = { method: req.method, headers, redirect: 'manual' };
+    let body;
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-        const body = await parseBody(req);
+        const parsed = await parseBody(req);
         headers['Content-Type'] = 'application/json';
-        init.body = JSON.stringify(body == null ? {} : body);
+        body = Buffer.from(JSON.stringify(parsed == null ? {} : parsed));
     }
     try {
-        const upstream = await fetch(`${BOX_PROXY_BASE_URL}${targetPath}`, init);
-        const buffer = Buffer.from(await upstream.arrayBuffer());
+        const upstream = await boxHttpRequest(targetPath, { method: req.method, headers, body, timeout: 15000 });
         res.writeHead(upstream.status, {
-            'Content-Type': upstream.headers.get('content-type') || 'application/json',
-            'Content-Length': buffer.length,
+            'Content-Type': upstream.headers['content-type'] || 'application/json',
+            'Content-Length': upstream.body.length,
             'Cache-Control': 'private, no-store'
         });
-        res.end(buffer);
+        res.end(upstream.body);
     } catch (error) {
         sendJSON(res, { code: 1, message: `盒子服务不可达: ${error.message}` }, 502);
     }
@@ -707,12 +742,11 @@ async function proxyToBox(req, res, targetPath) {
 async function probeBoxPresence() {
     if (!BOX_PROXY_ENABLED || boxPresenceProbeRunning) return;
     boxPresenceProbeRunning = true;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), DEVICE_ONLINE_TIMEOUT_MS);
     try {
-        const response = await fetch(`${BOX_PROXY_BASE_URL}/api/device/info`, { signal: controller.signal, cache: 'no-store' });
-        const payload = await response.json().catch(() => null);
-        if (!response.ok || !payload || payload.code !== 0) {
+        const response = await boxHttpRequest('/api/device/info', { method: 'GET', timeout: DEVICE_ONLINE_TIMEOUT_MS });
+        let payload = null;
+        try { payload = JSON.parse(response.body.toString('utf8')); } catch (error) { payload = null; }
+        if (response.status !== 200 || !payload || payload.code !== 0) {
             throw new Error((payload && payload.message) || `盒子返回 ${response.status}`);
         }
         const info = payload.data || {};
@@ -728,9 +762,8 @@ async function probeBoxPresence() {
     } catch (error) {
         boxPresence.online = false;
         boxPresence.checkedAt = new Date().toISOString();
-        boxPresence.error = error.name === 'AbortError' ? '探测超时' : error.message;
+        boxPresence.error = error.message;
     } finally {
-        clearTimeout(timer);
         boxPresenceProbeRunning = false;
     }
 }
