@@ -2044,14 +2044,16 @@ def main():
     # ── 2. 初始化相机 + YOLO ──
     print("\n[2/4] 初始化相机 + YOLO ...")
     camera = RealSenseCamera(width=640, height=480, fps=30)
-    default_model_path = "/home/nvidia/grasp/识别/best.engine"
+    _repo_root = os.environ.get("GRASP_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _recognition_dir = os.environ.get("GRASP_RECOGNITION_DIR", os.path.join(_repo_root, "识别"))
+    default_model_path = os.path.join(_recognition_dir, "best.engine")
     if not os.path.exists(default_model_path):
-        default_model_path = "/home/nvidia/grasp/识别/best.pt"
+        default_model_path = os.path.join(_recognition_dir, "best.pt")
     model_path = os.getenv("YOLO_MODEL_PATH", default_model_path)
     print(f"  视觉模型: {model_path}")
     locator = MedicineLocatorSystem(
         model_path=model_path,
-        mapping_path="/home/nvidia/grasp/识别/shelf_mapping.yaml",
+        mapping_path=os.environ.get("SHELF_MAPPING_PATH", os.path.join(_recognition_dir, "shelf_mapping.yaml")),
         conf_threshold=DETECT_CONF_THRESHOLD,
         class_conf_thresholds={cls_id: WATER_CONF_THRESHOLD for cls_id in DRINK_CLASS_IDS},
         use_ocr=False,

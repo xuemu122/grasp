@@ -29,7 +29,8 @@ import json
 import cv2
 import numpy as np
 
-sys.path.insert(0, "/home/nvidia/grasp/识别")
+_REPO_ROOT = os.environ.get("GRASP_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.environ.get("GRASP_RECOGNITION_DIR", os.path.join(_REPO_ROOT, "识别")))
 from orbbec_detect import RealSenseCamera
 
 DOBOT_IP = os.getenv("DOBOT_IP", "192.168.1.6")

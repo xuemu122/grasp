@@ -6,6 +6,11 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+import os
+from pathlib import Path
+
+
+_REPO_ROOT = Path(os.environ["GRASP_ROOT"]) if os.environ.get("GRASP_ROOT") else Path(__file__).resolve().parent
 
 
 def rpy_to_rot(rx_deg, ry_deg, rz_deg):
@@ -119,7 +124,7 @@ def main():
     ax.view_init(elev=20, azim=-90)
 
     plt.tight_layout()
-    plt.savefig('/home/nvidia/grasp/dipan/calib_debug_3d.png', dpi=150)
+    plt.savefig(str(_REPO_ROOT / 'calib_debug_3d.png'), dpi=150)
     print(f"\n已保存图片: dipan/calib_debug_3d.png")
 
     # 俯视图
@@ -138,7 +143,7 @@ def main():
     ax2.legend()
     ax2.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig('/home/nvidia/grasp/dipan/calib_debug_top.png', dpi=150)
+    plt.savefig(str(_REPO_ROOT / 'calib_debug_top.png'), dpi=150)
     print(f"已保存图片: dipan/calib_debug_top.png")
 
     plt.show()

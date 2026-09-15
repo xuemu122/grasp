@@ -22,7 +22,10 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 
-AERO_SDK_PATH = "/home/nvidia/grasp/aero-hand-open/sdk/src"
+AERO_SDK_PATH = os.environ.get(
+    "AERO_SDK_PATH",
+    os.path.join(os.environ.get("GRASP_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "aero-hand-open/sdk/src"),
+)
 sys.path.insert(0, AERO_SDK_PATH)
 from aero_open_sdk.aero_hand import AeroHand  # noqa: E402
 

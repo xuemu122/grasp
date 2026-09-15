@@ -20,8 +20,15 @@ import numpy as np
 from tool_geometry import hand_capsule_parts
 
 
-NOVA5_URDF = "/home/nvidia/grasp/dobot_ws/src/DOBOT_6Axis_ROS2_V4/dobot_rviz/urdf/nova5_robot.urdf"
-NOVA5_SRDF = "/home/nvidia/grasp/dobot_ws/src/DOBOT_6Axis_ROS2_V4/nova5_moveit/config/nova5_robot.srdf"
+_REPO_ROOT = os.environ.get("GRASP_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+NOVA5_URDF = os.environ.get(
+    "NOVA5_URDF",
+    os.path.join(_REPO_ROOT, "dobot_ws/src/DOBOT_6Axis_ROS2_V4/dobot_rviz/urdf/nova5_robot.urdf"),
+)
+NOVA5_SRDF = os.environ.get(
+    "NOVA5_SRDF",
+    os.path.join(_REPO_ROOT, "dobot_ws/src/DOBOT_6Axis_ROS2_V4/nova5_moveit/config/nova5_robot.srdf"),
+)
 
 
 @dataclass(frozen=True)

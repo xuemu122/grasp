@@ -1,18 +1,18 @@
 python3 -c "
 import os, sys, time
-sys.path.insert(0, '/home/nvidia/grasp/dipan')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lhandpro_gripper import LHandProGripper
 
 hand = LHandProGripper(port='/dev/ttyUSB0')
-hand.connect(enable_motors=True, home_motors=False)  # Ê¹ÄÜµ«Ìø¹ı»ØÁã
+hand.connect(enable_motors=True, home_motors=False)  # Ê¹ï¿½Üµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 sdk = hand.controller.sdk_handle
 
-# ¿´¿´ÄÜ²»ÄÜÌø¹ı»ØÁã¼ì²éÖ±½ÓÔË¶¯
-print('³¢ÊÔÉèÖÃ set_move_no_home(1) Ìø¹ı»ØÁã¼ì²é...')
+# ï¿½ï¿½ï¿½ï¿½ï¿½Ü²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö±ï¿½ï¿½ï¿½Ë¶ï¿½
+print('ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ set_move_no_home(1) ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½...')
 sdk.set_move_no_home(1)
 
-# ÊÖ¶¯»ØÁãµ¥¸öÖá
-print('³¢ÊÔÖğ¸öÖá»ØÁã:')
+# ï¿½Ö¶ï¿½ï¿½ï¿½ï¿½ãµ¥ï¿½ï¿½ï¿½ï¿½
+print('ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½:')
 for axis in range(1, 7):
     print(f'  home axis{axis}...')
     sdk.home_motors(axis)
@@ -21,6 +21,6 @@ for axis in range(1, 7):
     status = sdk.get_now_status(axis)
     print(f'    position={pos}, status={status}')
 
-print('²âÊÔÍê³É')
+print('ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½')
 hand.disconnect()
 "

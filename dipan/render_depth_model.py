@@ -16,7 +16,8 @@ from tool_geometry import HAND_LENGTH_Z_M, camera_box_bounds, hand_box_bounds
 
 POSE_MM_DEG = (-476.3, 245.9, 689.8, 109.0, 82.9, -73.2)
 INPUT_IMAGE = Path("/tmp/depth_guard_探入路径.jpg")
-OUTPUT_IMAGE = Path("/home/nvidia/grasp/depth_guard_model_last_pose.png")
+_REPO_ROOT = Path(os.environ["GRASP_ROOT"]) if os.environ.get("GRASP_ROOT") else Path(__file__).resolve().parents[1]
+OUTPUT_IMAGE = _REPO_ROOT / "depth_guard_model_last_pose.png"
 
 
 def transform_pose(pose):

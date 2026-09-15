@@ -317,7 +317,8 @@ def run_with_realsense():
     import os
 
     # 把识别模块路径加入
-    recognition_dir = "/home/nvidia/grasp/识别"
+    _repo_root = os.environ.get("GRASP_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    recognition_dir = os.environ.get("GRASP_RECOGNITION_DIR", os.path.join(_repo_root, "识别"))
     sys.path.insert(0, recognition_dir)
     from orbbec_detect import MedicineLocatorSystem
 

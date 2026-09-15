@@ -2,6 +2,7 @@
 """Render DH116 tool geometry in the flange-local top and side views."""
 
 from pathlib import Path
+import os
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
@@ -9,7 +10,8 @@ from matplotlib.patches import Rectangle
 from tool_geometry import camera_box_bounds, hand_box_bounds
 
 
-OUTPUT_IMAGE = Path("/home/nvidia/grasp/depth_guard_model_local_views.png")
+_REPO_ROOT = Path(os.environ["GRASP_ROOT"]) if os.environ.get("GRASP_ROOT") else Path(__file__).resolve().parents[1]
+OUTPUT_IMAGE = _REPO_ROOT / "depth_guard_model_local_views.png"
 
 
 def bounds_2d(bounds, axis_a, axis_b):

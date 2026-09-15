@@ -8,7 +8,8 @@ import threading
 import time
 
 
-AERO_SDK_PATH = "/home/nvidia/grasp/aero-hand-open/sdk/src"
+_REPO_ROOT = os.environ.get("GRASP_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+AERO_SDK_PATH = os.environ.get("AERO_SDK_PATH", os.path.join(_REPO_ROOT, "aero-hand-open/sdk/src"))
 sys.path.insert(0, AERO_SDK_PATH)
 from aero_open_sdk.aero_hand import AeroHand
 
