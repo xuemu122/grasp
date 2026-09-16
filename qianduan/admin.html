@@ -37,7 +37,7 @@
         .admin-content[data-page="products"] { grid-template-columns: minmax(0, 1fr) 420px; align-items: start; }
         .admin-content[data-page="products"] #formCard { min-width: 0; position: static; max-height: none; overflow: visible; }
         [data-admin-page][hidden] { display: none !important; }
-        .dashboard-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+        .dashboard-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
         .dashboard-stat { padding: 14px; border: 1px solid var(--gray-200); border-radius: 8px; background: var(--gray-50); }
         .dashboard-stat-label { color: var(--gray-500); font-size: 0.78rem; }
         .dashboard-stat-value { margin-top: 5px; color: var(--gray-900); font-size: 1.35rem; font-weight: 700; }
@@ -256,6 +256,9 @@
                 <div class="dashboard-stat"><div class="dashboard-stat-label">商品总数</div><div class="dashboard-stat-value" id="dashboardProductCount">-</div></div>
                 <div class="dashboard-stat"><div class="dashboard-stat-label">订单总数</div><div class="dashboard-stat-value" id="dashboardOrderCount">-</div></div>
                 <div class="dashboard-stat"><div class="dashboard-stat-label">缺货商品</div><div class="dashboard-stat-value" id="dashboardStockCount">-</div></div>
+                <div class="dashboard-stat"><div class="dashboard-stat-label">商家数量</div><div class="dashboard-stat-value" id="dashboardMerchantCount">-</div></div>
+                <div class="dashboard-stat"><div class="dashboard-stat-label">设备数量</div><div class="dashboard-stat-value" id="dashboardDeviceCount">-</div></div>
+                <div class="dashboard-stat"><div class="dashboard-stat-label">在线设备</div><div class="dashboard-stat-value" id="dashboardOnlineDeviceCount">-</div></div>
                 <div class="dashboard-stat"><div class="dashboard-stat-label">机器人状态</div><div class="dashboard-stat-value" id="dashboardRobotStatus">读取中</div></div>
             </div>
         </section>
@@ -756,7 +759,29 @@
             if (page === 'orders') return loadAdminOrders(adminOrderPage, { silent: true });
             if (page === 'inventory-scan') return loadInventoryScan();
             if (page === 'chassis') return Promise.allSettled([loadChassisMap(), loadChassisNavigationConfig(), loadRobotHandConfig()]);
-            return Promise.allSettled([loadRobotStatus(), loadProducts({ silent: true }), loadAdminOrders(adminOrderPage, { silent: true })]);
+            return Promise.allSettled([loadRobotStatus(), loadProducts({ silent: true }), loadAdminOrders(adminOrderPage, { silent: true }), loadDashboardFleet()]);
+        }
+
+        async function loadDashboardFleet() {
+            const merchantEl = document.getElementById('dashboardMerchantCount');
+            const deviceEl = document.getElementById('dashboardDeviceCount');
+            const onlineEl = document.getElementById('dashboardOnlineDeviceCount');
+            if (!merchantEl && !deviceEl && !onlineEl) return;
+            try {
+                const [devicesRes, merchantsRes] = await Promise.all([
+                    adminFetch('/api/admin/devices', { cache: 'no-store' }),
+                    adminFetch('/api/admin/merchants', { cache: 'no-store' })
+                ]);
+                const devicesJson = await readAdminJson(devicesRes, '设备接口返回了无效数据');
+                const merchantsJson = await readAdminJson(merchantsRes, '商家接口返回了无效数据');
+                const devices = devicesRes.ok && devicesJson.code === 0 ? (devicesJson.data || []) : [];
+                const merchants = merchantsRes.ok && merchantsJson.code === 0 ? (merchantsJson.data || []) : [];
+                if (merchantEl) merchantEl.textContent = String(merchants.length);
+                if (deviceEl) deviceEl.textContent = String(devices.length);
+                if (onlineEl) onlineEl.textContent = String(devices.filter((device) => device.online).length);
+            } catch (error) {
+                // 失败时保留上一次数值，避免自动刷新弹错
+            }
         }
 
         async function adminFetch(url, options = {}) {
@@ -2692,6 +2717,7 @@
                     || document.getElementById('categoryFilter').value
                 );
                 if (productFilterActive) tasks.push(checkStockAlert());
+                if (currentAdminPage === 'dashboard') tasks.push(loadDashboardFleet());
                 if (currentAdminPage === 'devices') tasks.push(loadDevices({ silent: true }));
                 if (currentAdminPage === 'stores') tasks.push(loadStores({ silent: true }));
                 if (currentAdminPage === 'merchants') tasks.push(loadMerchants());
