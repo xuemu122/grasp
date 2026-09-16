@@ -53,8 +53,16 @@ CHASSIS_PORT=31001 \
 CHASSIS_MAP_HTTP_HOST=192.168.10.10 \
 CHASSIS_MAP_HTTP_PORT=9001 \
 CHASSIS_PLACE_MARKER=fangzhi \
+HAND_BACKEND=lhandpro_dobot \
+TOOL_HAND_MODEL=dh116 \
 node server.js
 ```
+
+> 上面 `CHASSIS_HOST`/`CHASSIS_MAP_HTTP_HOST`、`HAND_BACKEND`/`TOOL_HAND_MODEL` 以及设备/门店
+> （`DEVICE_SN`/`STORE_ID`/`STORE_NAME`）都是**每台盒子不同**的：第二台实测底盘是 `192.168.1.4`，
+> 且用 Aero 手（`HAND_BACKEND=aero TOOL_HAND_MODEL=aero`）。这些建议直接写进
+> `/etc/grasp-qianduan.env`，命令行只保留 `node server.js`；设备/门店标识与 FRP 端口见
+> [`JETSON_DEPLOY.md`](JETSON_DEPLOY.md)。
 
 该命令前台运行，终端不能关闭；按 `Ctrl+C` 停止。看到以下两行表示 HTTP 和 WebSocket 已启动：
 
@@ -135,6 +143,8 @@ CHASSIS_PORT=31001 \
 CHASSIS_MAP_HTTP_HOST=192.168.10.10 \
 CHASSIS_MAP_HTTP_PORT=9001 \
 CHASSIS_PLACE_MARKER=fangzhi \
+HAND_BACKEND=lhandpro_dobot \
+TOOL_HAND_MODEL=dh116 \
 node server.js
 ```
 
