@@ -175,7 +175,18 @@ STORE_NAME=门店A
 
 # 商家端会话签名密钥（不配置则复用 ADMIN_SESSION_SECRET）
 MERCHANT_SESSION_SECRET=<至少32字节随机值>
+
+# 云端多盒子：门店 -> 盒子 HTTP/FRP 地址（巡架/底盘转发、在线探测）
+BOX_PROXY_MAP=STORE-001=http://127.0.0.1:5060,STORE-002=http://127.0.0.1:5062
+# 门店 -> 盒子订单 WebSocket；不配置时按 BOX_PROXY_MAP 的端口 +1 推导
+BOX_PROXY_WS_MAP=STORE-001=ws://127.0.0.1:5061/ws/,STORE-002=ws://127.0.0.1:5063/ws/
+DEVICE_ONLINE_POLL_MS=15000
+DEVICE_ONLINE_TIMEOUT_MS=3000
+DEVICE_ONLINE_STALE_MS=45000
 ```
+
+> 说明：云端访问盒子**不能用 Node 的 `fetch`**——它会拦截 `5060/5061` 这类“危险端口”，
+> 必须走 `http/https` 模块（当前 `server.js` 已用 `boxHttpRequest` 处理）。
 
 第二台设备改为 `GRASP-ROBOT-02` / `STORE-002` / `门店B`。
 `OPERATIONS_DB_FILE` 所在目录必须对运行 Node 的用户可写。
@@ -200,13 +211,64 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<你的域名>:8083/api/admin/s
 
 ## 7. 双设备 / 双门店说明
 
-- 两个门店各用一台盒子，盒子端 `server.js`、机械臂仍是独立运行，盒子内部端口都是 `3000/3001`。
-- 若两台盒子都要接同一个域名，FRP 远程端口要错开，例如盒子A `5060/5061`、盒子B `5062/5063`，
-  Nginx 的 `/ws/` 按门店子域名分别指向 `5061`、`5063`。
-- 设备/门店台账建议只放在 **一个** 中心 Node 上（例如云端 3100），管理页的
-  `/api/` 指向这个中心 Node；两个盒子通过 `DEVICE_SN/STORE_ID/STORE_NAME`
-  给订单打上各自的门店归属。
-- 点单页可带归属参数：`https://<域名>:8083/?store=STORE-001&device=DEV-001`。
+云端是统一的中心 Node（3100），盒子各自独立跑 `server.js`（端口都是 `3000/3001`）。
+多盒子按“门店 → 盒子”映射工作：
+
+- 环境变量 `BOX_PROXY_MAP` 把门店映射到盒子 FRP 地址（见第 5 节）。
+  - **设备在线探测**：云端每 15s 探测每个盒子的 `/api/device/info`；设备台账里 `sn`
+    与盒子自报 `sn` 一致才显示“在线”，否则“未接入”。
+  - **商家页「自动巡架 / 底盘与地图」**：云端按商家所属门店转发到对应盒子
+    （`/api/merchant/console/*` → 盒子 `/api/admin/inventory-*`、`/api/chassis/*`）。
+- **订单 WebSocket**：点单页按所选门店带上 `?store=STORE-00X`，云端按门店把
+  `/ws/` 双向转发到对应盒子的 WS（`BOX_PROXY_WS_MAP`，默认按 HTTP 端口 +1 推导）。
+  为此 Nginx 的 `/ws/` 要指向**云端 Node 的 WS 端口**（`127.0.0.1:3101`），而不是直连某个盒子：
+  ```nginx
+  location /ws/ {
+      proxy_pass http://127.0.0.1:3101;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+      proxy_read_timeout 3600s;
+  }
+  ```
+- **测试页免支付**：`/test-api/` 需转发到 3100（当前代码把 `/test-api/*` 归一化到 `/api/*`，
+  且要求已登录平台管理员才免支付）：
+  ```nginx
+  location ^~ /test-api/ {
+      proxy_pass http://127.0.0.1:3100;
+      proxy_http_version 1.1;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+  }
+  ```
+
+### 7.1 Nginx 常见坑（本次踩过）
+
+- **同名 server 块冲突**：`nginx -t` 报 `conflicting server name "<域名>" on 0.0.0.0:8083`，
+  说明 `sites-enabled/` 下有多个 `listen 8083` + 同 `server_name` 的文件（含 `.bak`）。
+  Nginx 只用第一个，你改的那个可能被忽略。清理方法：
+  ```bash
+  grep -l 'listen 8083' /etc/nginx/sites-enabled/*
+  mkdir -p /root/nginx-disabled && mv /etc/nginx/sites-enabled/*.bak.* /root/nginx-disabled/
+  ```
+- **`/index.html`、`/script.js` 是静态返回**（`root /var/www/<站点目录>`）时，前端改动必须
+  同步到该静态目录，光更新 Node 目录不生效：
+  ```bash
+  cp -f /root/system/grasp/qianduan/{index.html,test.html,script.js,style.css} /var/www/grasp-qianduan/
+  ```
+- 改完一律 `nginx -t && systemctl reload nginx`。
+
+### 7.2 盒子代码版本要一致
+
+云端给盒子签发管理员会话（`grasp_admin_session`）后会转发巡架/底盘请求。若盒子的
+`server.js` 是旧版、会话格式/密钥与云端不同，商家页会提示 **“盒子端管理员会话配置不一致”**。
+此时把盒子的 `server.js` 更新到与云端同版本后重启即可。
+
+### 7.3 点单页归属
+
+- 生产点单页用**商家账号**登录（如 `admin`/北校区、`admin01`/科技园），登录后按门店选设备。
+- 也支持 URL 参数覆盖：`https://<域名>:8083/?store=STORE-001&device=DEV-001`。
 
 ## 8. 回滚
 
