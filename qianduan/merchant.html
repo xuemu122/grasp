@@ -660,7 +660,7 @@
             }
             for (const [floor, floorMarkers] of floors) {
                 const group = document.createElement('optgroup');
-                group.label = floor ? `第${floor}层` : '未指定楼层';
+                group.label = floor ? `${floor}F（地图楼层）` : '未指定楼层';
                 for (const marker of floorMarkers) {
                     const option = document.createElement('option');
                     option.value = marker.name;
