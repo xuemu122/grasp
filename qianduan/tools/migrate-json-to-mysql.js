@@ -75,6 +75,19 @@ const orderRefunds = orders.flatMap((order) => {
         }] : []);
     return history.map((refund, index) => ({ order, refund, sequence: index + 1 }));
 });
+const inventoryFile = process.env.INVENTORY_SCAN_FILE || path.join(path.dirname(productsFile), 'inventory_scan.json');
+const chassisSettingsFile = process.env.CHASSIS_SETTINGS_FILE || path.join(path.dirname(productsFile), 'chassis_settings.json');
+const outboxFile = process.env.ORDER_CALLBACK_OUTBOX_FILE || path.join(path.dirname(productsFile), 'order_callback_outbox.json');
+const inventory = readJson(inventoryFile, { shelves: [], last_scan: null });
+const chassisSettings = readJson(chassisSettingsFile, null);
+const outbox = readJson(outboxFile, { events: [] });
+const inventoryShelves = Array.isArray(inventory.shelves) ? inventory.shelves : [];
+const inventoryTask = inventory.last_scan && typeof inventory.last_scan === 'object' ? inventory.last_scan : null;
+const outboxEvents = Array.isArray(outbox.events) ? outbox.events : [];
+const reservedOrders = productsStore.reservedOrders && typeof productsStore.reservedOrders === 'object' ? productsStore.reservedOrders : {};
+const completedOrders = productsStore.completedOrders && typeof productsStore.completedOrders === 'object' ? productsStore.completedOrders : {};
+const deviceEvents = devices.flatMap((device) => (Array.isArray(device.events) ? device.events : [])
+    .map((event, index) => ({ deviceId: device.id, event, sequence: index + 1 })));
 const migratedAt = sqlString(new Date().toISOString().slice(0, 19).replace('T', ' '));
 
 emit('-- Generated from JSON stores. The Node service still reads JSON.');
@@ -255,6 +268,63 @@ emit(`CREATE TABLE IF NOT EXISTS order_refunds (
   CONSTRAINT fk_order_refunds_order FOREIGN KEY (order_id) REFERENCES orders(order_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
 
+emit(`CREATE TABLE IF NOT EXISTS device_events (
+  device_id VARCHAR(64) NOT NULL,
+  sequence_no INT NOT NULL,
+  type VARCHAR(32) NOT NULL,
+  event_at DATETIME NULL,
+  store_id VARCHAR(64) NULL,
+  store_name VARCHAR(128) NULL,
+  location VARCHAR(255) NULL,
+  notes TEXT NULL,
+  PRIMARY KEY (device_id, sequence_no),
+  CONSTRAINT fk_device_events_device FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+emit(`CREATE TABLE IF NOT EXISTS reserved_orders (
+  order_id VARCHAR(64) NOT NULL,
+  reserved_at DATETIME NULL,
+  expires_at DATETIME NULL,
+  payload_json JSON NOT NULL,
+  PRIMARY KEY (order_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+emit(`CREATE TABLE IF NOT EXISTS completed_orders (
+  order_id VARCHAR(64) NOT NULL,
+  completed_at DATETIME NULL,
+  inventory_restored_at DATETIME NULL,
+  payload_json JSON NOT NULL,
+  PRIMARY KEY (order_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+emit(`CREATE TABLE IF NOT EXISTS inventory_scan_shelves (
+  shelf VARCHAR(16) NOT NULL,
+  markers_json JSON NOT NULL,
+  PRIMARY KEY (shelf)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+emit(`CREATE TABLE IF NOT EXISTS inventory_scan_tasks (
+  task_key VARCHAR(32) NOT NULL,
+  status VARCHAR(32) NULL,
+  progress INT NULL,
+  payload_json JSON NOT NULL,
+  PRIMARY KEY (task_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+emit(`CREATE TABLE IF NOT EXISTS chassis_settings (
+  setting_key VARCHAR(32) NOT NULL,
+  navigation_enabled TINYINT(1) NULL,
+  auto_return_charge TINYINT(1) NULL,
+  place_marker VARCHAR(128) NULL,
+  hand_model VARCHAR(32) NULL,
+  payload_json JSON NOT NULL,
+  PRIMARY KEY (setting_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+emit(`CREATE TABLE IF NOT EXISTS order_callback_outbox (
+  order_id VARCHAR(64) NOT NULL,
+  event_type VARCHAR(32) NOT NULL,
+  completion_token VARCHAR(256) NULL,
+  attempts INT NULL,
+  next_attempt_at DATETIME NULL,
+  payload_json JSON NOT NULL,
+  PRIMARY KEY (order_id, event_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+
 emit('START TRANSACTION;');
 emit('SET FOREIGN_KEY_CHECKS=0;');
 emit('DELETE FROM order_refunds;');
@@ -265,6 +335,13 @@ emit('DELETE FROM merchants;');
 emit('DELETE FROM products;');
 emit('DELETE FROM devices;');
 emit('DELETE FROM stores;');
+emit('DELETE FROM device_events;');
+emit('DELETE FROM reserved_orders;');
+emit('DELETE FROM completed_orders;');
+emit('DELETE FROM inventory_scan_shelves;');
+emit('DELETE FROM inventory_scan_tasks;');
+emit('DELETE FROM chassis_settings;');
+emit('DELETE FROM order_callback_outbox;');
 emit('SET FOREIGN_KEY_CHECKS=1;');
 
 for (const row of stores) emit(`INSERT INTO stores (id,name,code,address,contact,phone,status,notes,created_at,updated_at) VALUES (${sqlString(row.id)},${sqlString(row.name)},${sqlString(row.code)},${sqlString(row.address)},${sqlString(row.contact)},${sqlString(row.phone)},${sqlString(row.status || 'active')},${sqlString(row.notes)},${sqlDate(row.createdAt)},${sqlDate(row.updatedAt)});`);
@@ -281,5 +358,13 @@ function sqlJson(value) {
 for (const order of orders) emit(`INSERT INTO orders (order_id,external_order_id,total_amount,payment_mode,payment_status,order_status,source,device_id,device_sn,store_id,store_name,delivered_units,delivered_amount,refund_amount,refunded_amount,refund_id,refund_status,refund_reason,refund_trigger,refund_request_id,refund_is_partial,payment_trade_state,payment_trade_state_desc,paid_source,failure_reason,inventory_reservation_error,items_json,delivered_items_json,refund_items_json,refund_history_json,created_at,updated_at,paid_at,inventory_reserved_at,execution_started_at,placed_at,completion_reported_at,completed_at,failed_at,last_delivered_at,partial_stock_restored_at,stock_restored_at,refund_requested_at,refund_last_attempt_at,partially_refunded_at,refunded_at,cancel_requested_at,payment_last_checked_at) VALUES (${sqlString(order.orderId)},${sqlString(order.externalOrderId)},${sqlNumber(order.totalAmount)},${sqlString(order.paymentMode || '')},${sqlString(order.paymentStatus || '')},${sqlString(order.status || '')},${sqlString(order.source || '')},${sqlString(order.deviceId)},${sqlString(order.deviceSn)},${sqlString(order.storeId)},${sqlString(order.storeName)},${sqlNumber(order.deliveredUnits)},${sqlNumber(order.deliveredAmount)},${sqlNumber(order.refundAmount)},${sqlNumber(order.refundedAmount)},${sqlString(order.refundId)},${sqlString(order.refundStatus)},${sqlString(order.refundReason)},${sqlString(order.refundTrigger)},${sqlString(order.refundRequestId)},${order.refundIsPartial == null ? 'NULL' : sqlNumber(order.refundIsPartial ? 1 : 0)},${sqlString(order.paymentTradeState)},${sqlString(order.paymentTradeStateDesc)},${sqlString(order.paidSource)},${sqlString(order.failureReason)},${sqlString(order.inventoryReservationError)},${sqlJson(order.items || [])},${sqlJson(order.deliveredItems)},${sqlJson(order.refundItems)},${sqlJson(order.refundHistory)},${sqlDate(order.createdAt)},${sqlDate(order.updatedAt)},${sqlDate(order.paidAt)},${sqlDate(order.inventoryReservedAt)},${sqlDate(order.executionStartedAt)},${sqlDate(order.placedAt)},${sqlDate(order.completionReportedAt)},${sqlDate(order.completedAt)},${sqlDate(order.failedAt)},${sqlDate(order.lastDeliveredAt)},${sqlDate(order.partialStockRestoredAt)},${sqlDate(order.stockRestoredAt)},${sqlDate(order.refundRequestedAt)},${sqlDate(order.refundLastAttemptAt)},${sqlDate(order.partiallyRefundedAt)},${sqlDate(order.refundedAt)},${sqlDate(order.cancelRequestedAt)},${sqlDate(order.paymentLastCheckedAt)});`);
 for (const row of orderItems) emit(`INSERT INTO order_items (order_id,line_no,product_id,name,spec,qty,unit_price,line_total,payment_menu_item_id,product_stock,shelf_layer,chassis_marker) VALUES (${sqlString(row.order.orderId)},${row.lineNo},${sqlNumber(row.item.id)},${sqlString(row.item.name)},${sqlString(row.item.spec)},${sqlNumber(row.item.qty)},${sqlNumber(row.item.unitPrice)},${sqlNumber(row.item.lineTotal)},${row.item.paymentMenuItemId == null ? 'NULL' : sqlNumber(row.item.paymentMenuItemId)},${row.item.productStock == null ? 'NULL' : sqlNumber(row.item.productStock)},${row.item.shelf_layer == null ? 'NULL' : sqlNumber(row.item.shelf_layer)},${sqlString(row.item.chassis_marker)});`);
 for (const row of orderRefunds) emit(`INSERT INTO order_refunds (order_id,sequence_no,refund_id,refund_request_id,refund_amount,refund_status,reason,trigger_name,refund_items_json,completes_refund,requested_at,last_attempt_at,attempt_count,completed_at) VALUES (${sqlString(row.order.orderId)},${row.sequence},${sqlString(row.refund.refundId)},${sqlString(row.refund.refundRequestId)},${row.refund.refundAmount == null ? 'NULL' : sqlNumber(row.refund.refundAmount)},${sqlString(row.refund.refundStatus)},${sqlString(row.refund.reason)},${sqlString(row.refund.trigger)},${sqlJson(row.refund.refundItems)},${row.refund.completesRefund == null ? 'NULL' : sqlNumber(row.refund.completesRefund ? 1 : 0)},${sqlDate(row.refund.requestedAt)},${sqlDate(row.refund.lastAttemptAt)},${row.refund.attemptCount == null ? 'NULL' : sqlNumber(row.refund.attemptCount)},${sqlDate(row.refund.completedAt)});`);
+for (const row of deviceEvents) emit(`INSERT INTO device_events (device_id,sequence_no,type,event_at,store_id,store_name,location,notes) VALUES (${sqlString(row.deviceId)},${row.sequence},${sqlString(row.event.type)},${sqlDate(row.event.at)},${sqlString(row.event.storeId)},${sqlString(row.event.storeName)},${sqlString(row.event.location)},${sqlString(row.event.notes)});`);
+for (const [orderId, reservation] of Object.entries(reservedOrders)) emit(`INSERT INTO reserved_orders (order_id,reserved_at,expires_at,payload_json) VALUES (${sqlString(orderId)},${sqlDate(reservation && (reservation.reservedAt || reservation.at || reservation.createdAt))},${sqlDate(reservation && reservation.expiresAt)},${sqlJson(reservation)});`);
+for (const [orderId, completion] of Object.entries(completedOrders)) emit(`INSERT INTO completed_orders (order_id,completed_at,inventory_restored_at,payload_json) VALUES (${sqlString(orderId)},${sqlDate(completion && completion.completedAt)},${sqlDate(completion && completion.inventoryRestoredAt)},${sqlJson(completion)});`);
+for (const shelf of inventoryShelves) emit(`INSERT INTO inventory_scan_shelves (shelf,markers_json) VALUES (${sqlString(shelf.shelf)},${sqlJson(shelf.markers || [])});`);
+if (inventoryTask) emit(`INSERT INTO inventory_scan_tasks (task_key,status,progress,payload_json) VALUES ('last_scan',${sqlString(inventoryTask.status)},${inventoryTask.progress == null ? 'NULL' : sqlNumber(inventoryTask.progress)},${sqlJson(inventoryTask)});`);
+if (chassisSettings) emit(`INSERT INTO chassis_settings (setting_key,navigation_enabled,auto_return_charge,place_marker,hand_model,payload_json) VALUES ('default',${chassisSettings.navigation_enabled == null ? 'NULL' : sqlNumber(chassisSettings.navigation_enabled ? 1 : 0)},${chassisSettings.auto_return_charge == null ? 'NULL' : sqlNumber(chassisSettings.auto_return_charge ? 1 : 0)},${sqlString(chassisSettings.place_marker)},${sqlString(chassisSettings.hand_model)},${sqlJson(chassisSettings)});`);
+for (const event of outboxEvents) emit(`INSERT INTO order_callback_outbox (order_id,event_type,completion_token,attempts,next_attempt_at,payload_json) VALUES (${sqlString(event.orderId)},${sqlString(event.type || 'completed')},${sqlString(event.completionToken)},${event.attempts == null ? 'NULL' : sqlNumber(event.attempts)},${sqlDate(event.nextAttemptAt)},${sqlJson(event)});`);
+
 emit('COMMIT;');
-emit(`-- Imported stores=${stores.length}, devices=${devices.length}, products=${products.length}, merchants=${merchants.length}, merchant_stores=${merchantStores.length}, orders=${orders.length}, order_items=${orderItems.length}, order_refunds=${orderRefunds.length}`);
+emit(`-- Imported stores=${stores.length}, devices=${devices.length}, products=${products.length}, merchants=${merchants.length}, merchant_stores=${merchantStores.length}, orders=${orders.length}, order_items=${orderItems.length}, order_refunds=${orderRefunds.length}, device_events=${deviceEvents.length}, reserved_orders=${Object.keys(reservedOrders).length}, completed_orders=${Object.keys(completedOrders).length}, inventory_shelves=${inventoryShelves.length}, outbox_events=${outboxEvents.length}`);
