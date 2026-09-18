@@ -853,14 +853,77 @@
 
         function mcRenderMap() {
             const container = document.getElementById('mcMap');
+            if (!container) return;
+            const map = mcMapData.map || {};
+            const info = map.info || {};
             const raster = mcMapData.raster || {};
-            if (raster.available && raster.image_url) {
+            const metadata = raster.metadata || {};
+            const origin = Array.isArray(metadata.origin) ? metadata.origin : null;
+            const floor = Number((document.getElementById('mcMapFloor') || {}).value || map.floor || 0);
+            const markers = mcMarkerList();
+            const rasterForFloor = raster.available && floor === Number(map.floor || 0) && raster.image_url;
+            const width = rasterForFloor ? Number(raster.width) : 1000;
+            const height = rasterForFloor ? Number(raster.height) : 360;
+            const padding = rasterForFloor ? 0 : 42;
+            const resolution = Number(metadata.resolution || info.resolution);
+            const hasBounds = Number(info.resolution) > 0 && Number(info.width) > 0 && Number(info.height) > 0;
+            const hasMarkers = markers.length > 0;
+            let minX = origin ? Number(origin[0]) : (hasBounds ? Number(info.origin_x) : (hasMarkers ? Math.min(...markers.map((m) => m.x)) - 0.5 : 0));
+            let minY = origin ? Number(origin[1]) : (hasBounds ? Number(info.origin_y) : (hasMarkers ? Math.min(...markers.map((m) => m.y)) - 0.5 : 0));
+            let maxX = rasterForFloor && resolution > 0 ? minX + width * resolution : (hasBounds ? minX + Number(info.width) * Number(info.resolution) : (hasMarkers ? Math.max(...markers.map((m) => m.x)) + 0.5 : 1));
+            let maxY = rasterForFloor && resolution > 0 ? minY + height * resolution : (hasBounds ? minY + Number(info.height) * Number(info.resolution) : (hasMarkers ? Math.max(...markers.map((m) => m.y)) + 0.5 : 1));
+            if (maxX - minX < 0.1) { minX -= 0.5; maxX += 0.5; }
+            if (maxY - minY < 0.1) { minY -= 0.5; maxY += 0.5; }
+            const originYaw = origin ? Number(origin[2] || 0) : 0;
+            const projectX = (x, y = minY) => (rasterForFloor && resolution > 0)
+                ? (Math.cos(originYaw) * (x - minX) + Math.sin(originYaw) * (y - minY)) / resolution
+                : padding + (x - minX) / (maxX - minX) * (width - padding * 2);
+            const projectY = (y, x) => (rasterForFloor && resolution > 0)
+                ? height - (-Math.sin(originYaw) * (x - minX) + Math.cos(originYaw) * (y - minY)) / resolution
+                : height - padding - (y - minY) / (maxY - minY) * (height - padding * 2);
+
+            const background = [];
+            if (rasterForFloor) {
                 const url = String(raster.image_url).replace('/api/chassis/', '/api/merchant/console/chassis/') + `&r=${Date.now()}`;
-                container.innerHTML = `<img src="${esc(url)}" alt="底盘地图" style="width:100%;height:100%;object-fit:contain;display:block;">`;
+                background.push(`<image href="${escapeAttr(url)}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="none"/>`);
             } else {
-                const markers = mcMarkerList();
-                container.innerHTML = `<div style="padding:16px;color:#475569;">暂无栅格图。点位：${markers.map((marker) => esc(marker.name)).join('、') || '无'}</div>`;
+                for (let i = 0; i <= 8; i += 1) {
+                    const gx = padding + i / 8 * (width - padding * 2);
+                    const gy = padding + i / 8 * (height - padding * 2);
+                    background.push(`<line x1="${gx}" y1="${padding}" x2="${gx}" y2="${height - padding}" stroke="#cbd5e1" stroke-width="1"/>`);
+                    background.push(`<line x1="${padding}" y1="${gy}" x2="${width - padding}" y2="${gy}" stroke="#cbd5e1" stroke-width="1"/>`);
+                }
             }
+
+            const selected = (document.getElementById('mcDebugMarker') || {}).value || '';
+            const radius = rasterForFloor ? Math.max(5, Math.min(width, height) * 0.012) : 7;
+            const labelSize = rasterForFloor ? Math.max(11, Math.min(width, height) * 0.022) : 12;
+            const nodes = markers.map((marker) => {
+                const x = projectX(marker.x, marker.y);
+                const y = projectY(marker.y, marker.x);
+                const dx = x + Math.cos(Number(marker.theta) || 0) * radius * 2.3;
+                const dy = y - Math.sin(Number(marker.theta) || 0) * radius * 2.3;
+                const isSelected = selected === marker.name;
+                return `<g data-marker="${escapeAttr(marker.name)}" style="cursor:pointer">
+                    <line x1="${x}" y1="${y}" x2="${dx}" y2="${dy}" stroke="#ef4444" stroke-width="2"/>
+                    <circle cx="${x}" cy="${y}" r="${radius}" fill="${isSelected ? '#f59e0b' : '#ef4444'}" stroke="#ffffff" stroke-width="1.5"/>
+                    <text x="${x + radius * 1.4}" y="${y - radius * 2}" fill="#0f172a" font-size="${labelSize}">${esc(marker.name)}</text>
+                </g>`;
+            }).join('');
+
+            if (!rasterForFloor && !markers.length) {
+                container.innerHTML = '<div style="padding:16px;color:#475569;">暂无地图数据</div>';
+                return;
+            }
+            container.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="display:block;width:100%;height:100%;">${background.join('')}${nodes}</svg>`;
+            container.querySelectorAll('[data-marker]').forEach((node) => {
+                node.addEventListener('click', () => {
+                    const name = node.dataset.marker;
+                    const debug = document.getElementById('mcDebugMarker');
+                    if (debug) debug.value = name;
+                    mcRenderMap();
+                });
+            });
         }
 
         async function mcLoadNavConfig() {

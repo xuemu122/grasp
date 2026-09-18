@@ -331,6 +331,10 @@ function handleWSMessage(msg) {
         case 'error':
             if (msg.retryable) {
                 scheduleOrderRetry(msg.message);
+            } else if (/盒子\s*WebSocket|ECONNREFUSED|connect\s+.*:506\d/.test(String(msg.message || ''))) {
+                // 云端转发到盒子失败（盒子离线）：只更新状态，不弹窗打断
+                logWS(`盒子离线: ${msg.message}`);
+                updateConnectionStatus('offline', msg.message);
             } else {
                 alert('后端错误: ' + msg.message);
                 onGrabFailed(msg.message);
@@ -1953,14 +1957,6 @@ async function ensureOrderContext() {
     const params = new URLSearchParams(window.location.search);
     const urlStore = params.get('store') || '';
     const urlDevice = params.get('device') || '';
-    // 测试页（test.html / ?mode=free）用平台管理员登录，登录后才免支付测试。
-    if (window.GRASP_TEST_MODE) {
-        await ensureAdminTestContext();
-        if (urlStore && !orderSelectedStoreId) orderSelectedStoreId = urlStore;
-        if (urlDevice && !orderSelectedDeviceId) orderSelectedDeviceId = urlDevice;
-        renderOrderContext();
-        return;
-    }
     // 商家会话 Cookie 是 Secure 的，http（盒子本地/局域网触摸屏）无法保持登录，跳过登录。
     if (window.location.protocol !== 'https:') {
         orderSelectedStoreId = urlStore;

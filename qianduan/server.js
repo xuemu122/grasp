@@ -2556,9 +2556,9 @@ const server = http.createServer(async (req, res) => {
             });
             const totalAmount = Number(pricedItems.reduce((sum, item) => sum + item.lineTotal, 0).toFixed(2));
             const orderId = `ORD-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-            // 测试页免支付需要：nginx 注入的信任头，或 /test-api 且已登录平台管理员。
+            // 测试页免支付需要：nginx 注入的信任头，或 /test-api 且已登录（平台管理员或商家）。
             const trustedTestRequest = String(req.headers['x-grasp-test-mode'] || '') === '1'
-                || (testModeRequest && Boolean(readAdminSession(req)));
+                || (testModeRequest && Boolean(readAdminSession(req) || readMerchantSession(req)));
             const paymentMode = trustedTestRequest ? 'free' : PAYMENT_MODE;
             if (!['free', 'lyorder'].includes(paymentMode)) throw new Error(`不支持的支付模式: ${paymentMode}`);
             if (paymentMode === 'lyorder') {
