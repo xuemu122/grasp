@@ -212,6 +212,7 @@
                                 <div class="form-group"><label>货架位置</label><input class="form-input" id="productFormLocation" placeholder="如：饮料区A货架第2层"></div>
                                 <div class="form-group"><label>货架层</label><input class="form-input" id="productFormShelfLayer" type="number" min="1" max="10"></div>
                             </div>
+                            <div class="form-group"><label>底盘导航点位</label><select class="form-select" id="productFormMarker"><option value="">未设置</option></select></div>
                             <div class="form-group"><label>状态</label><select class="form-select" id="productFormStatus">
                                 <option value="1" selected>在售</option>
                                 <option value="0">下架</option>
@@ -359,7 +360,7 @@
             const target = MERCHANT_PAGES.has(page) ? page : 'dashboard';
             document.querySelectorAll('.mc-page').forEach((section) => { section.hidden = section.dataset.page !== target; });
             document.querySelectorAll('.mc-nav-item').forEach((item) => { item.classList.toggle('active', item.dataset.page === target); });
-            if (target === 'products') loadMerchantProducts();
+            if (target === 'products') { loadMerchantProducts(); loadMerchantMarkers(); }
             if (target === 'devices' || target === 'dashboard') loadOverview();
             if (target === 'orders') loadOrders(orderPage || 1);
             if (target === 'inventory-scan') mcLoadScan();
@@ -609,6 +610,7 @@
             document.getElementById('productFormStock').value = value('stock', 100);
             document.getElementById('productFormLocation').value = value('location');
             document.getElementById('productFormShelfLayer').value = value('shelf_layer', '');
+            renderProductMarkerOptions(value('chassis_marker', ''));
             document.getElementById('productFormStatus').value = String(Number(value('status', 1)) === 1 ? 1 : 0);
             document.getElementById('productFormStoreWrap').innerHTML = storeSelectHtml(product.storeId || '');
             document.getElementById('productPhotoFront').value = value('photo_front');
@@ -623,6 +625,7 @@
             document.getElementById('productFormTitle').textContent = '新增商品';
             document.getElementById('productFormSubmit').textContent = '新增商品';
             ['productFormName', 'productFormSpec', 'productFormCategory', 'productFormManufacturer', 'productFormLocation', 'productFormShelfLayer'].forEach((id) => { document.getElementById(id).value = ''; });
+            renderProductMarkerOptions('');
             document.getElementById('productFormEmoji').value = '📦';
             document.getElementById('productFormPrice').value = '0';
             document.getElementById('productFormStock').value = '100';
@@ -632,6 +635,47 @@
             document.getElementById('productPhotoFrontPreview').innerHTML = '未选择';
             document.getElementById('productPhotoBackPreview').innerHTML = '未选择';
             document.getElementById('productFormStoreWrap').innerHTML = storeSelectHtml('');
+        }
+
+        async function loadMerchantMarkers() {
+            try {
+                const res = await fetch('/api/merchant/console/chassis/map', { credentials: 'same-origin', cache: 'no-store' });
+                const json = await res.json();
+                if (res.ok && json.code === 0) mcMapData = json.data || { map: {}, markers: [] };
+            } catch (error) { /* 盒子离线时保持空点位，不影响商品编辑 */ }
+            renderProductMarkerOptions(document.getElementById('productFormMarker').value || '');
+        }
+
+        function renderProductMarkerOptions(selected = '') {
+            const select = document.getElementById('productFormMarker');
+            if (!select) return;
+            const markers = [...(mcMapData.markers || [])].sort((a, b) =>
+                (a.floor || 0) - (b.floor || 0) || String(a.name).localeCompare(String(b.name), 'zh-CN'));
+            select.innerHTML = '<option value="">未设置</option>';
+            const floors = new Map();
+            for (const marker of markers) {
+                const floor = marker.floor || 0;
+                if (!floors.has(floor)) floors.set(floor, []);
+                floors.get(floor).push(marker);
+            }
+            for (const [floor, floorMarkers] of floors) {
+                const group = document.createElement('optgroup');
+                group.label = floor ? `第${floor}层` : '未指定楼层';
+                for (const marker of floorMarkers) {
+                    const option = document.createElement('option');
+                    option.value = marker.name;
+                    option.textContent = `${marker.name} (${Number(marker.x).toFixed(2)}, ${Number(marker.y).toFixed(2)})`;
+                    group.appendChild(option);
+                }
+                select.appendChild(group);
+            }
+            if (selected && !markers.some((marker) => marker.name === selected)) {
+                const option = document.createElement('option');
+                option.value = selected;
+                option.textContent = `${selected}（底盘当前未返回）`;
+                select.appendChild(option);
+            }
+            select.value = selected;
         }
 
         async function uploadMerchantImage(side, input) {
@@ -667,6 +711,7 @@
                 stock: parseInt(document.getElementById('productFormStock').value, 10) || 0,
                 location: document.getElementById('productFormLocation').value.trim(),
                 shelf_layer: parseInt(document.getElementById('productFormShelfLayer').value, 10) || null,
+                chassis_marker: document.getElementById('productFormMarker').value || '',
                 status: parseInt(document.getElementById('productFormStatus').value, 10),
                 photo_front: document.getElementById('productPhotoFront').value,
                 photo_back: document.getElementById('productPhotoBack').value
