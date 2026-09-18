@@ -135,6 +135,7 @@ ORDER_STATUS_CALLBACK_SECRET=<与云端相同>
 - `start.js`：初始化商品数据后启动 `server.js`。
 - `init_db.js`：从 Excel 初始化 `data/products.json`。
 - `data/products.json`：默认 JSON 商品库。
+- `tools/migrate-json-to-mysql.js`：把商品、门店、设备、商家和订单台账导出为 MySQL SQL；仅用于迁移评估，当前服务仍读取 JSON。
 - `test/ws_protocol.test.js`：不连接真实机械臂的 WebSocket 集成测试。
 
 本地环境变量示例见 [`.env.example`](.env.example)。`.env` 只用于现场临时保存配置，已加入忽略列表；
@@ -623,6 +624,24 @@ __filter_preview__\n
   Token 写进仓库。
 
 ## 数据初始化与测试
+
+### MySQL 迁移评估（不切换读取源）
+
+当前运行服务继续使用 `products.json`、`operations.json` 和订单 JSON 文件。如需把当前基础资料
+和订单台账复制到独立的 `grasp_catalog` 数据库，可生成 SQL 后导入：
+
+```bash
+ORDERS_DB_FILE=/var/lib/grasp-qianduan/orders.json \
+  node tools/migrate-json-to-mysql.js > /tmp/grasp_catalog.sql
+mysql -h <mysql-host> -u <mysql-user> -p < /tmp/grasp_catalog.sql
+```
+
+订单文件默认按 `products.json` 同目录查找；线上订单文件不在该目录时，使用上面的
+`ORDERS_DB_FILE` 显式指定。脚本会创建并导入 `products`、`stores`、`devices`、`merchants`、
+`merchant_stores`、`orders`、`order_items` 和 `order_refunds` 八张表。订单的商品明细、已出货
+明细和退款历史既保留原始 JSON，也拆成可查询的明细表；重复执行会清空并重建这些评估表。
+二维码图片、访问令牌等临时敏感字段不会复制。确认字段和关联无误后，再单独设计 Node 的
+数据库读取切换；当前服务不会因为导入而改用 MySQL。
 
 安装依赖并初始化商品库：
 

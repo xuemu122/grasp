@@ -7,7 +7,8 @@
     "test": "node --test test/*.test.js",
     "start": "node start.js",
     "serve": "node server.js",
-    "init-db": "node init_db.js"
+    "init-db": "node init_db.js",
+    "export-mysql": "node tools/migrate-json-to-mysql.js"
   },
   "keywords": [],
   "author": "",

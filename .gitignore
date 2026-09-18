@@ -35,3 +35,5 @@ dipan/calib_debug_*.png
 *.engine
 识别/1best.pt
 识别/2best.pt
+
+qianduan/*.bak.*
