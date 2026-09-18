@@ -709,8 +709,8 @@
 
         async function showAdmin() {
             document.getElementById('loginOverlay').hidden = true;
-            await Promise.all([loadShelfLayers(), loadChassisMap(), loadChassisNavigationConfig(), loadRobotHandConfig(), loadRobotStatus(), loadInventoryScan()]);
-            await Promise.all([loadProducts(), loadCategories(), loadAdminOrders(1), loadStores(), loadDevices(), loadMerchants(), loadDashboardFleet()]);
+            await Promise.allSettled([loadShelfLayers(), loadChassisMap(), loadChassisNavigationConfig(), loadRobotHandConfig(), loadRobotStatus(), loadInventoryScan()]);
+            await Promise.allSettled([loadProducts(), loadCategories(), loadAdminOrders(1), loadStores(), loadDevices(), loadMerchants(), loadDashboardFleet()]);
             switchAdminPage(currentAdminPage, { refresh: false });
             document.getElementById('adminRefreshStatus').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
             startAdminDataRefresh();
