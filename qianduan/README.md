@@ -625,23 +625,58 @@ __filter_preview__\n
 
 ## 数据初始化与测试
 
-### MySQL 迁移评估（不切换读取源）
+### MySQL 迁移（grasp_catalog，服务仍读 JSON）
 
-当前运行服务继续使用 `products.json`、`operations.json` 和订单 JSON 文件。如需把当前基础资料
-和订单台账复制到独立的 `grasp_catalog` 数据库，可生成 SQL 后导入：
+当前运行服务仍读 `products.json` / `operations.json` / 订单 JSON。已可用脚本把商品、门店、
+设备、商家、订单及**运行态**数据导出到独立数据库 `grasp_catalog`：
 
 ```bash
-ORDERS_DB_FILE=/var/lib/grasp-qianduan/orders.json \
-  node tools/migrate-json-to-mysql.js > /tmp/grasp_catalog.sql
-mysql -h <mysql-host> -u <mysql-user> -p < /tmp/grasp_catalog.sql
+cd /root/system/grasp/qianduan
+export PRODUCTS_DB_FILE=/var/lib/grasp-qianduan/products.json
+export ORDERS_DB_FILE=/var/lib/grasp-qianduan/orders.json
+export OPERATIONS_DB_FILE=/var/lib/grasp-qianduan/operations.json
+export INVENTORY_SCAN_FILE=/var/lib/grasp-qianduan/inventory_scan.json
+export CHASSIS_SETTINGS_FILE=/var/lib/grasp-qianduan/chassis_settings.json
+export ORDER_CALLBACK_OUTBOX_FILE=/var/lib/grasp-qianduan/order_callback_outbox.json
+export MYSQL_DATABASE=grasp_catalog
+
+# 用 node 直接跑，不要用 npm run（npm 横幅会写进 stdout 污染 SQL）
+node tools/migrate-json-to-mysql.js > /tmp/grasp_catalog.sql
+head -n 1 /tmp/grasp_catalog.sql          # 应为 -- Generated from JSON stores.
+tail -n 1 /tmp/grasp_catalog.sql          # 结尾的汇总计数
+
+mysql -h <mysql-host> -u <mysql-user> -p grasp_catalog < /tmp/grasp_catalog.sql
 ```
 
-订单文件默认按 `products.json` 同目录查找；线上订单文件不在该目录时，使用上面的
-`ORDERS_DB_FILE` 显式指定。脚本会创建并导入 `products`、`stores`、`devices`、`merchants`、
-`merchant_stores`、`orders`、`order_items` 和 `order_refunds` 八张表。订单的商品明细、已出货
-明细和退款历史既保留原始 JSON，也拆成可查询的明细表；重复执行会清空并重建这些评估表。
-二维码图片、访问令牌等临时敏感字段不会复制。确认字段和关联无误后，再单独设计 Node 的
-数据库读取切换；当前服务不会因为导入而改用 MySQL。
+导出的表（15 张）：主数据 `products`、`stores`、`devices`、`merchants`、`merchant_stores`、
+`orders`、`order_items`、`order_refunds`；运行态 `device_events`、`reserved_orders`、
+`completed_orders`、`inventory_scan_shelves`、`inventory_scan_tasks`、`chassis_settings`、
+`order_callback_outbox`。重复执行会清空并重建这些表（幂等）；订单明细/退款历史既保留原始 JSON，
+也拆成可查询明细表。二维码图片、访问令牌等临时敏感字段不复制。
+
+**踩坑**：
+
+- `npm run export-mysql` 的脚本横幅会被 `>` 一起写进 SQL，导入报
+  `You have an error in your SQL syntax ... near '> qianduan@1.0.0 export-mysql'`。
+  请用 `node tools/migrate-json-to-mysql.js`。
+- `stores` 有 `UNIQUE(code)`，两个门店 `code` 为空串会报
+  `Duplicate entry '' for key 'stores.uk_stores_code'`。脚本已把空 `code`/空 `sn` 写成 `NULL`
+  （MySQL 唯一索引允许多个 NULL）；用旧脚本生成的 SQL 需先执行
+  `ALTER TABLE stores DROP INDEX uk_stores_code;`。
+
+导入后核对（示例为线上当前状态）：
+
+```bash
+mysql -h <mysql-host> -u <mysql-user> -p -D grasp_catalog -e 'SHOW TABLES;'
+# 15 张表；merchants=2, devices=2, products=17, orders=361,
+# device_events=4, reserved_orders=324, completed_orders=160
+```
+
+连接配置用环境变量（不写进仓库）：`MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USER`、`MYSQL_PASSWORD`、
+`MYSQL_DATABASE=grasp_catalog`。支付系统用的是另一个库（`ly_order_system`），两者独立。
+
+> 迁移只用于建库/核对；**Node 服务目前仍读 JSON**。真正切换读取源是下一步，计划用
+> `DB_CLIENT=file|mysql`（默认 `file`，切换后内存缓存 + 异步落库 + 事务，可一键回滚）。
 
 安装依赖并初始化商品库：
 

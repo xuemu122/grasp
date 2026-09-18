@@ -259,11 +259,13 @@ curl -s -o /dev/null -w '%{http_code}\n' https://<你的域名>:8083/api/admin/s
   ```
 - 改完一律 `nginx -t && systemctl reload nginx`。
 
-### 7.2 盒子代码版本要一致
+### 7.2 盒子会话要能通过云端代管
 
-云端给盒子签发管理员会话（`grasp_admin_session`）后会转发巡架/底盘请求。若盒子的
-`server.js` 是旧版、会话格式/密钥与云端不同，商家页会提示 **“盒子端管理员会话配置不一致”**。
-此时把盒子的 `server.js` 更新到与云端同版本后重启即可。
+云端给盒子即时签发管理员会话（`grasp_admin_session`）后会转发巡架/底盘请求。要求：
+
+- 云端与各盒子的 `ADMIN_SESSION_SECRET` **必须一致**（共享密钥是信任边界）。
+- 新版 `readAdminSession` 只校验「签名有效 + `user` 非空 + 未过期」，所以**各盒子可以用不同的 `ADMIN_USERNAME`**（如云端 `admin`、二号机 `admin01`），无需逐台一致。
+- 盒子 `server.js` 需与云端同版本；旧版会额外要求 `session.user === ADMIN_USERNAME`，导致云端 `admin` 的会话被 `admin01` 的盒子拒绝，商家页报 **“盒子端管理员会话配置不一致”**。此时更新盒子 `server.js` 到同版本并重启即可。
 
 ### 7.3 点单页归属
 

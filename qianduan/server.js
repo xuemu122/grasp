@@ -700,7 +700,11 @@ function readAdminSession(req) {
     if (!safeEqual(token.slice(separator + 1), signSession(payload))) return null;
     try {
         const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-        return session.user === ADMIN_USERNAME && Number(session.exp) > Date.now() ? session : null;
+        // 信任边界是共享密钥（上面的 HMAC 校验），这里不再要求 user 与本机 ADMIN_USERNAME 完全一致，
+        // 这样云端可以用平台账号（admin）为各盒子（ADMIN_USERNAME 可能不同，如 admin01）签发代管会话。
+        return session && typeof session.user === 'string' && session.user && Number(session.exp) > Date.now()
+            ? session
+            : null;
     } catch (error) {
         return null;
     }

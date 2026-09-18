@@ -242,6 +242,8 @@ CHASSIS_MAP_HTTP_PORT=9001
 CHASSIS_PLACE_MARKER=fangzhi
 
 # 灵巧手后端（按硬件选）：DH116 走 Nova 末端 RS485；Aero 走 aero-hand-open SDK
+# 注意：worker 实际用的型号来自 data/chassis_settings.json 的 hand_model（管理页“机器人末端灵巧手”可改），
+# 这里的 TOOL_HAND_MODEL 只是“文件里没有 hand_model”时的默认值。
 HAND_BACKEND=lhandpro_dobot      # DH116（默认）；Aero 手改为 aero
 TOOL_HAND_MODEL=dh116            # DH116 用 dh116；Aero 手用 aero
 # HAND_GRASP_MODE=flex           # 默认电流柔性；Aero 缺空载曲线时可设 auto 先跑通
@@ -458,8 +460,12 @@ journalctl -u frpc -n 30 --no-pager | grep -iE 'success|error|token'
 | URDF/模型路径 404（`/home/nvidia/grasp/...`） | 目录名不是 `grasp`；要么改名，要么用相对路径版代码并用 `GRASP_ROOT` 指定 |
 | 云端管理页设备一直“未接入” | 盒子 `/api/device/info` 的 `sn` 与云端台账该设备 `sn` 不一致（见 4） |
 | 云端探测报 `fetch failed: bad port` | Node 的 `fetch` 禁用了 5060/5061 等端口；云端访问盒子要用 `http` 模块（当前代码已改） |
-| 商家页提示“盒子端管理员会话配置不一致” | 盒子 `server.js` 是旧版，管理员会话格式与云端不一致；把盒子代码更新到与云端同版本 |
+| 商家页提示“盒子端管理员会话配置不一致” | 云端代管签发的管理员会话被盒子拒。两端 `ADMIN_SESSION_SECRET`（共享密钥，信任边界）必须一致；新版已放宽 `readAdminSession`：只要求「签名有效 + user 非空 + 未过期」，因此各盒子可用不同 `ADMIN_USERNAME`（如 `admin01`）。旧代码还要求 `ADMIN_USERNAME` 与云端相同 |
+| 盒子本机 `curl -b <本机登录cookie> .../api/chassis/map` 401 | 本机管理员账号密码不对或 `server.js` 进程没加载 env；用 `tr '\0' '\n' < /proc/$(pgrep -f 'node server.js'|head -1)/environ \| grep ADMIN_` 看进程实际值 |
 | 点单页一直不弹登录 | 浏览器里已有同源的商家登录 Cookie（SSO）；点“退出”换账号，或新开无痕窗口 |
+| worker 仍是 `lhandpro_dobot` / 缺 `lhandpro_empty.csv`（但本机是 Aero 手） | 灵巧手型号取 `data/chassis_settings.json` 的 `hand_model`，不是 `HAND_BACKEND` 环境变量；管理页「机器人末端灵巧手」改成 Aero，或改该文件 `hand_model=aero` 后重启 |
+| MySQL 迁移导入报 `near '> qianduan@1.0.0 export-mysql ...'` | 用了 `npm run export-mysql`，npm 横幅混进 SQL；改用 `node tools/migrate-json-to-mysql.js` |
+| 迁移报 `Duplicate entry '' for key 'stores.uk_stores_code'` | 空 `code` 撞唯一键；脚本已改为写 NULL，旧 SQL 先 `ALTER TABLE stores DROP INDEX uk_stores_code;` |
 
 ## 10. 点单页登录与多门店
 
