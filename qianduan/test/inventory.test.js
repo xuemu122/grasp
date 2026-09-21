@@ -111,6 +111,7 @@ test('completed orders decrement inventory once', async (t) => {
     assert.equal(navigationConfig.data.navigation_enabled, false);
     assert.equal(navigationConfig.data.auto_return_charge, true);
     assert.equal(navigationConfig.data.place_marker, 'fangzhi');
+    assert.equal(navigationConfig.data.charge_marker, 'charge_point_1F_35744');
     assert.equal(navigationConfig.data.hand_model, 'dh116');
 
     const handConfigResponse = await fetch(`${baseUrl}/api/robot/hand-config`, {
@@ -139,14 +140,16 @@ test('completed orders decrement inventory once', async (t) => {
     const updateNavigationResponse = await fetch(`${baseUrl}/api/chassis/navigation-config`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
-        body: JSON.stringify({ enabled: true, auto_return_charge: false, place_marker: 'delivery-a' })
+        body: JSON.stringify({ enabled: true, auto_return_charge: false, place_marker: 'delivery-a', charge_marker: 'charge-dock' })
     });
     const updatedNavigationConfig = await updateNavigationResponse.json();
     assert.equal(updatedNavigationConfig.data.navigation_enabled, true);
     assert.equal(updatedNavigationConfig.data.auto_return_charge, false);
     assert.equal(updatedNavigationConfig.data.place_marker, 'delivery-a');
+    assert.equal(updatedNavigationConfig.data.charge_marker, 'charge-dock');
     assert.equal(updatedNavigationConfig.data.hand_model, 'aero');
     assert.equal(JSON.parse(fs.readFileSync(chassisSettingsFile, 'utf8')).hand_model, 'aero');
+    assert.equal(JSON.parse(fs.readFileSync(chassisSettingsFile, 'utf8')).charge_marker, 'charge-dock');
 
     const shelfLayersResponse = await fetch(`${baseUrl}/api/shelf/layers`);
     const shelfLayers = await shelfLayersResponse.json();

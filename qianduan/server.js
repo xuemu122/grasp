@@ -39,7 +39,7 @@ const CHASSIS_MAP_HTTP_HOST = process.env.CHASSIS_MAP_HTTP_HOST || CHASSIS_HOST;
 const CHASSIS_MAP_HTTP_PORT = Number(process.env.CHASSIS_MAP_HTTP_PORT || 9001);
 const CHASSIS_MAP_REFRESH_INTERVAL_MS = Number(process.env.CHASSIS_MAP_REFRESH_INTERVAL_MS || 15000);
 const CHASSIS_PLACE_MARKER_DEFAULT = process.env.CHASSIS_PLACE_MARKER || 'fangzhi';
-const CHASSIS_CHARGE_MARKER = process.env.CHASSIS_CHARGE_MARKER || 'charge_point_1F_35744';
+const CHASSIS_CHARGE_MARKER_DEFAULT = process.env.CHASSIS_CHARGE_MARKER || 'charge_point_1F_35744';
 const CHASSIS_NAVIGATION_DEFAULT_ENABLE = /^(1|true|yes|on)$/i.test(process.env.CHASSIS_NAVIGATION_ENABLE || '');
 const ROBOT_AUTO_RETURN_CHARGE = !/^(0|false|no|off)$/i.test(process.env.ROBOT_AUTO_RETURN_CHARGE || '1');
 const CHASSIS_REQUEST_TIMEOUT_MS = Number(process.env.CHASSIS_REQUEST_TIMEOUT_MS || 10000);
@@ -4214,10 +4214,11 @@ const server = http.createServer(async (req, res) => {
             if (!ROBOT_GRASP_REAL) {
                 return { mode: 'simulated', detail: '模拟模式已关闭' };
             }
-            broadcastRobotStatus('chassis-moving', `机器人已关闭，底盘正在回充电桩 ${CHASSIS_CHARGE_MARKER}`);
-            await navigateChassisToMarker(CHASSIS_CHARGE_MARKER, {
+            const chargeMarker = readChassisSettings().charge_marker;
+            broadcastRobotStatus('chassis-moving', `机器人已关闭，底盘正在回充电桩 ${chargeMarker}`);
+            await navigateChassisToMarker(chargeMarker, {
                 arriveOnDocking: true,
-                statusMessage: `机器人已关闭，底盘正在回充电桩 ${CHASSIS_CHARGE_MARKER}`
+                statusMessage: `机器人已关闭，底盘正在回充电桩 ${chargeMarker}`
             });
             return { mode: ROBOT_GRASP_REAL ? 'real' : 'simulated', detail: '已收起、断电并回到充电桩' };
         })();
@@ -4309,16 +4310,20 @@ const server = http.createServer(async (req, res) => {
             const placeMarker = body.place_marker === undefined
                 ? current.place_marker
                 : validateChassisMarkerName(body.place_marker);
+            const chargeMarker = body.charge_marker === undefined
+                ? current.charge_marker
+                : validateChassisMarkerName(body.charge_marker);
             const settings = {
                 navigation_enabled: body.enabled === undefined ? current.navigation_enabled : body.enabled,
                 place_marker: placeMarker,
+                charge_marker: chargeMarker,
                 auto_return_charge: body.auto_return_charge === undefined
                     ? current.auto_return_charge
                     : body.auto_return_charge,
                 hand_model: current.hand_model
             };
             writeChassisSettings(settings);
-            log(`🚙 底盘导航已${settings.navigation_enabled ? '开启' : '关闭'}，自动回充已${settings.auto_return_charge ? '开启' : '关闭'}，放置点=${settings.place_marker}`);
+            log(`🚙 底盘导航已${settings.navigation_enabled ? '开启' : '关闭'}，自动回充已${settings.auto_return_charge ? '开启' : '关闭'}，放置点=${settings.place_marker}，充电桩=${settings.charge_marker}`);
             sendJSON(res, { code: 0, data: settings });
         } catch (error) {
             sendJSON(res, { code: 1, message: error.message }, 500);
@@ -4543,7 +4548,7 @@ const startHttpServer = () => server.listen(PORT, HOST, () => {
     }
     const chassisSettings = readChassisSettings();
     log(`底盘接口: ${CHASSIS_HOST}:${CHASSIS_PORT}，栅格地图: ${CHASSIS_MAP_HTTP_PROTOCOL}://${CHASSIS_MAP_HTTP_HOST}:${CHASSIS_MAP_HTTP_PORT}`);
-    log(`底盘导航: ${chassisSettings.navigation_enabled ? '已开启' : '已关闭'}，自动回充: ${chassisSettings.auto_return_charge ? '已开启' : '已关闭'}，放置点: ${chassisSettings.place_marker}`);
+    log(`底盘导航: ${chassisSettings.navigation_enabled ? '已开启' : '已关闭'}，自动回充: ${chassisSettings.auto_return_charge ? '已开启' : '已关闭'}，放置点: ${chassisSettings.place_marker}，充电桩: ${chassisSettings.charge_marker}`);
     if (ROBOT_GRASP_REAL) {
         ensureRobotWorker()
             .then(() => {
@@ -4911,6 +4916,7 @@ function readChassisSettings() {
                 navigation_enabled: CHASSIS_NAVIGATION_DEFAULT_ENABLE,
                 auto_return_charge: ROBOT_AUTO_RETURN_CHARGE,
                 place_marker: CHASSIS_PLACE_MARKER_DEFAULT,
+                charge_marker: CHASSIS_CHARGE_MARKER_DEFAULT,
                 hand_model: defaultHandModel
             };
         }
@@ -4921,6 +4927,7 @@ function readChassisSettings() {
                 ? ROBOT_AUTO_RETURN_CHARGE
                 : Boolean(data.auto_return_charge),
             place_marker: validateChassisMarkerName(data.place_marker || CHASSIS_PLACE_MARKER_DEFAULT),
+            charge_marker: validateChassisMarkerName(data.charge_marker || CHASSIS_CHARGE_MARKER_DEFAULT),
             hand_model: normalizeHandModel(data.hand_model || defaultHandModel)
         };
     } catch (error) {
@@ -4929,6 +4936,7 @@ function readChassisSettings() {
             navigation_enabled: CHASSIS_NAVIGATION_DEFAULT_ENABLE,
             auto_return_charge: ROBOT_AUTO_RETURN_CHARGE,
             place_marker: CHASSIS_PLACE_MARKER_DEFAULT,
+            charge_marker: CHASSIS_CHARGE_MARKER_DEFAULT,
             hand_model: defaultHandModel
         };
     }
@@ -4944,7 +4952,7 @@ function writeChassisSettings(settings) {
 function validateChassisMarkerName(value) {
     const marker = String(value || '').trim();
     if (!marker || marker.length > 128 || /[\r\n\u0000]/.test(marker) || marker.includes('/')) {
-        throw new Error('底盘放置点名称无效');
+        throw new Error('底盘点位名称无效');
     }
     return marker;
 }
@@ -5503,7 +5511,7 @@ async function returnRobotToCharge(
         phase: 'charging',
         message: failed ? '失败恢复：机械臂已收起，底盘正在回充电桩...' : '机械臂已收起，底盘正在回充电桩...'
     });
-    await navigateChassisToMarker(CHASSIS_CHARGE_MARKER, {
+    await navigateChassisToMarker(readChassisSettings().charge_marker, {
         arriveOnDocking: true,
         statusMessage: '订单已完成，底盘正在回充电桩'
     });
@@ -5616,7 +5624,7 @@ async function optimizeOrderItemSequence(items) {
     const markers = new Map(normalizeMarkers(chassisResults(markerResponse)).map((marker) => [marker.name, marker]));
     const placePoint = markers.get(settings.place_marker);
     const currentPoint = chassisPointFromStatus(statusResponse)
-        || markers.get(CHASSIS_CHARGE_MARKER)
+        || markers.get(settings.charge_marker)
         || placePoint;
     if (!currentPoint || !placePoint) {
         log('  [订单排序] 缺少当前位姿或放置点坐标，保持下单顺序');
@@ -6632,7 +6640,7 @@ async function runInventoryScan(task, shelves) {
         if (readChassisSettings().auto_return_charge) {
             task.message = '识别完成，底盘正在返回充电桩';
             saveInventoryScanState(task);
-            await navigateChassisToMarker(CHASSIS_CHARGE_MARKER, {
+            await navigateChassisToMarker(readChassisSettings().charge_marker, {
                 arriveOnDocking: true,
                 statusMessage: task.message
             });

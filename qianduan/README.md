@@ -301,7 +301,7 @@ Cookie 使用 `HttpOnly`、`Secure` 和 `SameSite=Strict`，默认有效期为 8
 
 管理页“机器人控制”中：
 
-- “关闭并回充”会拒绝新操作，依次收起机械臂、断开灵巧手并关闭 DOBOT，最后让底盘回到 `CHASSIS_CHARGE_MARKER`。
+- “关闭并回充”会拒绝新操作，依次收起机械臂、断开灵巧手并关闭 DOBOT，最后让底盘回到配置的充电桩点位（管理页/商家页“充电桩”下拉选择，保存在 `chassis_settings.json`，环境变量 `CHASSIS_CHARGE_MARKER` 仅作为缺省值）。
 - “急停”会直接通过 DOBOT 29999 控制端口发送 `EmergencyStop()`/`Stop()`，同时取消底盘导航并终止 worker。急停后服务端保持锁定，必须人工确认机械臂和底盘安全后重启后端服务。
 
 管理页“自动巡架”配置使用 A-D 货架卡片。每张卡片独立保存或删除，每个货架可以配置 1-6 个底盘 marker，新货架默认生成 2 个点位；巡架顺序为货架、点位、第 1/2 层。旧版 1-7 号货架配置会在读取时按 A/B/C/D 自动迁移。管理页的每个点位和地图页都提供“前往点位”调试按钮，该操作以异步任务执行，真实模式下会拒绝正在执行订单、巡架或急停等操作。
@@ -572,7 +572,7 @@ __filter_preview__\n
 | `CHASSIS_MAP_CACHE_DIR` | 商品 JSON 同目录下的 `chassis_map_cache` | 地图 PNG/YAML 与 `current.json` 快照目录 |
 | `CHASSIS_NAVIGATION_ENABLE` | 空/关闭 | 设为 `1` 时在抓取前导航到商品绑定的 marker |
 | `CHASSIS_PLACE_MARKER` | `fangzhi` | 首次没有设置文件时使用的默认放置 marker |
-| `CHASSIS_CHARGE_MARKER` | `charge_point_1F_35744` | 订单结束后自动回充的充电桩 marker |
+| `CHASSIS_CHARGE_MARKER` | `charge_point_1F_35744` | 充电桩 marker 的缺省值；实际值以管理页/商家页“充电桩”选择（`chassis_settings.json` 的 `charge_marker`）优先 |
 | `ORDER_CALLBACK_OUTBOX_FILE` | 订单 JSON 同目录下的 `order_callback_outbox.json` | 盒子完成回调持久化队列 |
 | `ORDER_CALLBACK_RETRY_INTERVAL_MS` | `15000` | 完成回调重试基础间隔 |
 | `ORDER_CALLBACK_TLS_INSECURE` | `0` | 仅现场自签名证书临时设为 `1`，生产保持 `0` |

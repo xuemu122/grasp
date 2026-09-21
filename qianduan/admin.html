@@ -355,6 +355,12 @@
                     </select>
                 </label>
                 <label class="toggle-control">
+                    <span>充电桩</span>
+                    <select class="select-box" id="chassisChargeMarker" onchange="updateChassisNavigationConfig()">
+                        <option value="">未设置</option>
+                    </select>
+                </label>
+                <label class="toggle-control">
                     <span>末端灵巧手</span>
                     <select class="select-box" id="robotHandModel" onchange="updateRobotHandConfig(this.value)">
                         <option value="dh116">DH116 新手</option>
@@ -663,7 +669,7 @@
         };
         let shelfLayers = {};
         let chassisMapData = { map: {}, markers: [] };
-        let chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'fangzhi' };
+        let chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'fangzhi', charge_marker: '' };
         let robotHandConfig = { model: 'dh116', label: 'DH116 新手', backend: 'lhandpro_dobot' };
         let inventoryScanData = { shelves: [], task: { status: 'idle', results: [] }, running: false };
         let inventoryConfigDraft = [];
@@ -1017,6 +1023,33 @@
             select.value = selected || 'fangzhi';
         }
 
+        function updateChassisChargeMarkerOptions(selected = chassisNavigationConfig.charge_marker || '') {
+            const select = document.getElementById('chassisChargeMarker');
+            if (!select) return;
+            const markers = [...(chassisMapData.markers || [])].sort((a, b) =>
+                a.floor - b.floor || a.name.localeCompare(b.name, 'zh-CN'));
+            select.innerHTML = '';
+            for (const marker of markers) {
+                const option = document.createElement('option');
+                option.value = marker.name;
+                option.textContent = `${marker.name} (${marker.x.toFixed(2)}, ${marker.y.toFixed(2)})`;
+                select.appendChild(option);
+            }
+            if (selected && !markers.some(marker => marker.name === selected)) {
+                const option = document.createElement('option');
+                option.value = selected;
+                option.textContent = `${selected}（底盘当前未返回）`;
+                select.appendChild(option);
+            }
+            if (!select.options.length) {
+                const option = document.createElement('option');
+                option.value = selected || '';
+                option.textContent = selected || '未设置';
+                select.appendChild(option);
+            }
+            select.value = selected;
+        }
+
         function updateChassisDebugMarkerOptions(selected = '') {
             const select = document.getElementById('chassisDebugMarker');
             if (!select) return;
@@ -1065,6 +1098,7 @@
                 if (floors.includes(Number(map.floor))) floorSelect.value = String(map.floor);
                 updateChassisMarkerOptions(document.getElementById('formChassisMarker').value);
                 updateChassisPlaceMarkerOptions();
+                updateChassisChargeMarkerOptions();
                 updateChassisDebugMarkerOptions(document.getElementById('chassisDebugMarker')?.value || '');
                 loadChassisNavigationTask({ silent: true });
                 renderInventoryShelfConfig();
@@ -1077,6 +1111,7 @@
                 document.getElementById('chassisMap').innerHTML = '<div class="map-empty">底盘地图暂不可用</div>';
                 updateChassisMarkerOptions(document.getElementById('formChassisMarker').value);
                 updateChassisPlaceMarkerOptions();
+                updateChassisChargeMarkerOptions();
                 updateChassisDebugMarkerOptions();
                 loadChassisNavigationTask({ silent: true });
             }
@@ -1095,16 +1130,19 @@
                 chassisNavigationConfig = {
                     navigation_enabled: Boolean(json.data?.navigation_enabled),
                     auto_return_charge: json.data?.auto_return_charge !== false,
-                    place_marker: json.data?.place_marker || 'fangzhi'
+                    place_marker: json.data?.place_marker || 'fangzhi',
+                    charge_marker: json.data?.charge_marker || ''
                 };
                 toggle.checked = chassisNavigationConfig.navigation_enabled;
                 autoReturnToggle.checked = chassisNavigationConfig.auto_return_charge;
                 updateChassisPlaceMarkerOptions(chassisNavigationConfig.place_marker);
+                updateChassisChargeMarkerOptions(chassisNavigationConfig.charge_marker);
             } catch (error) {
                 toggle.checked = false;
                 autoReturnToggle.checked = true;
-                chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'fangzhi' };
+                chassisNavigationConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'fangzhi', charge_marker: '' };
                 updateChassisPlaceMarkerOptions();
+                updateChassisChargeMarkerOptions();
             } finally {
                 toggle.disabled = false;
                 autoReturnToggle.disabled = false;
@@ -1220,12 +1258,14 @@
             const toggle = document.getElementById('chassisNavigationToggle');
             const autoReturnToggle = document.getElementById('autoReturnChargeToggle');
             const placeMarker = document.getElementById('chassisPlaceMarker');
+            const chargeMarker = document.getElementById('chassisChargeMarker');
             const enabled = toggle.checked;
             const autoReturnCharge = autoReturnToggle.checked;
             const previous = { ...chassisNavigationConfig };
             toggle.disabled = true;
             autoReturnToggle.disabled = true;
             placeMarker.disabled = true;
+            chargeMarker.disabled = true;
             try {
                 const res = await adminFetch('/api/chassis/navigation-config', {
                     preserveSession: true,
@@ -1234,24 +1274,27 @@
                     body: JSON.stringify({
                         enabled,
                         auto_return_charge: autoReturnCharge,
-                        place_marker: placeMarker.value || 'fangzhi'
+                        place_marker: placeMarker.value || 'fangzhi',
+                        charge_marker: chargeMarker.value
                     })
                 });
                 const json = await readAdminJson(res, '底盘设置保存接口返回了无效数据');
                 if (res.status === 401) throw new Error('盒子端管理员会话配置不一致');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '设置保存失败');
                 chassisNavigationConfig = json.data;
-                showToast(`底盘导航${enabled ? '开启' : '关闭'}，自动回充${autoReturnCharge ? '开启' : '关闭'}，放置点 ${chassisNavigationConfig.place_marker}`, 'success');
+                showToast(`底盘导航${enabled ? '开启' : '关闭'}，自动回充${autoReturnCharge ? '开启' : '关闭'}，放置点 ${chassisNavigationConfig.place_marker}，充电桩 ${chassisNavigationConfig.charge_marker}`, 'success');
             } catch (error) {
                 chassisNavigationConfig = previous;
                 toggle.checked = previous.navigation_enabled;
                 autoReturnToggle.checked = previous.auto_return_charge !== false;
                 updateChassisPlaceMarkerOptions(previous.place_marker);
+                updateChassisChargeMarkerOptions(previous.charge_marker);
                 showToast(error.message, 'error');
             } finally {
                 toggle.disabled = false;
                 autoReturnToggle.disabled = false;
                 placeMarker.disabled = false;
+                chargeMarker.disabled = false;
             }
         }
 

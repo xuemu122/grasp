@@ -333,6 +333,7 @@
                         <select class="select-box" id="mcMapFloor" onchange="mcUpdateMarkerOptions(); mcRenderMap();"></select>
                         <label style="display:flex;align-items:center;gap:6px;font-size:0.88rem;"><input type="checkbox" id="mcNavToggle" onchange="mcSaveNavConfig()"> 抓取前导航</label>
                         <select class="select-box" id="mcPlaceMarker" onchange="mcSaveNavConfig()"></select>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:0.88rem;">充电桩 <select class="select-box" id="mcChargeMarker" onchange="mcSaveNavConfig()"></select></label>
                     </div>
                     <p class="empty-state" id="mcMapStatus" style="text-align:left;padding:0 0 8px;">尚未读取底盘地图</p>
                     <div id="mcMap" style="position:relative;width:100%;height:min(60vh,620px);min-height:320px;overflow:hidden;border:1px solid var(--gray-200);border-radius:8px;background:#CBD5E1;">暂无地图数据</div>
@@ -839,7 +840,7 @@
 
         // ===== 自动巡架 / 底盘与地图（云端代管，转发到本店盒子）=====
         let mcMapData = { map: {}, markers: [] };
-        let mcNavConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'fangzhi' };
+        let mcNavConfig = { navigation_enabled: false, auto_return_charge: true, place_marker: 'fangzhi', charge_marker: '' };
         let mcScanData = { shelves: [], task: { status: 'idle', results: [] }, running: false };
         let mcScanTimer = null;
         let mcNavTimer = null;
@@ -901,6 +902,13 @@
             if (!names.includes(selected)) names.push(selected);
             place.innerHTML = names
                 .map((name) => `<option value="${esc(name)}"${name === selected ? ' selected' : ''}>${esc(name)}</option>`)
+                .join('');
+            const charge = document.getElementById('mcChargeMarker');
+            const chargeSelected = mcNavConfig.charge_marker || '';
+            const chargeNames = markers.map((marker) => marker.name);
+            if (chargeSelected && !chargeNames.includes(chargeSelected)) chargeNames.push(chargeSelected);
+            charge.innerHTML = chargeNames
+                .map((name) => `<option value="${esc(name)}"${name === chargeSelected ? ' selected' : ''}>${esc(name)}</option>`)
                 .join('');
         }
 
@@ -987,7 +995,8 @@
                 mcNavConfig = {
                     navigation_enabled: Boolean(json.data && json.data.navigation_enabled),
                     auto_return_charge: !(json.data && json.data.auto_return_charge === false),
-                    place_marker: (json.data && json.data.place_marker) || 'fangzhi'
+                    place_marker: (json.data && json.data.place_marker) || 'fangzhi',
+                    charge_marker: (json.data && json.data.charge_marker) || ''
                 };
                 document.getElementById('mcNavToggle').checked = mcNavConfig.navigation_enabled;
                 mcUpdateMarkerOptions();
@@ -1003,7 +1012,8 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         enabled: document.getElementById('mcNavToggle').checked,
-                        place_marker: document.getElementById('mcPlaceMarker').value
+                        place_marker: document.getElementById('mcPlaceMarker').value,
+                        charge_marker: document.getElementById('mcChargeMarker').value
                     })
                 });
                 const json = await res.json();
@@ -1011,7 +1021,8 @@
                 mcNavConfig = {
                     navigation_enabled: Boolean(json.data && json.data.navigation_enabled),
                     auto_return_charge: !(json.data && json.data.auto_return_charge === false),
-                    place_marker: (json.data && json.data.place_marker) || 'fangzhi'
+                    place_marker: (json.data && json.data.place_marker) || 'fangzhi',
+                    charge_marker: (json.data && json.data.charge_marker) || ''
                 };
                 showToast('导航设置已保存', 'success');
             } catch (error) {
