@@ -17,6 +17,7 @@ const { WebSocket, WebSocketServer } = require('ws');
 const { ChassisClient } = require('./chassis_client');
 const { PaymentClient } = require('./payment_client');
 const { orderItemsByNearestPickup } = require('./order_routing');
+const { submitReview, decideReview, productVersion } = require('./inventory_reviews');
 
 const PORT = Number(process.env.PORT || 3000);
 const WS_PORT = Number(process.env.WS_PORT || 3001);
@@ -997,16 +998,18 @@ function normalizeProduct(raw, fallbackId = 1) {
     };
 }
 
-function readProductStore() {
+function readProductStore({ strict = false } = {}) {
     if (!fs.existsSync(PRODUCTS_DB_FILE)) return { products: [], completedOrders: {}, reservedOrders: {} };
     try {
         const data = JSON.parse(fs.readFileSync(PRODUCTS_DB_FILE, 'utf8'));
         return {
             products: Array.isArray(data.products) ? data.products.map((p, idx) => normalizeProduct(p, idx + 1)) : [],
             completedOrders: data.completedOrders && typeof data.completedOrders === 'object' ? data.completedOrders : {},
-            reservedOrders: data.reservedOrders && typeof data.reservedOrders === 'object' ? data.reservedOrders : {}
+            reservedOrders: data.reservedOrders && typeof data.reservedOrders === 'object' ? data.reservedOrders : {},
+            scanReviews: Array.isArray(data.scanReviews) ? data.scanReviews : []
         };
     } catch (e) {
+        if (strict) throw e;
         log(`⚠️ 商品数据读取失败: ${e.message}`);
         return { products: [], completedOrders: {}, reservedOrders: {} };
     }
@@ -1025,6 +1028,10 @@ function writeProductStore(store) {
 
 function writeProducts(products) {
     const store = readProductStore();
+    writeProductStoreWithBackup({ ...store, products });
+}
+
+function writeProductStoreWithBackup(store) {
     if (fs.existsSync(PRODUCTS_DB_FILE)) {
         fs.mkdirSync(PRODUCT_BACKUP_DIR, { recursive: true });
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1037,7 +1044,7 @@ function writeProducts(products) {
             fs.unlinkSync(path.join(PRODUCT_BACKUP_DIR, oldBackup));
         }
     }
-    writeProductStore({ ...store, products });
+    writeProductStore(store);
 }
 
 function inventoryShelfNameForIndex(index) {
@@ -3593,6 +3600,71 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    if (pathname === '/api/merchant/inventory-reviews' && req.method === 'GET') {
+        const auth = requireMerchant(req, res);
+        if (!auth) return;
+        const data = (readProductStore().scanReviews || [])
+            .filter((review) => auth.merchant.storeIds.includes(review.storeId));
+        sendJSON(res, { code: 0, data: data.slice().reverse() });
+        return;
+    }
+
+    if (pathname === '/api/admin/inventory-reviews' && req.method === 'GET') {
+        if (!requireAdmin(req, res)) return;
+        const data = (readProductStore().scanReviews || []).slice().reverse();
+        sendJSON(res, { code: 0, data, stores: readOperationsStore().stores });
+        return;
+    }
+
+    if (pathname === '/api/admin/inventory-reviews' && req.method === 'POST') {
+        if (!requireAdmin(req, res)) return;
+        const body = await parseBody(req);
+        try {
+            const storeId = String(body && body.storeId || STORE_ID || '').trim();
+            if (!findStoreRecord(readOperationsStore(), storeId)) throw new Error('请选择扫描所属门店');
+            if (STORE_ID && STORE_ID !== storeId) throw new Error('扫描所属门店与本设备不一致');
+            const snapshot = inventoryScanSnapshot();
+            if (snapshot.running || body?.taskId !== snapshot.task?.id) {
+                throw Object.assign(new Error('扫描任务已变化，请刷新后再提交'), { statusCode: 409 });
+            }
+            const store = readProductStore({ strict: true });
+            const review = submitReview(store, { task: snapshot.task, storeId,
+                submittedBy: `admin:${readAdminSession(req).user}`, source: 'local' });
+            writeProductStore(store);
+            sendJSON(res, { code: 0, message: '扫描结果已提交审核', data: review }, 201);
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, error.statusCode || 400);
+        }
+        return;
+    }
+
+    const inventoryReviewMatch = pathname.match(/^\/api\/admin\/inventory-reviews\/([a-f0-9-]+)$/);
+    if (inventoryReviewMatch && ['GET', 'POST'].includes(req.method)) {
+        if (!requireAdmin(req, res)) return;
+        const body = req.method === 'POST' ? await parseBody(req) : null;
+        try {
+            const store = readProductStore({ strict: true });
+            const review = (store.scanReviews || []).find((item) => item.id === inventoryReviewMatch[1]);
+            if (!review) throw Object.assign(new Error('审核记录不存在'), { statusCode: 404 });
+            if (req.method === 'GET') {
+                sendJSON(res, { code: 0, data: review,
+                    products: store.products.filter((product) => product.storeId === review.storeId),
+                    productVersion: productVersion(store.products, review.storeId) });
+            } else {
+                if (body?.action === 'approve' && !findStoreRecord(readOperationsStore(), review.storeId)) {
+                    throw new Error('门店已删除，不能通过审核');
+                }
+                const data = decideReview(store, review.id, body, readAdminSession(req).user);
+                // Persist placements and the decision together; retries cannot reapply a review.
+                writeProductStoreWithBackup(store);
+                sendJSON(res, { code: 0, message: data.status === 'approved' ? '审核通过，门店货位已更新' : '已驳回', data });
+            }
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.message }, error.statusCode || 400);
+        }
+        return;
+    }
+
     // 商家端「自动巡架 / 底盘与地图」：云端代管转发到本店盒子。
     if (pathname.startsWith('/api/merchant/console/')) {
         const auth = requireMerchant(req, res);
@@ -3603,6 +3675,31 @@ const server = http.createServer(async (req, res) => {
             return;
         }
         const subPath = pathname.slice('/api/merchant/console'.length);
+        if (['/inventory-products', '/inventory-scan/products'].includes(subPath) && req.method === 'POST') {
+            const body = await parseBody(req);
+            try {
+                const storeId = target.storeId === '__default__'
+                    ? (auth.merchant.storeIds.length === 1 ? auth.merchant.storeIds[0] : '') : target.storeId;
+                if (!storeId || !auth.merchant.storeIds.includes(storeId)) throw new Error('请明确选择扫描所属门店');
+                const upstream = await boxHttpRequest(target.baseUrl, '/api/admin/inventory-scan', {
+                    headers: { Cookie: `${ADMIN_COOKIE_NAME}=${createAdminSession()}` }, timeout: 15000
+                });
+                const result = JSON.parse(upstream.body.toString('utf8'));
+                if (upstream.status !== 200 || result.code !== 0) throw new Error('无法读取盒子的扫描结果');
+                const snapshot = result.data;
+                if (snapshot.running || !body?.taskId || body.taskId !== snapshot.task?.id) {
+                    throw Object.assign(new Error('扫描任务已变化，请刷新后再提交'), { statusCode: 409 });
+                }
+                const store = readProductStore({ strict: true });
+                const review = submitReview(store, { task: snapshot.task, storeId,
+                    submittedBy: `merchant:${auth.merchant.id}`, source: `box:${storeId}` });
+                writeProductStore(store);
+                sendJSON(res, { code: 0, message: '已提交管理员审核，商品资料未修改', data: review }, 201);
+            } catch (error) {
+                sendJSON(res, { code: 1, message: error.message }, error.statusCode || 400);
+            }
+            return;
+        }
         const boxPath = (subPath.startsWith('/inventory-scan') || subPath.startsWith('/inventory-products'))
             ? `/api/admin${subPath}`
             : `/api${subPath}`;
@@ -3729,13 +3826,7 @@ const server = http.createServer(async (req, res) => {
 
     if (['/api/admin/inventory-scan/products', '/api/admin/inventory-products'].includes(pathname) && req.method === 'POST') {
         if (!requireAdmin(req, res)) return;
-        const body = await parseBody(req);
-        try {
-            const saved = saveInventoryScanProducts(body && body.rows);
-            sendJSON(res, { code: 0, message: `已保存 ${saved.length} 条商品信息`, data: saved });
-        } catch (error) {
-            sendJSON(res, { code: 1, message: error.message }, 400);
-        }
+        sendJSON(res, { code: 1, message: '扫描结果需先提交扫描审核，不能直接写入商品' }, 409);
         return;
     }
 
@@ -6407,81 +6498,6 @@ function finishInventoryScanWithError(task, error) {
     broadcast({ type: 'inventory_scan', status: task.status, task, timestamp: Date.now() });
 }
 
-function saveInventoryScanProducts(rawRows) {
-    if (!Array.isArray(rawRows)) throw new Error('商品信息必须是数组');
-    if (rawRows.length > 48) throw new Error('一次最多保存 48 条巡架商品信息');
-    const rows = rawRows.map((raw, index) => {
-        const name = String(raw && raw.name || '').trim();
-        const shelf = String(raw && (raw.shelf || raw.zone) || '').trim().toUpperCase();
-        const point = Number(raw && (raw.point || raw.shelf_number));
-        const layer = Number(raw && raw.layer);
-        const marker = String(raw && (raw.marker || raw.chassis_marker) || '').trim();
-        if (!name) throw new Error(`第${index + 1}行商品名称不能为空`);
-        if (!INVENTORY_SHELF_NAMES.includes(shelf)) throw new Error(`第${index + 1}行货架编号无效`);
-        if (!Number.isInteger(point) || point < 1 || point > 6) throw new Error(`第${index + 1}行点位序号必须是 1..6`);
-        if (![1, 2].includes(layer)) throw new Error(`第${index + 1}行层数只能是 1 或 2`);
-        validateChassisMarkerName(marker);
-        return { name, shelf, point, layer, marker };
-    });
-    const products = readProducts();
-    const assignments = rows.map((row) => {
-        const slotIndex = products.findIndex((product) =>
-            product.shelf_zone === row.shelf
-            && Number(product.shelf_number) === row.point
-            && Number(product.shelf_layer) === row.layer);
-        const nameMatches = products
-            .map((product, index) => ({ product, index }))
-            .filter(({ product }) => String(product.name || '').trim() === row.name);
-        const slotHasSameName = slotIndex >= 0
-            && String(products[slotIndex].name || '').trim() === row.name;
-        if (!slotHasSameName && nameMatches.length === 0) {
-            throw new Error(`商品“${row.name}”尚未录入，请先在商品管理中补全资料`);
-        }
-        if (!slotHasSameName && nameMatches.length > 1) {
-            throw new Error(`商品“${row.name}”存在多条记录，请先在商品管理中确认具体商品`);
-        }
-        const index = slotHasSameName
-            ? slotIndex
-            : nameMatches[0].index;
-        return { row, index, slotIndex };
-    });
-
-    const duplicateAssignment = assignments.find((assignment, index) =>
-        assignments.some((candidate, candidateIndex) =>
-            candidateIndex !== index && candidate.index === assignment.index));
-    if (duplicateAssignment) {
-        throw new Error(`商品“${products[duplicateAssignment.index].name}”不能同时分配到多个货位`);
-    }
-
-    const saved = [];
-    for (const { row, index, slotIndex } of assignments) {
-        if (slotIndex >= 0 && slotIndex !== index) {
-            products[slotIndex] = normalizeProduct({
-                ...products[slotIndex],
-                location: '',
-                chassis_marker: '',
-                shelf_number: null,
-                shelf_zone: '',
-                shelf_layer: null,
-                status: 0
-            });
-        }
-
-        const product = normalizeProduct({
-            ...products[index],
-            shelf_number: row.point,
-            shelf_zone: row.shelf,
-            shelf_layer: row.layer,
-            chassis_marker: row.marker,
-            location: `${row.shelf}货架第${row.point}点位第${row.layer}层`,
-            status: 1
-        });
-        products[index] = product;
-        saved.push(product);
-    }
-    writeProducts(products);
-    return saved;
-}
 
 function inferGrabStage(line) {
     if (line.includes('拍照中') || line.includes('多帧稳定候选') || line.includes('目标过滤')) {

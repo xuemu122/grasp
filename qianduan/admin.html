@@ -33,6 +33,9 @@
         .admin-nav-item:hover { background: var(--gray-100); }
         .admin-nav-item.active { background: var(--primary-light); color: var(--primary); font-weight: 700; }
         .admin-content { min-width: 0; display: grid; gap: 20px; }
+        .admin-content[data-page="scan-reviews"] { grid-template-columns: minmax(0, 1fr); }
+        [data-admin-page="scan-reviews"] { min-width: 0; }
+        [data-admin-page="scan-reviews"] .card-title { gap: 12px; flex-wrap: wrap; overflow-wrap: anywhere; }
         .admin-content > .card { grid-column: auto; }
         .admin-content[data-page="products"] { grid-template-columns: minmax(0, 1fr) 420px; align-items: start; }
         .admin-content[data-page="products"] #formCard { min-width: 0; position: static; max-height: none; overflow: visible; }
@@ -246,6 +249,7 @@
             <button class="admin-nav-item" type="button" data-page="merchants" onclick="switchAdminPage('merchants')">商家账号</button>
             <button class="admin-nav-item" type="button" data-page="orders" onclick="switchAdminPage('orders')">订单管理</button>
             <button class="admin-nav-item" type="button" data-page="inventory-scan" onclick="switchAdminPage('inventory-scan')">自动巡架</button>
+            <button class="admin-nav-item" type="button" data-page="scan-reviews" onclick="switchAdminPage('scan-reviews')">扫描审核</button>
             <button class="admin-nav-item" type="button" data-page="chassis" onclick="switchAdminPage('chassis')">底盘与地图</button>
         </aside>
 
@@ -296,12 +300,28 @@
             </div>
             <div class="table-wrapper inventory-result-wrapper">
                 <table>
-                    <thead><tr><th>货架</th><th>点位序号</th><th>层数</th><th>识别主商品</th><th>数量/总数</th><th>底盘点位</th><th>填写商品名称</th></tr></thead>
+                    <thead><tr><th>货架</th><th>点位序号</th><th>层数</th><th>识别主商品</th><th>数量/总数</th><th>底盘点位</th><th>状态</th></tr></thead>
                     <tbody id="inventoryScanResultBody"><tr><td colspan="7" class="empty-state">完成巡架后将在这里生成商品信息表单</td></tr></tbody>
                 </table>
             </div>
-            <button class="btn btn-primary" type="button" id="saveInventoryProductsButton" onclick="saveInventoryProducts()" disabled>保存扫描商品信息</button>
+            <div class="robot-control-row">
+                <select class="select-box" id="inventoryScanStore" aria-label="扫描所属门店"><option value="">选择扫描所属门店</option></select>
+                <button class="btn btn-primary" type="button" id="saveInventoryProductsButton" onclick="saveInventoryProducts()" disabled>提交扫描审核</button>
+            </div>
         </div>
+
+        <section data-admin-page="scan-reviews" hidden>
+            <div class="card-title"><span>扫描审核 <span class="count" id="scanReviewCount"></span></span>
+                <button type="button" class="btn btn-primary btn-sm" onclick="loadScanReviews()">刷新列表</button></div>
+            <div class="robot-control-row">
+                <select class="select-box" id="scanReviewStatus" aria-label="审核状态" onchange="renderScanReviewList()">
+                    <option value="pending">待审核</option><option value="approved">已通过</option><option value="rejected">已驳回</option><option value="">全部</option>
+                </select>
+            </div>
+            <div class="table-wrapper"><table><thead><tr><th>门店</th><th>扫描任务</th><th>提交时间</th><th>提交人</th><th>条数</th><th>状态</th><th>操作</th></tr></thead>
+                <tbody id="scanReviewList"><tr><td colspan="7" class="empty-state">尚未加载</td></tr></tbody></table></div>
+            <div id="scanReviewDetail" hidden style="border-top:1px solid var(--gray-200);margin-top:20px;padding-top:20px;"></div>
+        </section>
 
         <div class="card chassis-map-card" data-admin-page="chassis">
             <div class="card-title">
@@ -643,8 +663,6 @@
         let inventoryConfigDraft = [];
         let inventoryConfigDirty = false;
         let inventoryConfigDirtyShelves = new Set();
-        let inventoryResultDraft = new Map();
-        let inventoryResultDirty = false;
         let inventoryScanTimer = null;
         let chassisDebugNavigationTimer = null;
         let adminOrderPage = 1;
@@ -654,7 +672,7 @@
         let deviceRecords = [];
         let storeRecords = [];
         let merchantRecords = [];
-        const ADMIN_PAGES = new Set(['dashboard', 'products', 'devices', 'stores', 'merchants', 'orders', 'inventory-scan', 'chassis']);
+        const ADMIN_PAGES = new Set(['dashboard', 'products', 'devices', 'stores', 'merchants', 'orders', 'inventory-scan', 'scan-reviews', 'chassis']);
         let currentAdminPage = 'dashboard';
 
         // ========== 登录与初始化 ==========
@@ -752,6 +770,7 @@
         }
 
         function refreshAdminPage(page) {
+            if (page === 'scan-reviews') return loadScanReviews();
             if (page === 'products') return Promise.allSettled([loadProducts({ silent: true }), loadCategories(), loadShelfLayers()]);
             if (page === 'devices') return Promise.allSettled([loadStores({ silent: true }), loadDevices()]);
             if (page === 'stores') return loadStores();
@@ -1493,7 +1512,6 @@
         function renderInventoryScanResults() {
             const body = document.getElementById('inventoryScanResultBody');
             if (!body) return;
-            if (inventoryResultDirty) captureInventoryResultDraft();
             const results = [...(inventoryScanData.task?.results || [])].sort((a, b) =>
                 String(a.shelf).localeCompare(String(b.shelf), 'zh-CN') || Number(a.point || 0) - Number(b.point || 0) || a.layer - b.layer);
             if (!results.length) {
@@ -1501,50 +1519,17 @@
                 document.getElementById('saveInventoryProductsButton').disabled = true;
                 return;
             }
-            const shelfOptions = (selected) => inventoryShelfOptions(String(selected || '').toUpperCase());
-            body.innerHTML = results.map((row, index) => {
-                const resultKey = inventoryResultKey(row);
-                const draft = inventoryResultDraft.get(resultKey);
-                const selectedShelf = draft?.shelf || row.shelf;
-                const selectedPoint = Number(draft?.point ?? row.point ?? 1);
-                const selectedLayer = Number(draft?.layer ?? row.layer ?? 1);
-                const selectedMarker = draft?.marker ?? row.marker;
-                const selectedName = draft?.name ?? row.dominant_name;
+            body.innerHTML = results.map((row) => {
                 const candidates = (row.candidates || []).map((item) => `${item.name} ${item.count}件`).join('、');
-                return `<tr class="inventory-result-row" data-index="${index}" data-result-key="${esc(resultKey)}">
-                    <td><select class="form-select" data-field="shelf" onchange="markInventoryResultDirty()">${shelfOptions(selectedShelf)}</select></td>
-                    <td><select class="form-select" data-field="point" onchange="markInventoryResultDirty()"><option value="1"${selectedPoint === 1 ? ' selected' : ''}>点位1</option><option value="2"${selectedPoint === 2 ? ' selected' : ''}>点位2</option><option value="3"${selectedPoint === 3 ? ' selected' : ''}>点位3</option><option value="4"${selectedPoint === 4 ? ' selected' : ''}>点位4</option><option value="5"${selectedPoint === 5 ? ' selected' : ''}>点位5</option><option value="6"${selectedPoint === 6 ? ' selected' : ''}>点位6</option></select></td>
-                    <td><select class="form-select" data-field="layer" onchange="markInventoryResultDirty()"><option value="1"${selectedLayer === 1 ? ' selected' : ''}>第1层</option><option value="2"${selectedLayer === 2 ? ' selected' : ''}>第2层</option></select></td>
+                return `<tr>
+                    <td>${esc(row.shelf)}</td><td>${Number(row.point)}</td><td>${Number(row.layer)}</td>
                     <td title="${esc(candidates)}"><strong>${esc(row.dominant_name) || '未识别'}</strong></td>
                     <td>${Number(row.count) || 0} / ${Number(row.total) || 0}</td>
-                    <td><select class="form-select" data-field="marker" onchange="markInventoryResultDirty()">${inventoryMarkerOptions(selectedMarker)}</select></td>
-                    <td><input class="form-input" data-field="name" value="${esc(selectedName)}" placeholder="填写商品名称" oninput="markInventoryResultDirty()"></td>
+                    <td>${esc(row.marker)}</td><td>扫描原始记录</td>
                 </tr>`;
             }).join('');
-            document.getElementById('saveInventoryProductsButton').disabled = false;
-        }
-
-        function inventoryResultKey(row) {
-            return `${String(row.shelf || '').toUpperCase()}:${Number(row.point || 0)}:${Number(row.layer || 0)}`;
-        }
-
-        function captureInventoryResultDraft() {
-            const nextDraft = new Map(inventoryResultDraft);
-            document.querySelectorAll('.inventory-result-row').forEach((row) => {
-                nextDraft.set(row.dataset.resultKey, {
-                    shelf: row.querySelector('[data-field="shelf"]').value,
-                    point: Number(row.querySelector('[data-field="point"]').value),
-                    layer: Number(row.querySelector('[data-field="layer"]').value),
-                    marker: row.querySelector('[data-field="marker"]').value,
-                    name: row.querySelector('[data-field="name"]').value
-                });
-            });
-            inventoryResultDraft = nextDraft;
-        }
-
-        function markInventoryResultDirty() {
-            inventoryResultDirty = true;
-            captureInventoryResultDraft();
+            document.getElementById('saveInventoryProductsButton').disabled = inventoryScanData.running
+                || !['completed', 'failed', 'canceled'].includes(inventoryScanData.task?.status);
         }
 
         function updateInventoryScanControls() {
@@ -1607,8 +1592,6 @@
                 const res = await adminFetch('/api/admin/inventory-scan/start', { method: 'POST' });
                 const json = await readAdminJson(res, '巡架启动接口返回了无效数据');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '巡架识别启动失败');
-                inventoryResultDraft = new Map();
-                inventoryResultDirty = false;
                 showToast('巡架识别已启动', 'success');
                 await loadInventoryScan();
             } catch (error) {
@@ -1630,29 +1613,18 @@
         }
 
         async function saveInventoryProducts() {
-            captureInventoryResultDraft();
-            const rows = [...document.querySelectorAll('.inventory-result-row')].map((row) => ({
-                shelf: row.querySelector('[data-field="shelf"]').value,
-                point: Number(row.querySelector('[data-field="point"]').value),
-                layer: Number(row.querySelector('[data-field="layer"]').value),
-                marker: row.querySelector('[data-field="marker"]').value,
-                name: row.querySelector('[data-field="name"]').value.trim()
-            })).filter((row) => row.name);
-            if (!rows.length) {
-                showToast('请至少填写一个商品名称', 'error');
-                return;
-            }
             try {
-                const res = await adminFetch('/api/admin/inventory-products', {
+                const res = await adminFetch('/api/admin/inventory-reviews', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ rows })
+                    body: JSON.stringify({ taskId: inventoryScanData.task?.id,
+                        storeId: document.getElementById('inventoryScanStore').value })
                 });
-                const json = await readAdminJson(res, '巡架商品保存接口返回了无效数据');
-                if (!res.ok || json.code !== 0) throw new Error(json.message || '扫描商品信息保存失败');
-                inventoryResultDirty = false;
+                const json = await readAdminJson(res, '扫描审核接口返回了无效数据');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '提交失败');
                 showToast(json.message, 'success');
-                await Promise.all([loadProducts(), loadCategories()]);
+                switchAdminPage('scan-reviews');
+                await openScanReview(json.data.id);
             } catch (error) {
                 showToast(error.message, 'error');
             }
@@ -1834,6 +1806,11 @@
                 const json = await readAdminJson(res, '门店接口返回了无效数据');
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '门店读取失败');
                 storeRecords = json.data || [];
+                const scanStore = document.getElementById('inventoryScanStore');
+                const selectedScanStore = scanStore.value;
+                scanStore.innerHTML = '<option value="">选择扫描所属门店</option>' + storeRecords.map((store) =>
+                    `<option value="${esc(store.id)}">${esc(store.name)}</option>`).join('');
+                scanStore.value = selectedScanStore || (storeRecords.length === 1 ? storeRecords[0].id : '');
                 document.getElementById('storeCount').textContent = `${storeRecords.length} 家`;
                 renderStoreTable();
                 syncStoreSelects();
@@ -2750,5 +2727,6 @@
             setTimeout(() => { toast.remove(); }, 3000);
         }
     </script>
+    <script src="admin_inventory_reviews.js"></script>
 </body>
 </html>

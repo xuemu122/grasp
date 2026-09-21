@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const net = require('node:net');
+const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
@@ -39,6 +40,18 @@ test('merchant login is scoped to the stores it owns', async (t) => {
     const operationsFile = path.join(tempDir, 'operations.json');
     const ordersFile = path.join(tempDir, 'orders.json');
     const chassisSettingsFile = path.join(tempDir, 'chassis_settings.json');
+    const boxRequests = [];
+    const scanTask = { id: 'SCAN-MERCHANT', status: 'completed', results: [
+        { shelf: 'A', point: 1, layer: 1, marker: 'shelf-a', dominant_name: '测试咖啡', count: 2 }
+    ] };
+    const box = http.createServer((req, res) => {
+        boxRequests.push({ method: req.method, path: req.url });
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ code: 0, data: { running: false, task: scanTask } }));
+    });
+    await new Promise((resolve) => box.listen(0, '127.0.0.1', resolve));
+    t.after(() => box.close());
+    const boxUrl = `http://127.0.0.1:${box.address().port}`;
     fs.writeFileSync(productsFile, JSON.stringify({
         products: [{ id: 1, name: '测试咖啡', stock: 10, status: 1, price: 8, location: '测试区A货架第2层', chassis_marker: 'shelf-a', storeId: 'STORE-001' }]
     }));
@@ -56,6 +69,7 @@ test('merchant login is scoped to the stores it owns', async (t) => {
             OPERATIONS_DB_FILE: operationsFile,
             ORDERS_DB_FILE: ordersFile,
             CHASSIS_SETTINGS_FILE: chassisSettingsFile,
+            BOX_PROXY_MAP: `STORE-001=${boxUrl},STORE-002=${boxUrl}`,
             ORDER_TOKEN_SECRET: 'merchant-test-order-token-secret-32bytes',
             PAYMENT_MODE: 'free',
             ALLOW_FREE_ORDERS: '1',
@@ -182,6 +196,48 @@ test('merchant login is scoped to the stores it owns', async (t) => {
 
     const forbiddenAdmin = await requestJson(`${baseUrl}/api/admin/devices`, { cookie: merchantCookie });
     assert.equal(forbiddenAdmin.response.status, 401);
+
+    const beforeReview = JSON.parse(fs.readFileSync(productsFile, 'utf8'));
+    const submitted = await requestJson(`${baseUrl}/api/merchant/console/inventory-products`, {
+        method: 'POST', cookie: merchantCookie,
+        body: { taskId: scanTask.id, storeId: storeB.json.data.id, rows: [{ name: 'forged' }] }
+    });
+    assert.equal(submitted.response.status, 201);
+    assert.equal(submitted.json.data.storeId, storeA.json.data.id);
+    assert.equal(submitted.json.data.rows[0].name, '测试咖啡');
+    const afterReview = JSON.parse(fs.readFileSync(productsFile, 'utf8'));
+    assert.deepEqual(afterReview.products, beforeReview.products);
+    assert.deepEqual(afterReview.reservedOrders, beforeReview.reservedOrders);
+    assert.ok(boxRequests.every((request) => request.method === 'GET'));
+    const alias = await requestJson(`${baseUrl}/api/merchant/console/inventory-scan/products`, {
+        method: 'POST', cookie: merchantCookie, body: { taskId: scanTask.id }
+    });
+    assert.equal(alias.json.data.id, submitted.json.data.id);
+    const crossStoreScan = await requestJson(`${baseUrl}/api/merchant/console/inventory-products?storeId=${storeB.json.data.id}`, {
+        method: 'POST', cookie: merchantCookie, body: { taskId: scanTask.id }
+    });
+    assert.equal(crossStoreScan.response.status, 403);
+    const reviewUrl = `${baseUrl}/api/admin/inventory-reviews/${submitted.json.data.id}`;
+    const forbiddenReview = await requestJson(reviewUrl, {
+        method: 'POST', cookie: merchantCookie, body: { action: 'approve' }
+    });
+    assert.equal(forbiddenReview.response.status, 401);
+    fs.writeFileSync(path.join(tempDir, 'inventory_scan.json'), JSON.stringify({ last_scan: scanTask }));
+    await requestJson(`${baseUrl}/api/admin/inventory-reviews`, {
+        method: 'POST', cookie: adminCookie, body: { storeId: storeB.json.data.id, taskId: scanTask.id }
+    });
+    const ownReviews = await requestJson(`${baseUrl}/api/merchant/inventory-reviews`, { cookie: merchantCookie });
+    assert.equal(ownReviews.json.data.length, 1);
+    const allReviews = await requestJson(`${baseUrl}/api/admin/inventory-reviews`, { cookie: adminCookie });
+    assert.equal(allReviews.json.data.length, 2);
+    const rejected = await requestJson(reviewUrl, {
+        method: 'POST', cookie: adminCookie, body: { action: 'reject', reason: '重新核对规格' }
+    });
+    assert.equal(rejected.response.status, 200);
+    const status = await requestJson(`${baseUrl}/api/merchant/inventory-reviews`, { cookie: merchantCookie });
+    assert.equal(status.json.data[0].status, 'rejected');
+    assert.equal(status.json.data[0].reason, '重新核对规格');
+    assert.deepEqual(JSON.parse(fs.readFileSync(productsFile, 'utf8')).products, beforeReview.products);
 
     const disabled = await requestJson(`${baseUrl}/api/admin/merchants/${merchant.json.data.id}`, {
         method: 'PUT', cookie: adminCookie, body: { status: 'disabled' }

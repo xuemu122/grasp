@@ -293,14 +293,17 @@
                     </div>
                     <div class="table-wrapper">
                         <table>
-                            <thead><tr><th>货架</th><th>点位序号</th><th>层数</th><th>识别主商品</th><th>数量/总数</th><th>底盘点位</th><th>填写商品名称</th></tr></thead>
+                            <thead><tr><th>货架</th><th>点位序号</th><th>层数</th><th>识别主商品</th><th>数量/总数</th><th>底盘点位</th><th>状态</th></tr></thead>
                             <tbody id="mcScanBody"><tr><td colspan="7" class="empty-state">完成巡架后将在这里生成商品信息表单</td></tr></tbody>
                         </table>
                     </div>
                     <div class="toolbar" style="margin-top:10px;justify-content:flex-end;">
-                        <button class="btn btn-primary" type="button" onclick="mcSaveScanResults()">保存识别结果</button>
+                        <button class="btn btn-primary" type="button" id="mcSubmitScan" onclick="mcSaveScanResults()" disabled>提交管理员审核</button>
                     </div>
                 </div>
+                <h3 style="font-size:1rem;margin:20px 0 12px;">扫描审核记录</h3>
+                <div class="table-wrapper"><table><thead><tr><th>扫描任务</th><th>门店</th><th>状态</th><th>审核备注</th></tr></thead>
+                    <tbody id="mcScanReviews"><tr><td colspan="4" class="empty-state">尚未加载</td></tr></tbody></table></div>
             </section>
 
             <section class="mc-page" data-page="chassis" hidden>
@@ -788,8 +791,6 @@
         let mcScanData = { shelves: [], task: { status: 'idle', results: [] }, running: false };
         let mcScanTimer = null;
         let mcNavTimer = null;
-        let mcDraft = new Map();
-        let mcDraftDirty = false;
 
         async function mcFetch(url, options = {}) {
             const res = await fetch(url, { ...options, credentials: 'same-origin' });
@@ -1022,51 +1023,17 @@
                 .join('');
         }
 
-        function mcResultKey(row) {
-            return `${String(row.shelf || '').toUpperCase()}:${Number(row.point || 0)}:${Number(row.layer || 0)}`;
-        }
-
-        function mcCaptureDraft() {
-            const next = new Map(mcDraft);
-            document.querySelectorAll('.mc-result-row').forEach((tr) => {
-                next.set(tr.dataset.key, {
-                    shelf: tr.querySelector('[data-field="shelf"]').value,
-                    point: Number(tr.querySelector('[data-field="point"]').value),
-                    layer: Number(tr.querySelector('[data-field="layer"]').value),
-                    marker: tr.querySelector('[data-field="marker"]').value,
-                    name: tr.querySelector('[data-field="name"]').value
-                });
-            });
-            mcDraft = next;
-            mcDraftDirty = true;
-        }
-
         function mcRenderScan() {
             const body = document.getElementById('mcScanBody');
-            if (mcDraftDirty) mcCaptureDraft();
             const results = [...((mcScanData.task && mcScanData.task.results) || [])].sort((a, b) =>
                 String(a.shelf).localeCompare(String(b.shelf), 'zh-CN') || Number(a.point || 0) - Number(b.point || 0) || a.layer - b.layer);
             if (!results.length) { body.innerHTML = '<tr><td colspan="7" class="empty-state">暂无识别结果</td></tr>'; return; }
             body.innerHTML = results.map((row) => {
-                const key = mcResultKey(row);
-                const draft = mcDraft.get(key) || {};
-                const shelf = draft.shelf || row.shelf;
-                const point = Number(draft.point != null ? draft.point : (row.point || 1));
-                const layer = Number(draft.layer != null ? draft.layer : (row.layer || 1));
-                const marker = draft.marker != null ? draft.marker : row.marker;
-                const name = draft.name != null ? draft.name : row.dominant_name;
-                const pointOptions = [1, 2, 3, 4, 5, 6]
-                    .map((n) => `<option value="${n}"${point === n ? ' selected' : ''}>点位${n}</option>`).join('');
-                const layerOptions = [1, 2]
-                    .map((n) => `<option value="${n}"${layer === n ? ' selected' : ''}>第${n}层</option>`).join('');
-                return `<tr class="mc-result-row" data-key="${esc(key)}">
-                    <td><select class="form-select" data-field="shelf" onchange="mcCaptureDraft()">${mcShelfOptions(shelf)}</select></td>
-                    <td><select class="form-select" data-field="point" onchange="mcCaptureDraft()">${pointOptions}</select></td>
-                    <td><select class="form-select" data-field="layer" onchange="mcCaptureDraft()">${layerOptions}</select></td>
+                return `<tr>
+                    <td>${esc(row.shelf)}</td><td>${Number(row.point)}</td><td>${Number(row.layer)}</td>
                     <td><strong>${esc(row.dominant_name) || '未识别'}</strong></td>
                     <td>${Number(row.count) || 0} / ${Number(row.total) || 0}</td>
-                    <td><select class="form-select" data-field="marker" onchange="mcCaptureDraft()">${mcMarkerOptions(marker)}</select></td>
-                    <td><input class="form-input" data-field="name" value="${esc(name)}" placeholder="填写商品名称" oninput="mcCaptureDraft()"></td>
+                    <td>${esc(row.marker)}</td><td>扫描原始记录</td>
                 </tr>`;
             }).join('');
         }
@@ -1082,6 +1049,8 @@
             document.getElementById('mcScanMessage').textContent = task.message || '尚未开始巡架识别';
             document.getElementById('mcScanStart').disabled = running;
             document.getElementById('mcScanStop').disabled = !running;
+            document.getElementById('mcSubmitScan').disabled = running || !(task.results || []).length
+                || !['completed', 'failed', 'canceled'].includes(task.status);
             if (mcScanTimer) clearTimeout(mcScanTimer);
             mcScanTimer = running ? setTimeout(mcLoadScan, 1500) : null;
         }
@@ -1094,6 +1063,7 @@
                 mcScanData = json.data || { shelves: [], task: { status: 'idle', results: [] }, running: false };
                 mcRenderScan();
                 mcUpdateScanControls();
+                if (!mcScanData.running) await mcLoadScanReviews();
                 if (showResultToast) showToast('巡架状态已刷新', 'success');
             } catch (error) {
                 if (showResultToast) showToast(error.message, 'error');
@@ -1106,8 +1076,6 @@
                 const res = await mcFetch('/api/merchant/console/inventory-scan/start', { method: 'POST' });
                 const json = await res.json();
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '巡架启动失败');
-                mcDraft = new Map();
-                mcDraftDirty = false;
                 showToast('巡架识别已启动', 'success');
                 await mcLoadScan();
             } catch (error) {
@@ -1129,27 +1097,37 @@
         }
 
         async function mcSaveScanResults() {
-            mcCaptureDraft();
-            const rows = [...document.querySelectorAll('.mc-result-row')].map((tr) => ({
-                shelf: tr.querySelector('[data-field="shelf"]').value,
-                point: Number(tr.querySelector('[data-field="point"]').value),
-                layer: Number(tr.querySelector('[data-field="layer"]').value),
-                marker: tr.querySelector('[data-field="marker"]').value,
-                name: tr.querySelector('[data-field="name"]').value.trim()
-            })).filter((row) => row.name);
-            if (!rows.length) { showToast('请至少填写一个商品名称', 'error'); return; }
+            document.getElementById('mcSubmitScan').disabled = true;
             try {
                 const res = await mcFetch('/api/merchant/console/inventory-products', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ rows })
+                    body: JSON.stringify({ taskId: mcScanData.task?.id })
                 });
                 const json = await res.json();
-                if (!res.ok || json.code !== 0) throw new Error(json.message || '保存失败');
-                showToast(json.message || '已保存', 'success');
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '提交失败');
+                showToast(json.message || '已提交审核', 'success');
                 await mcLoadScan();
             } catch (error) {
                 showToast(error.message, 'error');
+            } finally {
+                mcUpdateScanControls();
+            }
+        }
+
+        async function mcLoadScanReviews() {
+            const body = document.getElementById('mcScanReviews');
+            try {
+                const res = await merchantFetch('/api/merchant/inventory-reviews', { cache: 'no-store' });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '审核记录读取失败');
+                const labels = { pending: '待审核', approved: '已通过', rejected: '已驳回' };
+                body.innerHTML = json.data.map((review) => `<tr><td>${esc(review.taskId)}</td>
+                    <td>${esc(merchantStores.find((store) => store.id === review.storeId)?.name || review.storeId)}</td>
+                    <td>${labels[review.status] || ''}</td><td>${esc(review.reason || '-')}</td></tr>`).join('')
+                    || '<tr><td colspan="4" class="empty-state">暂无审核记录</td></tr>';
+            } catch (error) {
+                body.innerHTML = `<tr><td colspan="4">${esc(error.message)}</td></tr>`;
             }
         }
     </script>

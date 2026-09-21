@@ -58,6 +58,12 @@ test('admin inventory scan visits configured A-D shelves and each point at layer
             { id: 14, name: '重名商品', status: 1, photo_front: '/duplicate-2.jpg' }
         ]
     }));
+    const seed = JSON.parse(fs.readFileSync(productsFile, 'utf8'));
+    seed.products.forEach((product) => { product.storeId = 'STORE-001'; });
+    fs.writeFileSync(productsFile, JSON.stringify(seed));
+    fs.writeFileSync(path.join(tempDir, 'operations.json'), JSON.stringify({
+        stores: [{ id: 'STORE-001', name: '门店一' }], devices: [], merchants: []
+    }));
     fs.writeFileSync(shelfLayersFile, JSON.stringify({
         layers: {
             1: { name: '第1层', pose: [1, 2, 3, 4, 5, 6] },
@@ -182,22 +188,32 @@ test('admin inventory scan visits configured A-D shelves and each point at layer
     );
     assert.equal(snapshot.task.results[0].dominant_name, '商品A1-1');
 
-    const saved = await requestJson(`${baseUrl}/api/admin/inventory-products`, {
+    const beforeSubmission = (await requestJson(`${baseUrl}/api/products`)).json.data;
+    const submitted = await requestJson(`${baseUrl}/api/admin/inventory-reviews`, {
+        method: 'POST', cookie, body: { storeId: 'STORE-001', taskId: snapshot.task.id }
+    });
+    assert.equal(submitted.response.status, 201);
+    assert.equal(submitted.json.data.status, 'pending');
+    assert.deepEqual((await requestJson(`${baseUrl}/api/products`)).json.data, beforeSubmission);
+    const submittedAgain = await requestJson(`${baseUrl}/api/admin/inventory-reviews`, {
+        method: 'POST', cookie, body: { storeId: 'STORE-001', taskId: snapshot.task.id }
+    });
+    assert.equal(submittedAgain.json.data.id, submitted.json.data.id);
+    const reviewUrl = `${baseUrl}/api/admin/inventory-reviews/${submitted.json.data.id}`;
+    const detail = await requestJson(reviewUrl, { cookie });
+    const decisions = detail.json.data.rows.map((row) => ({ index: row.index,
+        productId: row.index === 0 ? 10 : row.index === 9 ? 12 : null }));
+    const saved = await requestJson(reviewUrl, {
         method: 'POST',
         cookie,
-        body: {
-            rows: [
-                { shelf: 'A', point: 1, layer: 1, marker: 'shelf-a-1', name: '商品A1-1' },
-                { shelf: 'D', point: 2, layer: 2, marker: 'shelf-d-2', name: '商品D2-2' }
-            ]
-        }
+        body: { action: 'approve', decisions, productVersion: detail.json.productVersion }
     });
     assert.equal(saved.response.status, 200);
-    assert.equal(saved.json.data.length, 2);
-    assert.deepEqual(
-        saved.json.data.map((product) => [product.shelf_number, product.shelf_zone, product.shelf_layer]),
-        [[1, 'A', 1], [2, 'D', 2]]
-    );
+    assert.equal(saved.json.data.appliedCount, 2);
+    assert.equal(saved.json.data.status, 'approved');
+    const repeated = await requestJson(reviewUrl, { method: 'POST', cookie,
+        body: { action: 'approve', decisions, productVersion: detail.json.productVersion } });
+    assert.equal(repeated.response.status, 409);
 
     const products = await requestJson(`${baseUrl}/api/products`);
     assert.equal(products.json.data.length, 4);
@@ -225,8 +241,8 @@ test('admin inventory scan visits configured A-D shelves and each point at layer
             rows: [{ shelf: 'A', point: 2, layer: 1, marker: 'shelf-a-2', name: '未录入商品' }]
         }
     });
-    assert.equal(unknown.response.status, 400);
-    assert.match(unknown.json.message, /尚未录入/);
+    assert.equal(unknown.response.status, 409);
+    assert.match(unknown.json.message, /审核/);
     assert.equal(fs.readFileSync(productsFile, 'utf8'), beforeRejectedSave);
 
     const ambiguous = await requestJson(`${baseUrl}/api/admin/inventory-products`, {
@@ -234,7 +250,7 @@ test('admin inventory scan visits configured A-D shelves and each point at layer
             rows: [{ shelf: 'A', point: 2, layer: 1, marker: 'shelf-a-2', name: '重名商品' }]
         }
     });
-    assert.equal(ambiguous.response.status, 400);
-    assert.match(ambiguous.json.message, /存在多条记录/);
+    assert.equal(ambiguous.response.status, 409);
+    assert.match(ambiguous.json.message, /审核/);
     assert.equal(fs.readFileSync(productsFile, 'utf8'), beforeRejectedSave);
 });
