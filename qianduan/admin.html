@@ -21,7 +21,12 @@
         body { font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif; background: #F0F2F5; min-height: 100vh; color: var(--gray-800); }
         .header { background: linear-gradient(135deg, var(--primary) 0%, #6366F1 100%); color: white; padding: 16px 28px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 20px rgba(79,70,229,0.3); position: sticky; top: 0; z-index: 100; }
         .header h1 { font-size: 1.3rem; }
-        .header-links { display: flex; gap: 16px; }
+        .header-links { display: flex; gap: 16px; flex-wrap: wrap; }
+        @media (max-width: 640px) {
+            .header { flex-wrap: wrap; gap: 8px; padding: 12px 24px; }
+            .header-links { gap: 8px; }
+            .header-links a { padding: 6px 8px; white-space: nowrap; }
+        }
         .header-links a { color: rgba(255,255,255,0.85); text-decoration: none; padding: 6px 14px; border-radius: 20px; transition: all 0.2s; font-size: 0.9rem; }
         .header-links a:hover { background: rgba(255,255,255,0.2); color: white; }
         .container { max-width: 1400px; margin: 24px auto; padding: 0 24px; display: grid; grid-template-columns: 1fr 420px; gap: 24px; align-items: start; }
@@ -244,6 +249,7 @@
             <div class="admin-nav-title">管理中心</div>
             <button class="admin-nav-item active" type="button" data-page="dashboard" onclick="switchAdminPage('dashboard')">仪表盘</button>
             <button class="admin-nav-item" type="button" data-page="products" onclick="switchAdminPage('products')">商品管理</button>
+            <button class="admin-nav-item" type="button" data-page="catalog" onclick="switchAdminPage('catalog')">共享商品库</button>
             <button class="admin-nav-item" type="button" data-page="devices" onclick="switchAdminPage('devices')">设备管理</button>
             <button class="admin-nav-item" type="button" data-page="stores" onclick="switchAdminPage('stores')">门店管理</button>
             <button class="admin-nav-item" type="button" data-page="merchants" onclick="switchAdminPage('merchants')">商家账号</button>
@@ -672,7 +678,7 @@
         let deviceRecords = [];
         let storeRecords = [];
         let merchantRecords = [];
-        const ADMIN_PAGES = new Set(['dashboard', 'products', 'devices', 'stores', 'merchants', 'orders', 'inventory-scan', 'scan-reviews', 'chassis']);
+        const ADMIN_PAGES = new Set(['dashboard', 'products', 'catalog', 'devices', 'stores', 'merchants', 'orders', 'inventory-scan', 'scan-reviews', 'chassis']);
         let currentAdminPage = 'dashboard';
 
         // ========== 登录与初始化 ==========
@@ -770,6 +776,7 @@
         }
 
         function refreshAdminPage(page) {
+            if (page === 'catalog') return loadAdminCatalog();
             if (page === 'scan-reviews') return loadScanReviews();
             if (page === 'products') return Promise.allSettled([loadProducts({ silent: true }), loadCategories(), loadShelfLayers()]);
             if (page === 'devices') return Promise.allSettled([loadStores({ silent: true }), loadDevices()]);
@@ -2503,6 +2510,7 @@
                 const json = await res.json();
                 if (json.code !== 0) { showToast('获取失败', 'error'); return; }
                 const p = json.data;
+                setAdminSharedReadOnly(Boolean(p.catalogId));
                 document.getElementById('editId').value = p.id;
                 document.getElementById('formName').value = p.name;
                 document.getElementById('formSpec').value = p.spec || '';
@@ -2518,7 +2526,7 @@
                 document.getElementById('formShelfZ').value = p.shelf_z || 50;
                 updateProductStoreOptions(p.storeId || '');
                 document.getElementById('formPrice').value = p.price || 0;
-                document.getElementById('formStock').value = p.stock || 100;
+                document.getElementById('formStock').value = p.stock ?? 100;
                 setProductImage('front', p.photo_front || '');
                 setProductImage('back', p.photo_back || '');
                 document.getElementById('formStatus').value = p.status ?? 1;
@@ -2537,6 +2545,7 @@
         }
 
         function resetForm() {
+            setAdminSharedReadOnly(false);
             document.getElementById('editId').value = '';
             document.getElementById('productForm').reset();
             document.getElementById('formEmoji').value = '📦';
@@ -2728,5 +2737,6 @@
         }
     </script>
     <script src="admin_inventory_reviews.js"></script>
+    <script src="admin_catalog.js?v=1"></script>
 </body>
 </html>

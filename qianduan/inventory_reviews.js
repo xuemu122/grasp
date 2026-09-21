@@ -9,7 +9,7 @@ function productVersion(products, storeId) {
     const fields = ['id', 'storeId', 'name', 'spec', 'photo_front', 'status', 'location',
         'chassis_marker', 'shelf_zone', 'shelf_number', 'shelf_layer'];
     return crypto.createHash('sha256').update(JSON.stringify(products
-        .filter((product) => product.storeId === storeId)
+        .filter((product) => !product.deleted && product.storeId === storeId)
         .map((product) => fields.map((field) => product[field])))).digest('hex');
 }
 
@@ -67,7 +67,7 @@ function decideReview(store, id, body, reviewer) {
             if (!row) fail('扫描结果不存在');
             if (decision.productId === null) return [];
             if (!Number.isSafeInteger(decision.productId)) fail('请选择具体商品，不能只填写名称');
-            const product = store.products.find((item) => item.id === decision.productId && item.storeId === review.storeId);
+            const product = store.products.find((item) => !item.deleted && item.id === decision.productId && item.storeId === review.storeId);
             if (!product) fail('只能选择本门店的现有商品');
             if (ids.has(product.id)) fail('同一商品不能分配到多个货位');
             ids.add(product.id);

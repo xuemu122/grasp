@@ -18,6 +18,9 @@ const { ChassisClient } = require('./chassis_client');
 const { PaymentClient } = require('./payment_client');
 const { orderItemsByNearestPickup } = require('./order_routing');
 const { submitReview, decideReview, productVersion } = require('./inventory_reviews');
+const { SharedCatalog, mysqlOptions, FIELDS: CATALOG_FIELDS, LOCAL_FIELDS, fail: catalogError } = require('./shared_catalog');
+const sharedCatalog = process.env.CATALOG_DB === 'mysql'
+    ? new SharedCatalog(require('mysql2/promise').createPool(mysqlOptions())) : null;
 
 const PORT = Number(process.env.PORT || 3000);
 const WS_PORT = Number(process.env.WS_PORT || 3001);
@@ -995,6 +998,8 @@ function normalizeProduct(raw, fallbackId = 1) {
         price: Number(raw.price || 0),
         stock: Number(raw.stock ?? 100),
         status: Number(raw.status ?? 1),
+        ...(raw.catalogId ? { catalogId: String(raw.catalogId) } : {}),
+        ...(raw.deleted ? { deleted: true } : {}),
     };
 }
 
@@ -1003,20 +1008,23 @@ function readProductStore({ strict = false } = {}) {
     try {
         const data = JSON.parse(fs.readFileSync(PRODUCTS_DB_FILE, 'utf8'));
         return {
-            products: Array.isArray(data.products) ? data.products.map((p, idx) => normalizeProduct(p, idx + 1)) : [],
+            products: Array.isArray(data.products) ? data.products.map((p, idx) => {
+                const product = normalizeProduct(p, idx + 1);
+                return sharedCatalog ? sharedCatalog.overlay(product) : product;
+            }) : [],
             completedOrders: data.completedOrders && typeof data.completedOrders === 'object' ? data.completedOrders : {},
             reservedOrders: data.reservedOrders && typeof data.reservedOrders === 'object' ? data.reservedOrders : {},
             scanReviews: Array.isArray(data.scanReviews) ? data.scanReviews : []
         };
     } catch (e) {
-        if (strict) throw e;
+        if (strict || sharedCatalog) throw e;
         log(`⚠️ 商品数据读取失败: ${e.message}`);
         return { products: [], completedOrders: {}, reservedOrders: {} };
     }
 }
 
 function readProducts() {
-    return readProductStore().products;
+    return readProductStore().products.filter((product) => !product.deleted);
 }
 
 function writeProductStore(store) {
@@ -1028,7 +1036,53 @@ function writeProductStore(store) {
 
 function writeProducts(products) {
     const store = readProductStore();
-    writeProductStoreWithBackup({ ...store, products });
+    const ids = new Set(products.map((product) => product.id));
+    const retained = sharedCatalog ? store.products.filter((product) => product.deleted && !ids.has(product.id)) : [];
+    writeProductStoreWithBackup({ ...store, products: [...products, ...retained] });
+}
+
+function localProductPatch(body) {
+    const patch = Object.fromEntries(LOCAL_FIELDS.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]));
+    if (patch.price !== undefined && (!Number.isFinite(Number(patch.price)) || Number(patch.price) < 0 || Number(patch.price) > 100000)) throw catalogError('价格无效');
+    if (patch.stock !== undefined && (!Number.isSafeInteger(Number(patch.stock)) || Number(patch.stock) < 0)) throw catalogError('库存须为非负整数');
+    if (patch.status !== undefined && ![0, 1].includes(Number(patch.status))) throw catalogError('上下架状态无效');
+    return patch;
+}
+
+async function attachCatalogProduct(body, storeId, actor) {
+    if (!findStoreRecord(readOperationsStore(), storeId)) throw catalogError('请选择有效门店');
+    const patch = localProductPatch(body);
+    if (body.catalogId && body.newCatalog) throw catalogError('请选择已有库商品或新建商品');
+    const catalog = body.catalogId ? sharedCatalog.get(body.catalogId)
+        : await sharedCatalog.create({ ...(body.newCatalog || body), status: 1 }, actor);
+    if (!catalog || catalog.status !== 1) throw catalogError('库商品不存在或已归档');
+    // Re-read after the SQL await, so simultaneous store additions cannot overwrite each other.
+    const store = readProductStore({ strict: true });
+    const existing = store.products.find((product) => product.storeId === storeId && product.catalogId === String(catalog.id));
+    if (existing && !existing.deleted) throw catalogError('本店已添加此商品，请编辑已有商品', 409);
+    const id = existing ? existing.id : nextProductId(store.products);
+    const product = normalizeProduct({ ...(existing || {}), ...catalog, ...patch,
+        price: patch.price ?? 0, stock: patch.stock ?? 0, status: patch.status ?? 0,
+        id, storeId, catalogId: String(catalog.id), deleted: false });
+    if (existing) store.products = store.products.map((item) => item.id === id ? product : item);
+    else store.products.push(product);
+    writeProductStoreWithBackup(store);
+    return sharedCatalog.overlay(product);
+}
+
+function assertSharedFieldsUnchanged(body, product) {
+    if (CATALOG_FIELDS.some((field) => body[field] !== undefined && String(body[field] || '').trim() !== String(product[field] || '').trim())) {
+        throw catalogError('名称、规格和图片等公共资料只能由管理员在共享商品库修改', 403);
+    }
+    if (body.catalogId !== undefined && String(body.catalogId) !== product.catalogId) throw catalogError('不能更换已有门店商品的库商品关联');
+}
+
+function removeStoreProduct(id) {
+    const store = readProductStore({ strict: true });
+    const product = store.products.find((item) => String(item.id) === String(id) && !item.deleted);
+    if (!product) throw catalogError('商品不存在', 404);
+    Object.assign(product, { deleted: true, status: 0 });
+    writeProductStoreWithBackup(store);
 }
 
 function writeProductStoreWithBackup(store) {
@@ -2442,6 +2496,53 @@ const server = http.createServer(async (req, res) => {
         pathname = `/api${pathname.slice('/test-api'.length)}`;
     }
 
+    if (sharedCatalog && /^\/api\/(?:products(?:\/|$)|categories$|orders\/prepare$|merchant\/(?:catalog|products|overview)|admin\/(?:catalog|inventory-reviews)|voice\/)/.test(pathname)) {
+        try { await sharedCatalog.refresh(); }
+        catch (error) {
+            log(`共享商品库读取失败: ${error.code || 'DATABASE_ERROR'}`);
+            sendJSON(res, { code: 1, message: '共享商品库暂时不可用，请稍后重试' }, 503);
+            return;
+        }
+    }
+
+    const catalogMatch = pathname.match(/^\/api\/(admin|merchant)\/catalog(?:\/(\d+))?$/);
+    if (catalogMatch) {
+        const admin = catalogMatch[1] === 'admin';
+        const auth = admin ? requireAdmin(req, res) : requireMerchant(req, res);
+        if (!auth) return;
+        if (!sharedCatalog) { sendJSON(res, { code: 1, message: '当前服务未启用共享商品库', enabled: false }, 503); return; }
+        try {
+            const id = catalogMatch[2];
+            if (req.method === 'GET') {
+                const storeId = String(url.searchParams.get('storeId') || (!admin && auth.merchant.storeIds.length === 1 ? auth.merchant.storeIds[0] : '') || '');
+                if (!admin && storeId && !auth.merchant.storeIds.includes(storeId)) throw catalogError('无权访问该门店', 403);
+                const offers = readProducts();
+                let rows = id ? [sharedCatalog.get(id)].filter(Boolean) : sharedCatalog.list({
+                    search: url.searchParams.get('search') || '', includeArchived: admin });
+                if (!admin) rows = rows.filter((row) => row.status === 1);
+                if (id && !rows.length) throw catalogError('库商品不存在', 404);
+                const data = rows.map((row) => ({ ...row, id: String(row.id),
+                    ...(admin ? { storeCount: new Set(offers.filter((product) => product.catalogId === String(row.id)).map((product) => product.storeId)).size } : {}),
+                    added: !!storeId && offers.some((product) => product.storeId === storeId && product.catalogId === String(row.id)) }));
+                sendJSON(res, { code: 0, enabled: true, data: id ? data[0] : data, total: data.length });
+            } else if (admin && !id && req.method === 'POST') {
+                const body = await parseBody(req);
+                const row = await sharedCatalog.create(body || {}, `admin:${readAdminSession(req).user}`);
+                sendJSON(res, { code: 0, data: row }, 201);
+            } else if (admin && id && req.method === 'PUT') {
+                const body = await parseBody(req);
+                if (body?.status === 0 && readProducts().some((product) => product.catalogId === id && product.status === 1)) {
+                    throw catalogError('仍有门店在售，请先将这些门店商品下架再归档', 409);
+                }
+                const row = await sharedCatalog.update(id, body || {}, `admin:${readAdminSession(req).user}`);
+                sendJSON(res, { code: 0, data: row });
+            } else throw catalogError('公共商品资料仅管理员可创建或修改；商家请从新增商品提交', 403);
+        } catch (error) {
+            sendJSON(res, { code: 1, message: error.statusCode ? error.message : '商品库操作失败，请稍后重试', existing: error.existing }, error.statusCode || 503);
+        }
+        return;
+    }
+
     // ========== REST API 路由 ==========
     if (pathname === '/api/admin/session' && req.method === 'GET') {
         const session = readAdminSession(req);
@@ -2541,9 +2642,20 @@ const server = http.createServer(async (req, res) => {
         try {
             const items = normalizeInventoryItems(body && body.items);
             const products = readProducts();
+            if (sharedCatalog) {
+                const storeIds = new Set(items.map((item) => products.find((product) => product.id === item.id)?.storeId));
+                const requested = String(body.storeId || body.store || [...storeIds][0] || '');
+                if (storeIds.size !== 1 || !storeIds.has(requested)) throw new Error('订单商品必须属于同一家门店');
+                const deviceRef = body.deviceId || body.device || body.deviceSn || body.device_sn;
+                if (deviceRef) {
+                    const device = findDeviceRecord(readOperationsStore(), String(deviceRef));
+                    if (!device || device.storeId !== requested) throw new Error('设备与商品所属门店不一致');
+                }
+                body.storeId = requested;
+            }
             const pricedItems = items.map((item) => {
                 const product = products.find((candidate) => Number(candidate.id) === item.id);
-                if (!product || Number(product.status) !== 1) throw new Error(`商品不可用: ${item.name || item.id}`);
+                if (!product || Number(product.status) !== 1 || product.catalogStatus === 0) throw new Error(`商品不可用: ${item.name || item.id}`);
                 if (Number(product.stock) < item.qty) throw new Error(`${product.name} 库存不足，当前库存 ${product.stock}`);
                 const unitPrice = Number(product.price || 0);
                 if (!Number.isFinite(unitPrice) || unitPrice <= 0 || unitPrice > 100000) {
@@ -3527,6 +3639,17 @@ const server = http.createServer(async (req, res) => {
 
         if (pathname === '/api/merchant/products' && req.method === 'POST') {
             const body = await parseBody(req);
+            if (sharedCatalog) {
+                try {
+                    const storeId = String(body?.storeId || (storeIds.length === 1 ? storeIds[0] : ''));
+                    if (!storeIds.includes(storeId)) throw catalogError('只能把商品添加到自己的门店', 403);
+                    const product = await attachCatalogProduct(body || {}, storeId, `merchant:${merchant.id}`);
+                    sendJSON(res, { code: 0, message: '商品已添加到本店', data: product }, 201);
+                } catch (error) {
+                    sendJSON(res, { code: 1, message: error.statusCode ? error.message : '添加失败，请稍后重试', existing: error.existing }, error.statusCode || 503);
+                }
+                return;
+            }
             if (!body || !String(body.name || '').trim()) { sendJSON(res, { code: 1, message: '商品名称不能为空' }, 400); return; }
             try {
                 const storeId = String(body.storeId || (storeIds.length === 1 ? storeIds[0] : '') || '').trim();
@@ -3544,6 +3667,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (productIdMatch && (req.method === 'PUT' || req.method === 'DELETE')) {
+            const body = req.method === 'PUT' ? await parseBody(req) : null;
             const products = readProducts();
             const index = products.findIndex((item) => String(item.id) === productIdMatch[1]);
             if (index < 0) { sendJSON(res, { code: 1, message: '商品不存在' }, 404); return; }
@@ -3552,13 +3676,18 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
             if (req.method === 'DELETE') {
-                writeProducts(products.filter((item) => String(item.id) !== productIdMatch[1]));
+                if (sharedCatalog) removeStoreProduct(productIdMatch[1]);
+                else writeProducts(products.filter((item) => String(item.id) !== productIdMatch[1]));
                 sendJSON(res, { code: 0, message: '商品已删除' });
                 return;
             }
-            const body = await parseBody(req);
             if (!body) { sendJSON(res, { code: 1, message: '无效数据' }, 400); return; }
             try {
+                if (sharedCatalog) {
+                    assertSharedFieldsUnchanged(body, products[index]);
+                    localProductPatch(body);
+                    if (Number(body.status) === 1 && products[index].catalogStatus === 0) throw catalogError('库商品已归档，不能上架');
+                }
                 const allowed = ['name','spec','packaging','category','manufacturer','photo_front','photo_back','location','chassis_marker','shelf_number','shelf_zone','shelf_layer','shelf_x','shelf_y','shelf_z','emoji','price','stock','status'];
                 const patch = {};
                 for (const key of allowed) {
@@ -3570,7 +3699,7 @@ const server = http.createServer(async (req, res) => {
                 log(`✏️ 商家更新商品 id=${productIdMatch[1]}`);
                 sendJSON(res, { code: 0, message: '商品已更新', data: products[index] });
             } catch (error) {
-                sendJSON(res, { code: 1, message: error.message }, 400);
+                sendJSON(res, { code: 1, message: error.message }, error.statusCode || 400);
             }
             return;
         }
@@ -3648,7 +3777,7 @@ const server = http.createServer(async (req, res) => {
             if (!review) throw Object.assign(new Error('审核记录不存在'), { statusCode: 404 });
             if (req.method === 'GET') {
                 sendJSON(res, { code: 0, data: review,
-                    products: store.products.filter((product) => product.storeId === review.storeId),
+                    products: store.products.filter((product) => !product.deleted && product.storeId === review.storeId),
                     productVersion: productVersion(store.products, review.storeId) });
             } else {
                 if (body?.action === 'approve' && !findStoreRecord(readOperationsStore(), review.storeId)) {
@@ -3856,7 +3985,7 @@ const server = http.createServer(async (req, res) => {
             const category = url.searchParams.get('category') || '';
             const storeId = url.searchParams.get('storeId') || '';
             const includeInactive = url.searchParams.get('include_inactive') === '1' && Boolean(readAdminSession(req));
-            let source = includeInactive ? readProducts() : readProducts().filter((item) => Number(item.status) === 1);
+            let source = includeInactive ? readProducts() : readProducts().filter((item) => Number(item.status) === 1 && item.catalogStatus !== 0);
             if (storeId === 'unassigned') source = source.filter((item) => !item.storeId);
             else if (storeId) source = source.filter((item) => item.storeId === storeId);
             const rows = filterProducts(source, { search, category });
@@ -3872,7 +4001,7 @@ const server = http.createServer(async (req, res) => {
     if (singleMatch && req.method === 'GET') {
         try {
             const product = readProducts().find((item) => String(item.id) === singleMatch[1]);
-            if (!product || (Number(product.status) !== 1 && !readAdminSession(req))) {
+            if (!product || ((Number(product.status) !== 1 || product.catalogStatus === 0) && !readAdminSession(req))) {
                 sendJSON(res, { code: 1, message: '商品不存在' }, 404);
                 return;
             }
@@ -3887,6 +4016,15 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/products' && req.method === 'POST') {
         if (!requireAdmin(req, res)) return;
         const body = await parseBody(req);
+        if (sharedCatalog) {
+            try {
+                const product = await attachCatalogProduct(body || {}, String(body?.storeId || body?.store_id || ''), `admin:${readAdminSession(req).user}`);
+                sendJSON(res, { code: 0, message: '添加成功', id: product.id, data: product });
+            } catch (error) {
+                sendJSON(res, { code: 1, message: error.statusCode ? error.message : '添加失败，请稍后重试', existing: error.existing }, error.statusCode || 503);
+            }
+            return;
+        }
         if (!body || !body.name) { sendJSON(res, { code: 1, message: '商品名称不能为空' }, 400); return; }
         try {
             const products = readProducts();
@@ -3911,6 +4049,13 @@ const server = http.createServer(async (req, res) => {
             const products = readProducts();
             const index = products.findIndex((item) => String(item.id) === updateMatch[1]);
             if (index < 0) { sendJSON(res, { code: 1, message: '商品不存在' }, 404); return; }
+            if (sharedCatalog) {
+                assertSharedFieldsUnchanged(body, products[index]);
+                localProductPatch(body);
+                if (body.storeId !== undefined && body.storeId !== products[index].storeId) throw catalogError('不能转移门店商品，请在目标门店重新选库添加');
+                if (body.store_id !== undefined && body.store_id !== products[index].storeId) throw catalogError('不能转移门店商品');
+                if (Number(body.status) === 1 && products[index].catalogStatus === 0) throw catalogError('库商品已归档，不能上架');
+            }
             const allowed = ['name','spec','packaging','category','manufacturer','photo_front','photo_back','location','storeId','store_id','chassis_marker','shelf_number','shelf_zone','shelf_layer','shelf_x','shelf_y','shelf_z','emoji','price','stock','status'];
             const patch = {};
             for (const key of allowed) {
@@ -3934,6 +4079,11 @@ const server = http.createServer(async (req, res) => {
     if (delMatch && req.method === 'DELETE') {
         if (!requireAdmin(req, res)) return;
         try {
+            if (sharedCatalog) {
+                removeStoreProduct(delMatch[1]);
+                sendJSON(res, { code: 0, message: '已从门店移除，共享库商品保留' });
+                return;
+            }
             const before = readProducts();
             const products = before.filter((item) => String(item.id) !== delMatch[1]);
             writeProducts(products);
@@ -3949,7 +4099,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/categories' && req.method === 'GET') {
         try {
             const includeInactive = url.searchParams.get('include_inactive') === '1' && Boolean(readAdminSession(req));
-            const source = includeInactive ? readProducts() : readProducts().filter((item) => Number(item.status) === 1);
+            const source = includeInactive ? readProducts() : readProducts().filter((item) => Number(item.status) === 1 && item.catalogStatus !== 0);
             const categories = [...new Set(source.map((item) => item.category).filter(Boolean))].sort();
             sendJSON(res, { code: 0, data: categories });
         } catch (e) {
@@ -4369,7 +4519,7 @@ const server = http.createServer(async (req, res) => {
     });
 });
 
-server.listen(PORT, HOST, () => {
+const startHttpServer = () => server.listen(PORT, HOST, () => {
     recoverInterruptedInventoryScan();
     migrateUncreatedPaymentOrders();
     log(`HTTP 服务已启动: http://${HOST}:${PORT}`);
@@ -4422,6 +4572,17 @@ server.listen(PORT, HOST, () => {
     }, Math.max(5000, CHASSIS_MAP_REFRESH_INTERVAL_MS));
     chassisMapRefreshTimer.unref?.();
 });
+
+if (sharedCatalog) {
+    sharedCatalog.refresh().then(() => {
+        const products = readProductStore({ strict: true }).products;
+        if (products.some((product) => !product.catalogId)) throw new Error('门店商品尚未关联共享库，请先执行迁移');
+        startHttpServer();
+    }).catch((error) => {
+        console.error('共享商品库启动失败:', error.statusCode ? error.message : (error.code || '请检查数据库和商品迁移'));
+        process.exit(1);
+    });
+} else startHttpServer();
 
 async function shutdownServerOnSignal(signal) {
     if (processShutdownStarted) {

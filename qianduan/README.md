@@ -734,3 +734,19 @@ sudo nginx -t
 - 显示“后端在线，机械臂待启动”：WebSocket 正常，但 worker 尚未准备完成。
 - 收起后出现金额为零的订单提示：前端使用了旧缓存；新版按 `orderId` 区分收起与订单完成。
 - FRP 在线但无法运动：隧道在线不等于 Node 服务、worker、DOBOT、相机或 Aero Hand 已就绪。
+
+## 共享商品库（云端）
+
+设置 `CATALOG_DB=mysql` 并提供 `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USER`、`MYSQL_PASSWORD`、`MYSQL_DATABASE` 后，商品的名称、规格、图片等公共资料保存在 MySQL 的 `catalog_products` 表，修改记录写入 `catalog_product_changes`。商家页可搜索商品库并把商品上架到本店；库中没有时可创建共享商品，管理员页负责修改公共资料。
+
+本次接入保留门店商品 JSON 中的商品 ID、价格、库存、上下架状态、货位、扫描审核和订单数据，并以 `catalogId` 关联共享资料。因此订单与退款流程无需迁移，门店价格和库存仍然独立。迁移前先执行 dry-run：
+
+```bash
+export PRODUCTS_DB_FILE=/var/lib/grasp-qianduan/products.json
+node tools/migrate-shared-catalog.js
+node tools/migrate-shared-catalog.js --apply
+```
+
+`--apply` 会在商品文件旁生成备份并原子写入；服务应在迁移时停止。共享数据库不可用时相关商品接口会返回 503，避免用空缓存覆盖数据。未配置 `CATALOG_DB=mysql` 时仍使用原有文件模式。
+
+迁移账号需要建表权限；正式运行账号只需 `catalog_products` 的 SELECT/INSERT/UPDATE 和 `catalog_product_changes` 的 SELECT/INSERT 权限。环境变量文件不能提交 Git。迁移后发生新写入时，不能只切回文件模式来回滚：应先暂停写入并导出最新共享资料，协调恢复兼容的服务、页面和数据，以免丢失期间的修改。原有 MySQL 评估表不是本次正式商品库的读取源。

@@ -72,7 +72,8 @@
         .form-input:focus { border-color: var(--primary); }
         .login-error { min-height: 22px; margin-bottom: 8px; color: var(--danger); font-size: 0.85rem; }
         .login-submit { width: 100%; justify-content: center; }
-        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .form-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .form-row > * { min-width: 0; }
         .form-select { width: 100%; padding: 10px 12px; border: 2px solid var(--gray-200); border-radius: 8px; font-size: 0.9rem; outline: none; background: white; font-family: inherit; }
         .form-select:focus { border-color: var(--primary); }
         .modal-actions { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; }
@@ -93,6 +94,8 @@
         .mc-page { display: flex; flex-direction: column; gap: 20px; }
         .mc-product-grid { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 20px; align-items: start; }
         .mc-form-card { position: sticky; top: 84px; max-height: calc(100vh - 104px); overflow-y: auto; }
+        .mc-product-grid > * { min-width: 0; }
+        .mc-form-card input[type=file] { max-width: 100%; }
         .product-thumb { width: 46px; height: 46px; border-radius: 6px; object-fit: cover; border: 1px solid var(--gray-200); display: block; background: var(--gray-50); }
         .product-thumb.fallback { display: flex; align-items: center; justify-content: center; font-size: 1.3rem; }
         @media (max-width: 1000px) {
@@ -193,6 +196,17 @@
                         <div class="card-title"><span id="productFormTitle">新增商品</span>
                             <button class="btn btn-primary btn-sm" type="button" onclick="resetProductForm()">清空</button>
                         </div>
+                        <div class="toolbar" id="catalogModes" role="group" aria-label="新增商品来源">
+                            <label><input type="radio" name="catalogMode" value="select" checked onchange="setCatalogMode('select')"> 从商品库选择</label>
+                            <label><input type="radio" name="catalogMode" value="new" onchange="setCatalogMode('new')"> 库中没有，新建</label>
+                        </div>
+                        <div id="merchantCatalogPicker">
+                            <form class="toolbar" onsubmit="event.preventDefault();loadMerchantCatalog()">
+                                <input class="form-input" id="catalogSearch" placeholder="搜索名称、规格、条码" aria-label="搜索共享商品库">
+                                <button type="submit" class="btn btn-primary btn-sm">搜索</button>
+                            </form>
+                            <div id="catalogSearchResults" style="max-height:280px;overflow:auto;margin-bottom:16px;">正在读取商品库</div>
+                        </div>
                         <form onsubmit="return saveMerchantProduct(event)">
                             <div class="form-group"><label><span style="color:var(--danger)">*</span> 商品名称</label><input class="form-input" id="productFormName" required></div>
                             <div class="form-group"><label>归属门店</label><span id="productFormStoreWrap"></span></div>
@@ -203,6 +217,10 @@
                             <div class="form-row">
                                 <div class="form-group"><label>生产商</label><input class="form-input" id="productFormManufacturer"></div>
                                 <div class="form-group"><label>图标 Emoji</label><input class="form-input" id="productFormEmoji" value="📦"></div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group"><label>商品条码</label><input class="form-input" id="productFormBarcode" inputmode="numeric"></div>
+                                <div class="form-group"><label>包装</label><input class="form-input" id="productFormPackaging" placeholder="如：瓶装 / 6瓶装"></div>
                             </div>
                             <div class="form-row">
                                 <div class="form-group"><label><span style="color:var(--danger)">*</span> 价格</label><input class="form-input" id="productFormPrice" type="number" step="0.01" min="0" value="0" required></div>
@@ -363,7 +381,7 @@
             const target = MERCHANT_PAGES.has(page) ? page : 'dashboard';
             document.querySelectorAll('.mc-page').forEach((section) => { section.hidden = section.dataset.page !== target; });
             document.querySelectorAll('.mc-nav-item').forEach((item) => { item.classList.toggle('active', item.dataset.page === target); });
-            if (target === 'products') { loadMerchantProducts(); loadMerchantMarkers(); }
+            if (target === 'products') { loadMerchantProducts(); loadMerchantMarkers(); loadMerchantCatalog(); }
             if (target === 'devices' || target === 'dashboard') loadOverview();
             if (target === 'orders') loadOrders(orderPage || 1);
             if (target === 'inventory-scan') mcLoadScan();
@@ -407,6 +425,7 @@
             switchMerchantPage('dashboard');
             await loadOverview();
             await Promise.all([loadMerchantProducts(), loadOrders(1), mcLoadScan()]);
+            await loadMerchantCatalog();
             startMerchantRefresh();
         }
 
@@ -480,7 +499,9 @@
                 document.getElementById('deviceCount').textContent = `${(data.devices || []).length} 台`;
                 renderStores(data.stores || []);
                 renderDevices(data.devices || []);
-                document.getElementById('productFormStoreWrap').innerHTML = storeSelectHtml(editingProductId ? currentEditingStoreId() : '');
+                const selectedStore = document.getElementById('productFormStore')?.value;
+                document.getElementById('productFormStoreWrap').innerHTML = storeSelectHtml(editingProductId ? currentEditingStoreId() : selectedStore);
+                document.getElementById('productFormStore')?.addEventListener('change', () => loadMerchantCatalog());
                 document.getElementById('refreshStatus').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
             } catch (error) {
                 showToast(error.message, 'error');
@@ -601,6 +622,9 @@
             const product = merchantProducts.find((row) => row.id === productId);
             if (!product) { showToast('商品不存在，请刷新', 'error'); return; }
             editingProductId = productId;
+            selectedCatalogId = product.catalogId || null;
+            document.getElementById('productFormBarcode').value = product.barcode || '';
+            document.getElementById('productFormPackaging').value = product.packaging || '';
             document.getElementById('productFormTitle').textContent = '编辑商品';
             document.getElementById('productFormSubmit').textContent = '保存修改';
             const value = (key, fallback = '') => (product[key] !== undefined && product[key] !== null ? product[key] : fallback);
@@ -621,10 +645,14 @@
             document.getElementById('productPhotoFrontPreview').innerHTML = product.photo_front ? `<img src="${escapeAttr(product.photo_front)}" alt="正面">` : '未选择';
             document.getElementById('productPhotoBackPreview').innerHTML = product.photo_back ? `<img src="${escapeAttr(product.photo_back)}" alt="反面">` : '未选择';
             switchMerchantPage('products');
+            updateCatalogFormMode();
         }
 
         function resetProductForm() {
             editingProductId = null;
+            selectedCatalogId = null;
+            document.getElementById('productFormBarcode').value = '';
+            document.getElementById('productFormPackaging').value = '';
             document.getElementById('productFormTitle').textContent = '新增商品';
             document.getElementById('productFormSubmit').textContent = '新增商品';
             ['productFormName', 'productFormSpec', 'productFormCategory', 'productFormManufacturer', 'productFormLocation', 'productFormShelfLayer'].forEach((id) => { document.getElementById(id).value = ''; });
@@ -638,6 +666,8 @@
             document.getElementById('productPhotoFrontPreview').innerHTML = '未选择';
             document.getElementById('productPhotoBackPreview').innerHTML = '未选择';
             document.getElementById('productFormStoreWrap').innerHTML = storeSelectHtml('');
+            document.getElementById('productFormStore')?.addEventListener('change', () => loadMerchantCatalog());
+            updateCatalogFormMode();
         }
 
         async function loadMerchantMarkers() {
@@ -682,6 +712,7 @@
         }
 
         async function uploadMerchantImage(side, input) {
+            if (catalogMode !== 'new' || editingProductId) return;
             const file = input.files && input.files[0];
             if (!file) return;
             const form = new FormData();
@@ -705,6 +736,8 @@
             event.preventDefault();
             const storeField = document.getElementById('productFormStore');
             const payload = {
+                barcode: document.getElementById('productFormBarcode').value.trim(),
+                packaging: document.getElementById('productFormPackaging').value.trim(),
                 name: document.getElementById('productFormName').value.trim(),
                 spec: document.getElementById('productFormSpec').value.trim(),
                 category: document.getElementById('productFormCategory').value.trim(),
@@ -720,6 +753,16 @@
                 photo_back: document.getElementById('productPhotoBack').value
             };
             if (storeField) payload.storeId = storeField.value;
+            if (editingProductId || catalogMode === 'select') {
+                if (!editingProductId && !selectedCatalogId) { showToast('请先从商品库选择商品', 'error'); return false; }
+                for (const key of catalogPublicFields) delete payload[key];
+                if (!editingProductId) payload.catalogId = selectedCatalogId;
+            } else {
+                payload.newCatalog = Object.fromEntries(catalogPublicFields.map((key) => [key, payload[key] || '']));
+                for (const key of catalogPublicFields) delete payload[key];
+            }
+            const submitButton = document.getElementById('productFormSubmit');
+            submitButton.disabled = true;
             try {
                 const res = await merchantFetch(editingProductId ? `/api/merchant/products/${editingProductId}` : '/api/merchant/products', {
                     method: editingProductId ? 'PUT' : 'POST',
@@ -727,12 +770,21 @@
                     body: JSON.stringify(payload)
                 });
                 const json = await res.json();
-                if (!res.ok || json.code !== 0) throw new Error(json.message || '保存失败');
+                if (!res.ok || json.code !== 0) {
+                    if (json.existing && window.confirm(`${json.message}\n${json.existing.name} ${json.existing.spec}\n是否改为选择这个库商品？`)) {
+                        selectCatalogProduct(json.existing);
+                        return false;
+                    }
+                    throw new Error(json.message || '保存失败');
+                }
                 showToast(json.message || '商品已保存', 'success');
                 resetProductForm();
                 await loadMerchantProducts();
+                await loadMerchantCatalog();
             } catch (error) {
                 showToast(error.message, 'error');
+            } finally {
+                submitButton.disabled = false;
             }
             return false;
         }
@@ -1131,5 +1183,6 @@
             }
         }
     </script>
+    <script src="merchant_catalog.js?v=1"></script>
 </body>
 </html>
