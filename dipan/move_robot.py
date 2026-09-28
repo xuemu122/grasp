@@ -16,7 +16,7 @@ PORT = int(os.getenv("CHASSIS_PORT", os.getenv("MOVE_ROBOT_PORT", "31001")))
 
 # 目标点位名称
 MARKER_SHELF = os.getenv("MARKER_SHELF", "huojia1")
-MARKER_CHARGE = "charge_point_1F_35744"
+MARKER_CHARGE = "charge_point_1F_40953"
 MARKER_PLACE = os.getenv("MARKER_PLACE", "fangzhi")
 DEFAULT_WAIT_TIMEOUT_S = int(os.getenv("MOVE_WAIT_TIMEOUT_S", "180"))
 MARKER_DISTANCE_TOLERANCE_M = float(os.getenv("CHASSIS_NAVIGATION_DISTANCE_TOLERANCE_M", "0.15"))
