@@ -7,6 +7,7 @@ import numpy as np
 import yaml
 import time
 import json
+import os
 import argparse
 from pathlib import Path
 from dataclasses import dataclass
@@ -513,6 +514,175 @@ def _assess_lighting(color_img):
     return score, grade, color_bgr, mean_v, std_v, extra
 
 
+def _fast_light_stats(color_img):
+    """快速计算 mean_v / std_v（中心区），比 _assess_lighting 便宜很多。
+
+    仅做 HSV 转换 + 中心区标准差，每帧调用开销 <1ms。
+    返回 (mean_v, std_v)。输入无效时返回 (255.0, 0.0)，保证不会触发增强。
+    """
+    if color_img is None or color_img.size == 0:
+        return 255.0, 0.0
+    try:
+        hsv = cv2.cvtColor(color_img, cv2.COLOR_BGR2HSV)
+        v = hsv[:, :, 2]
+        h, w = v.shape
+        v_center = v[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4]
+        if v_center.size == 0:
+            return float(np.mean(v)), 0.0
+        return float(np.mean(v)), float(np.std(v_center))
+    except Exception:
+        return 255.0, 0.0
+
+
+def _enhance_low_light(color_img,
+                       mean_v: float,
+                       std_v: float,
+                       clahe_clip: float = 2.5,
+                       clahe_tile: int = 8,
+                       gamma: float = 1.0,
+                       awb: bool = True):
+    """弱光环境下的图像增强。
+
+    用于在 YOLO 推理前抬亮暗部细节，提高弱光场景下的召回率。
+    该函数返回的图像仅用于检测，原始 color_img 不被修改。
+
+    Args:
+        color_img: BGR 图像 (numpy.uint8)
+        mean_v: 输入图的 HSV-V 均值（来自 _assess_lighting）
+        std_v:   输入图中心区 HSV-V 标准差
+        clahe_clip: CLAHE 限制对比度，0 表示不启用
+        clahe_tile: CLAHE 网格大小（按短边比例缩放）
+        gamma: Gamma 矫正值，1.0 表示不启用；<1.0 提亮，>1.0 压暗
+        awb:    是否做简易灰度世界白平衡（去色偏）
+
+    Returns:
+        增强后的 BGR 图像（numpy.uint8）；输入若为 None/空则原样返回。
+    """
+    if color_img is None or color_img.size == 0:
+        return color_img
+
+    out = color_img
+
+    # 1. 简易灰度世界白平衡（去偏色）
+    if awb:
+        try:
+            avg_b = float(np.mean(out[:, :, 0]))
+            avg_g = float(np.mean(out[:, :, 1]))
+            avg_r = float(np.mean(out[:, :, 2]))
+            avg_gray = (avg_b + avg_g + avg_r) / 3.0
+            if avg_gray > 1.0:
+                scale_b = avg_gray / max(avg_b, 1.0)
+                scale_g = avg_gray / max(avg_g, 1.0)
+                scale_r = avg_gray / max(avg_r, 1.0)
+                # 限制缩放幅度，避免极端色温时把图染花
+                scale_b = float(np.clip(scale_b, 0.7, 1.4))
+                scale_g = float(np.clip(scale_g, 0.7, 1.4))
+                scale_r = float(np.clip(scale_r, 0.7, 1.4))
+                balanced = out.astype(np.float32)
+                balanced[:, :, 0] = np.clip(balanced[:, :, 0] * scale_b, 0, 255)
+                balanced[:, :, 1] = np.clip(balanced[:, :, 1] * scale_g, 0, 255)
+                balanced[:, :, 2] = np.clip(balanced[:, :, 2] * scale_r, 0, 255)
+                out = balanced.astype(np.uint8)
+        except Exception:
+            pass
+
+    # 2. CLAHE：在 LAB 空间仅作用于 L 通道，避免色相漂移
+    if clahe_clip and clahe_clip > 0:
+        try:
+            lab = cv2.cvtColor(out, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
+            tile = max(2, int(clahe_tile))
+            clahe = cv2.createCLAHE(clipLimit=float(clahe_clip), tileGridSize=(tile, tile))
+            l = clahe.apply(l)
+            out = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+        except Exception:
+            pass
+
+    # 3. Gamma 矫正：抬亮暗部 (<1) 或压暗过曝 (>1)
+    # 约定：gamma < 1 提亮，gamma > 1 压暗。即 output = input^gamma
+    if gamma and abs(gamma - 1.0) > 1e-3:
+        try:
+            g = float(max(gamma, 0.01))
+            table = np.clip(((np.arange(256) / 255.0) ** g) * 255.0, 0, 255).astype(np.uint8)
+            out = cv2.LUT(out, table)
+        except Exception:
+            pass
+
+    return out
+
+
+# ---- 中文文本绘制（对比图/诊断图专用）-------------------------------
+# cv2.putText 基于 Hershey 字体，无法渲染中文；这里优先用 PIL + 系统 CJK 字体，
+# 找不到字体时回退到 cv2.putText（仅 ASCII），保证任何环境都能出图。
+_CJK_FONT_PATHS = (
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Bold.otf",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+)
+_cjk_font_cache: Dict[int, object] = {}
+
+
+def _get_cjk_font(size: int):
+    """按字号获取可渲染中文的 PIL 字体；不可用时返回 None（结果缓存）。"""
+    if size in _cjk_font_cache:
+        return _cjk_font_cache[size]
+    font = None
+    try:
+        from PIL import ImageFont
+        for path in _CJK_FONT_PATHS:
+            if os.path.exists(path):
+                try:
+                    font = ImageFont.truetype(path, size)
+                    break
+                except Exception:
+                    continue
+    except Exception:
+        font = None
+    _cjk_font_cache[size] = font
+    return font
+
+
+def _draw_texts(img, items):
+    """批量在 BGR 图像上绘制文本，支持中文。
+
+    items: [(text, (x, y), size, (b, g, r)), ...]，(x, y) 为文本左上角。
+    优先 PIL（中文清晰）；无 CJK 字体时回退 cv2.putText（中文会被替换为 ?）。
+    返回绘制后的图像。
+    """
+    if not items:
+        return img
+
+    has_font = _get_cjk_font(16) is not None
+    if has_font:
+        try:
+            from PIL import Image, ImageDraw
+            pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(pil)
+            ok = True
+            for text, (x, y), size, (b, g, r) in items:
+                font = _get_cjk_font(size)
+                if font is None:
+                    ok = False
+                    break
+                draw.text((int(x), int(y)), str(text), font=font, fill=(int(r), int(g), int(b)))
+            if ok:
+                return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+        except Exception:
+            pass
+
+    # 回退：cv2.putText（仅 ASCII 安全）
+    for text, (x, y), size, (b, g, r) in items:
+        safe = str(text).encode("ascii", "replace").decode("ascii")
+        scale = max(0.3, size / 30.0)
+        cv2.putText(img, safe, (int(x), int(y) + size), cv2.FONT_HERSHEY_SIMPLEX,
+                    scale, (int(b), int(g), int(r)), 1, cv2.LINE_AA)
+    return img
+
+
 def draw_detection(frame, result, is_selected=False):
     """绘制单个检测结果"""
     x1, y1, x2, y2 = result.bbox
@@ -563,9 +733,11 @@ def draw_detection(frame, result, is_selected=False):
     return frame
 
 
-def draw_info_panel(frame, detections, fps, camera_mode, light_info=None):
+def draw_info_panel(frame, detections, fps, camera_mode, light_info=None, enhance_info=None):
     """绘制信息面板
     light_info: (score, grade, color_bgr, mean_v, std_v, extra_dict) or None
+    enhance_info: dict or None, e.g. {"mode": "auto", "applied": True, "reason": "dark",
+                                       "enhanced_frames": 12, "total_frames": 30}
     """
     panel_w = 300
     h, w = frame.shape[:2]
@@ -593,6 +765,31 @@ def draw_info_panel(frame, detections, fps, camera_mode, light_info=None):
         y += 2
     else:
         y = 130
+
+    # 弱光增强状态
+    if enhance_info:
+        mode = enhance_info.get("mode", "off")
+        applied = enhance_info.get("applied", False)
+        reason = enhance_info.get("reason", "off")
+        enhanced_n = enhance_info.get("enhanced_frames", 0)
+        if mode == "off":
+            tag = "关闭"
+            tag_color = (150, 150, 150)
+        elif applied:
+            reason_cn = {"dark": "弱光", "low_contrast": "低对比度", "force": "强制"}.get(reason, reason)
+            tag = f"ON({reason_cn})"
+            tag_color = (0, 255, 120)
+        else:
+            tag = "ON(无需)"
+            tag_color = (180, 180, 180)
+        cv2.putText(panel, f"补光增强: {tag}", (10, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, tag_color, 1)
+        y += 20
+        if mode != "off":
+            cv2.putText(panel, f"  本会话增强:{enhanced_n}帧", (10, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1)
+            y += 20
+        y += 2
 
     for i, det in enumerate(detections[:5]):  # 最多显示5个
         sp = det.shelf_pos
@@ -640,8 +837,18 @@ class RetailProductLocatorSystem:
                  raw_conf_threshold: float = 0.01,
                  class_conf_thresholds: Optional[Dict[int, float]] = None,
                  use_ocr: bool = False,
-                 ocr_interval: int = 90):
-        
+                 ocr_interval: int = 90,
+                 enhance_mode: str = "auto",
+                 light_threshold: float = 90.0,
+                 clahe_clip: float = 2.5,
+                 clahe_tile: int = 8,
+                 enhance_gamma: float = 1.0,
+                 enhance_awb: bool = True,
+                 enhance_compare_enable: Optional[bool] = None,
+                 enhance_compare_path: Optional[str] = None,
+                 enhance_compare_interval: Optional[int] = None,
+                 enhance_compare_dir: Optional[str] = None):
+
         print(f"[模型] 加载 YOLO 模型: {model_path}")
         if not Path(model_path).exists():
             print(f"[模型][警告] 权重文件不存在: {model_path}")
@@ -687,6 +894,60 @@ class RetailProductLocatorSystem:
         self.prev_time = time.time()
         self.fps = 0.0
         self.frame_count = 0
+
+        # 弱光增强配置（按需对 YOLO 输入做 CLAHE + 白平衡 + Gamma）
+        #   auto:   仅当 mean_v < light_threshold 时启用
+        #   force:  每帧都启用
+        #   off:    不启用
+        self.enhance_mode = enhance_mode.lower()
+        self.light_threshold = float(light_threshold)
+        self.clahe_clip = float(clahe_clip)
+        self.clahe_tile = int(clahe_tile)
+        self.enhance_gamma = float(enhance_gamma)
+        self.enhance_awb = bool(enhance_awb)
+        # 统计：本会话内被增强的帧数和原因
+        self.enhanced_frames = 0
+        self.enhanced_by_reason = {"dark": 0, "low_contrast": 0, "force": 0}
+        self._last_enhance_applied = False
+        self._last_enhance_reason = "off"
+        if self.enhance_mode not in ("auto", "force", "off"):
+            print(f"[增强] 未知 enhance_mode={enhance_mode}, 回退到 auto")
+            self.enhance_mode = "auto"
+        print(f"[增强] 模式={self.enhance_mode} 触发阈值 mean_v<{self.light_threshold:.0f} "
+              f"clahe_clip={self.clahe_clip} tile={self.clahe_tile} "
+              f"gamma={self.enhance_gamma} awb={self.enhance_awb}")
+
+        # 弱光增强前后对比图（自动保存，便于肉眼核对补光是否有效）
+        # 环境变量：ENHANCE_COMPARE_ENABLE / ENHANCE_COMPARE_PATH /
+        #          ENHANCE_COMPARE_DIR / ENHANCE_COMPARE_INTERVAL
+        if enhance_compare_enable is None:
+            enhance_compare_enable = os.getenv("ENHANCE_COMPARE_ENABLE", "1").lower() in ("1", "true", "yes", "on")
+        if enhance_compare_path is None:
+            enhance_compare_path = os.getenv("ENHANCE_COMPARE_PATH", "/tmp/enhance_compare_latest.jpg")
+        if enhance_compare_dir is None:
+            enhance_compare_dir = os.getenv("ENHANCE_COMPARE_DIR", "").strip()
+        if enhance_compare_interval is None:
+            try:
+                enhance_compare_interval = int(os.getenv("ENHANCE_COMPARE_INTERVAL", "30"))
+            except ValueError:
+                enhance_compare_interval = 30
+        self.enhance_compare_enable = bool(enhance_compare_enable)
+        self.enhance_compare_path = enhance_compare_path
+        self.enhance_compare_dir = enhance_compare_dir or None
+        self.enhance_compare_interval = max(1, int(enhance_compare_interval))
+        # 统计
+        self.enhance_compare_saved = 0
+        self._last_compare_frame = -10**9
+        # 最近一次增强前后的图像（供外部如失败诊断复用）
+        self.last_enhance_before = None
+        self.last_enhance_after = None
+        self.last_enhance_light = {}   # {"before": (mean,std), "after": (mean,std)}
+        if self.enhance_compare_enable:
+            print(f"[增强对比图] 开启 路径={self.enhance_compare_path} "
+                  f"间隔={self.enhance_compare_interval}帧"
+                  + (f" 存档目录={self.enhance_compare_dir}" if self.enhance_compare_dir else ""))
+        else:
+            print("[增强对比图] 关闭")
 
     def _threshold_for_class(self, class_id: int) -> float:
         return self.class_conf_thresholds.get(class_id, self.conf_threshold)
@@ -827,9 +1088,54 @@ class RetailProductLocatorSystem:
         """处理单帧"""
         results_list = []
 
+        # 弱光增强：仅对送入 YOLO 的图像副本做增强，原始 color_img 不动
+        # （深度图、绘制面板仍使用原始图，保持 RGB-D 对齐、可视化真实）
+        yolo_input = color_img
+        self._last_enhance_applied = False
+        self._last_enhance_reason = "off"
+        if self.enhance_mode != "off" and color_img is not None:
+            mean_v, std_v = _fast_light_stats(color_img)
+            need_dark = mean_v < self.light_threshold
+            need_low_contrast = std_v < 12.0 and mean_v < 130.0
+            if self.enhance_mode == "force":
+                do_enhance = True
+                reason = "force"
+            elif need_dark:
+                do_enhance = True
+                reason = "dark"
+            elif need_low_contrast:
+                do_enhance = True
+                reason = "low_contrast"
+            else:
+                do_enhance = False
+                reason = "off"
+            if do_enhance:
+                yolo_input = _enhance_low_light(
+                    color_img,
+                    mean_v=mean_v,
+                    std_v=std_v,
+                    clahe_clip=self.clahe_clip,
+                    clahe_tile=self.clahe_tile,
+                    gamma=self.enhance_gamma,
+                    awb=self.enhance_awb,
+                )
+                self._last_enhance_applied = True
+                self._last_enhance_reason = reason
+                self.enhanced_frames += 1
+                self.enhanced_by_reason[reason] = self.enhanced_by_reason.get(reason, 0) + 1
+                # 记录本帧增强前后图像 + 光照数据，供对比图/失败诊断使用
+                before_stats = (mean_v, std_v)
+                after_mean, after_std = _fast_light_stats(yolo_input)
+                self.last_enhance_before = color_img.copy()
+                self.last_enhance_after = yolo_input.copy()
+                self.last_enhance_light = {
+                    "before": before_stats,
+                    "after": (after_mean, after_std),
+                }
+
         # YOLO 预测
         results = self.model.predict(
-            source=color_img,
+            source=yolo_input,
             conf=self.raw_conf_threshold,
             verbose=False,
         )
@@ -937,7 +1243,115 @@ class RetailProductLocatorSystem:
                 ocr_text=ocr_text,
             ))
 
+        # 弱光增强对比图：仅在本次触发了增强、且达到最小间隔时保存
+        if (self.enhance_compare_enable and self._last_enhance_applied
+                and (self.frame_counter - self._last_compare_frame) >= self.enhance_compare_interval):
+            if self.save_enhance_compare(detections=results_list):
+                self._last_compare_frame = self.frame_counter
+
         return results_list
+
+    def save_enhance_compare(self, before=None, after=None, detections=None,
+                             reason=None, light=None, path=None, save_archive=True):
+        """生成并保存"增强前 vs 增强后"对比图。
+
+        布局：左右并排（左=增强前 BEFORE，右=增强后 AFTER），
+        顶部叠加触发原因、光照均值/对比度变化、增强参数，
+        两侧分别绘制各自图像上的 YOLO 检测框（坐标一致，便于直观看召回差异）。
+
+        Args:
+            before/after: 图像；默认使用最近一次增强记录。
+            detections: DetectionResult 列表；默认使用当前帧检测结果。
+            reason: 触发原因；默认使用最近一次。
+            light: {"before": (mean,std), "after": (mean,std)}；默认使用最近记录。
+            path: 输出路径；默认 self.enhance_compare_path。
+            save_archive: 是否同时按时间戳存档到 self.enhance_compare_dir。
+
+        Returns:
+            实际保存的主文件路径；失败返回 None。
+        """
+        if before is None:
+            before = self.last_enhance_before
+        if after is None:
+            after = self.last_enhance_after
+        if before is None or after is None:
+            return None
+        if reason is None:
+            reason = self._last_enhance_reason
+        if light is None:
+            light = self.last_enhance_light or {}
+        if detections is None:
+            detections = self.detections or []
+        if path is None:
+            path = self.enhance_compare_path
+        if not path:
+            return None
+
+        try:
+            # 统一尺寸，保证 hstack 可行
+            if after.shape[:2] != before.shape[:2]:
+                after = cv2.resize(after, (before.shape[1], before.shape[0]))
+
+            left = before.copy()
+            right = after.copy()
+
+            # 检测框体（bbox 坐标基于同一分辨率，可直接复用）
+            for det in detections:
+                x1, y1, x2, y2 = [int(v) for v in det.bbox]
+                color = (0, 255, 0) if det.confidence > 0.7 else (0, 165, 255)
+                for canvas in (left, right):
+                    cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
+
+            # 标题条 + 拼接
+            _, w = left.shape[:2]
+            bar_h = 66
+            bar = np.full((bar_h, w * 2, 3), 28, dtype=np.uint8)
+            compare = np.vstack([bar, np.hstack([left, right])])
+            cv2.line(compare, (w, 0), (w, compare.shape[0]), (255, 255, 255), 1)
+
+            # 文本统一绘制（支持中文）
+            reason_cn = {"dark": "弱光", "low_contrast": "低对比度", "force": "强制"}.get(reason, str(reason))
+            b_mean, b_std = light.get("before", (0.0, 0.0))
+            a_mean, a_std = light.get("after", (0.0, 0.0))
+            text_items = [
+                ("增强前 BEFORE (原始)", (10, 3), 19, (0, 165, 255)),
+                (f"mean_v={b_mean:.0f}  std_v={b_std:.0f}", (10, 26), 15, (205, 205, 205)),
+                ("增强后 AFTER", (w + 10, 3), 19, (0, 255, 120)),
+                (f"mean_v={a_mean:.0f}  std_v={a_std:.0f}", (w + 10, 26), 15, (205, 205, 205)),
+                (f"触发={reason_cn}  CLAHE(clip={self.clahe_clip},tile={self.clahe_tile})  "
+                 f"gamma={self.enhance_gamma}  awb={self.enhance_awb}  "
+                 f"检测数={len(detections)}(框为增强后结果)",
+                 (10, 47), 14, (230, 230, 230)),
+            ]
+            for det in detections:
+                x1, y1, x2, y2 = [int(v) for v in det.bbox]
+                color = (0, 255, 0) if det.confidence > 0.7 else (0, 165, 255)
+                label = f"{det.class_name} {det.confidence:.2f}"
+                ty = y1 - 21 if y1 >= 21 else y2 + 3
+                text_items.append((label, (x1, ty + bar_h), 15, color))
+                text_items.append((label, (x1 + w, ty + bar_h), 15, color))
+
+            compare = _draw_texts(compare, text_items)
+
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            ok = cv2.imwrite(path, compare)
+
+            if save_archive and self.enhance_compare_dir and ok:
+                try:
+                    os.makedirs(self.enhance_compare_dir, exist_ok=True)
+                    stamp = time.strftime("%Y%m%d_%H%M%S")
+                    ms = int((time.time() % 1) * 1000)
+                    archive = os.path.join(self.enhance_compare_dir, f"enhance_compare_{stamp}_{ms:03d}.jpg")
+                    cv2.imwrite(archive, compare)
+                except Exception as exc:
+                    print(f"[增强对比图][警告] 存档失败: {exc}")
+
+            if ok:
+                self.enhance_compare_saved += 1
+                return path
+        except Exception as exc:
+            print(f"[增强对比图][警告] 保存失败: {exc}")
+        return None
 
     def run(self):
         """主循环"""
@@ -953,7 +1367,7 @@ class RetailProductLocatorSystem:
 
         print("\n" + "=" * 50)
         print("  零售商品识别与货架定位系统")
-        print("  按 'q' 退出  |  按 's' 截图  |  点击画面选目标")
+        print("  按 'q' 退出  |  按 's' 截图  |  按 'c' 保存增强对比图  |  点击画面选目标")
         print("=" * 50 + "\n")
 
         cv2.namedWindow("Retail Product Locator")
@@ -985,6 +1399,13 @@ class RetailProductLocatorSystem:
                 bad = ("过暗", "偏暗", "过曝", "反光")
                 if any(g in lgrade for g in bad):
                     light_tag += " ⚠ 可能影响识别精度！"
+                # 增强状态
+                if self.enhance_mode == "off":
+                    enhance_tag = "  [增强] 关闭"
+                else:
+                    state = "已应用" if self._last_enhance_applied else "未触发"
+                    reason_cn = {"dark": "弱光", "low_contrast": "低对比度", "force": "强制"}.get(self._last_enhance_reason, self._last_enhance_reason)
+                    enhance_tag = f"  [增强] {state}({reason_cn}) 累计:{self.enhanced_frames}帧"
                 print(f"\n--- 检测到 {len(detections)} 个商品 ---")
                 print(f"  [YOLO] raw={self.raw_box_count} 显示={self.filtered_box_count} "
                       f"低于阈值={self.low_conf_box_count} "
@@ -999,6 +1420,7 @@ class RetailProductLocatorSystem:
                 else:
                     print("  [YOLO候选Top] 无候选框；请检查模型/画面/类别训练是否匹配")
                 print(light_tag)
+                print(enhance_tag)
                 for i, det in enumerate(detections):
                     sel = ">>> 选中 <<< " if i == self.selected_index else ""
                     x1, y1, x2, y2 = det.bbox
@@ -1034,7 +1456,13 @@ class RetailProductLocatorSystem:
             # 面板（含光照评分）
             cam_mode = "RealSense(深度)" if self.camera.has_depth else "OpenCV(无深度)"
             light_info = _assess_lighting(color_img)
-            display = draw_info_panel(display, detections, self.fps, cam_mode, light_info)
+            enhance_info = {
+                "mode": self.enhance_mode,
+                "applied": self._last_enhance_applied,
+                "reason": self._last_enhance_reason,
+                "enhanced_frames": self.enhanced_frames,
+            }
+            display = draw_info_panel(display, detections, self.fps, cam_mode, light_info, enhance_info)
 
             # 深度可视化
             if depth_img is not None:
@@ -1094,10 +1522,19 @@ class RetailProductLocatorSystem:
 
                 print(f"[保存] 截图: {save_img}")
                 print(f"[保存] 结果: {save_json}")
+            elif key == ord('c'):
+                # 手动保存增强前后对比图（即使本帧未触发增强，也保存最近一次记录）
+                out = self.save_enhance_compare()
+                if out:
+                    print(f"[增强对比图] 已保存: {out} (左=增强前, 右=增强后)")
+                else:
+                    print("[增强对比图] 暂无可对比的增强帧（未触发过增强）")
 
         # 退出时清理
         self.camera.release()
         cv2.destroyAllWindows()
+        if self.enhance_compare_enable:
+            print(f"[增强对比图] 本次会话共保存 {self.enhance_compare_saved} 张 -> {self.enhance_compare_path}")
         print("\n[系统] 已退出")
 
 
@@ -1118,6 +1555,32 @@ if __name__ == "__main__":
     parser.add_argument("--no-ocr", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--ocr-interval", type=int, default=30, help="OCR 扫描间隔帧数")
     parser.add_argument("--model", default="", help="模型路径（默认优先使用 best.engine）")
+
+    # === 弱光增强：CLAHE + 白平衡 + Gamma，用于弱光环境下提升 YOLO 召回 ===
+    enh = parser.add_argument_group("弱光增强 (low-light enhancement)")
+    enh.add_argument("--enhance-mode", choices=["auto", "force", "off"], default="auto",
+                     help="增强模式: auto=按光照自动触发, force=每帧都增强, off=关闭 (默认 auto)")
+    enh.add_argument("--no-enhance", action="store_const", const="off", dest="enhance_mode",
+                     help="关闭弱光增强（与 --enhance-mode off 等价）")
+    enh.add_argument("--light-threshold", type=float, default=90.0,
+                     help="auto 模式下触发增强的 HSV-V 均值上限，0-255 (默认 90)")
+    enh.add_argument("--clahe-clip", type=float, default=2.5,
+                     help="CLAHE 限制对比度 (默认 2.5)；设为 0 可关闭 CLAHE")
+    enh.add_argument("--clahe-tile", type=int, default=8,
+                     help="CLAHE 网格大小 (默认 8)")
+    enh.add_argument("--gamma", type=float, default=1.0,
+                     help="Gamma 矫正，<1 提亮 >1 压暗，1.0 不启用 (默认 1.0)")
+    enh.add_argument("--no-awb", action="store_true",
+                     help="关闭灰度世界自动白平衡")
+    enh.add_argument("--no-enhance-compare", action="store_true",
+                     help="关闭增强前后对比图自动保存")
+    enh.add_argument("--enhance-compare-path", default=None,
+                     help="增强对比图输出路径（默认 /tmp/enhance_compare_latest.jpg）")
+    enh.add_argument("--enhance-compare-dir", default=None,
+                     help="增强对比图历史存档目录（可选，按时间戳命名）")
+    enh.add_argument("--enhance-compare-interval", type=int, default=None,
+                     help="增强对比图最小保存间隔帧数（默认 30）")
+
     args = parser.parse_args()
     base_dir = os.path.dirname(os.path.abspath(__file__))
     default_model_path = os.path.join(base_dir, "best.engine")
@@ -1131,5 +1594,15 @@ if __name__ == "__main__":
             raw_conf_threshold=args.raw_conf,
             use_ocr=args.ocr and not args.no_ocr,
             ocr_interval=args.ocr_interval,
+            enhance_mode=args.enhance_mode,
+            light_threshold=args.light_threshold,
+            clahe_clip=args.clahe_clip,
+            clahe_tile=args.clahe_tile,
+            enhance_gamma=args.gamma,
+            enhance_awb=not args.no_awb,
+            enhance_compare_enable=(False if args.no_enhance_compare else None),
+            enhance_compare_path=args.enhance_compare_path,
+            enhance_compare_dir=args.enhance_compare_dir,
+            enhance_compare_interval=args.enhance_compare_interval,
         )
     system.run()

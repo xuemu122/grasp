@@ -166,6 +166,11 @@ SHELF_GRASP_WORKER = os.getenv("SHELF_GRASP_WORKER", "0").lower() in ("1", "true
 SHELF_GRASP_IDLE_STARTUP = os.getenv("SHELF_GRASP_IDLE_STARTUP", "0").lower() in ("1", "true", "yes", "on")
 SAVE_DEBUG_IMAGES = os.getenv("SAVE_DEBUG_IMAGES", "0").lower() in ("1", "true", "yes", "on")
 FAILURE_DIAGNOSTIC_PATH = os.getenv("SHELF_FAILURE_DIAGNOSTIC_PATH", "/tmp/shelf_failure_latest.jpg")
+# 弱光增强前后对比图：抓取失败时一并输出，便于核对补光是否提升召回
+ENHANCE_COMPARE_PATH = os.getenv(
+    "SHELF_ENHANCE_COMPARE_PATH",
+    os.path.join(os.path.dirname(FAILURE_DIAGNOSTIC_PATH) or ".", "shelf_enhance_compare_latest.jpg"),
+)
 LAYER_ENTRY_SHELF = "shelf"
 LAYER_ENTRY_STOW = "stow"
 LAYER_ENTRY_STARTUP = "startup"
@@ -1912,6 +1917,38 @@ def _save_failure_diagnostic(image):
     return None
 
 
+def _save_enhance_compare(locator, path=None):
+    """保存弱光增强前后对比图（左=增强前, 右=增强后）。
+
+    仅当识别模块最近记录过一次真实的增强帧时才保存；否则返回 None。
+    """
+    if locator is None or not getattr(locator, "enhance_compare_enable", False):
+        return None
+    if getattr(locator, "last_enhance_before", None) is None:
+        return None
+    target = path or ENHANCE_COMPARE_PATH
+    try:
+        return locator.save_enhance_compare(path=target, save_archive=False)
+    except Exception as exc:
+        print(f"[增强对比图][警告] 保存失败: {exc}")
+    return None
+
+
+def _clear_failure_diagnostic():
+    try:
+        os.remove(FAILURE_DIAGNOSTIC_PATH)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(f"[失败诊断图][警告] 无法清理旧文件: {exc}")
+    try:
+        os.remove(ENHANCE_COMPARE_PATH)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(f"[增强对比图][警告] 无法清理旧文件: {exc}")
+
+
 def _connect_and_open_hand(hand):
     """Initialize the gripper without requiring any arm motion."""
     if (
@@ -1967,15 +2004,6 @@ def _create_hand(arm=None):
         f"不支持的 HAND_BACKEND={HAND_BACKEND!r}, "
         "可选 aero/lhandpro/lhandpro_dobot"
     )
-
-
-def _clear_failure_diagnostic():
-    try:
-        os.remove(FAILURE_DIAGNOSTIC_PATH)
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        print(f"[失败诊断图][警告] 无法清理旧文件: {exc}")
 
 
 def main():
@@ -2112,6 +2140,9 @@ def main():
             diagnostic_path = _save_failure_diagnostic(latest_failure_image)
             if diagnostic_path:
                 print(f"[失败诊断图] {diagnostic_path}", flush=True)
+            compare_path = _save_enhance_compare(locator)
+            if compare_path:
+                print(f"[增强对比图] {compare_path} (左=增强前, 右=增强后)", flush=True)
             if SHELF_GRASP_WORKER:
                 print(f"[前端常驻模式][失败] {message}", flush=True)
 

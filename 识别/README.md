@@ -42,11 +42,15 @@ dataset/yolo_rpc_test/
 - 相机坐标系三维位置 `camera_xyz`
 - 货架层位兜底信息
 - 光照质量评估
+- 弱光增强状态（每帧是否触发增强、累计次数）
+- 增强前后对比图（默认 `/tmp/enhance_compare_latest.jpg`）
 
 ## 核心流程
 
 ```text
 RealSense / OpenCV 取图
+        ↓
+光照评估 + 可选弱光增强（CLAHE + 白平衡 + Gamma）
         ↓
 YOLO 8 类商品检测
         ↓
@@ -61,7 +65,7 @@ YOLO 8 类商品检测
   2. product_catalog 可做已知商品精确覆盖
   3. category_fallback_mapping 提供大类货架兜底
         ↓
-可视化显示 / JSON 保存
+可视化显示 / JSON 保存 / 增强前后对比图
 ```
 
 ## 主要代码组件
@@ -116,6 +120,19 @@ matching:
 - 处理每一帧图像。
 - 绘制检测结果。
 - 保存截图和 JSON。
+
+弱光增强相关接口：
+
+| 成员 | 说明 |
+|------|------|
+| `_fast_light_stats(img)` | 快速计算 HSV-V 均值/中心区标准差 |
+| `_enhance_low_light(...)` | CLAHE + 白平衡 + Gamma 增强（不改原图） |
+| `save_enhance_compare(...)` | 生成并保存"增强前 vs 增强后"并排对比图 |
+| `last_enhance_before/after` | 最近一次增强前后的图像副本 |
+| `last_enhance_light` | 最近一次增强前后的光照统计 |
+| `enhance_compare_saved` | 本会话已保存对比图数量 |
+
+外部脚本（如抓取流程）可在失败时直接调用 `locator.save_enhance_compare()` 取图。
 
 保留兼容别名：
 
@@ -337,12 +354,133 @@ raw_conf=0.01
 --no-ocr                关闭 OCR，用于只调 YOLO
 ```
 
+### 弱光增强 (补光/光平衡)
+
+夜间或货架背光场景下 YOLO 容易漏检。主流程在调用 YOLO 前会自动判断画面亮度，对送入模型的图像副本做增强（CLAHE + 自动白平衡 + Gamma），原始图仍用于显示与深度对齐，因此不会影响可视化或 `camera_xyz`。
+
+增强策略：
+
+- 默认 `auto`：当画面中心区 HSV-V 均值 `< light_threshold`（默认 90）时启用；或中心区标准差 `< 12` 且均值 `< 130` 时也启用。
+- `force`：每帧都启用（适合全黑环境先验证效果）。
+- `off`：关闭（命令行加 `--no-enhance` 等价）。
+
+启用后控制台会按 30 帧间隔打印：
+
+```text
+  [增强] 已应用(弱光) 累计:24帧
+```
+
+面板右侧也会显示 `补光增强: ON(弱光)`。
+
+弱光场景推荐启动：
+
+```bash
+# 默认 auto：弱光自动触发
+./run.sh --enhance-mode auto --gamma 0.8 --clahe-clip 3.0
+
+# 强制每帧增强（适合纯夜灯场景）
+./run.sh --enhance-mode force --gamma 0.7 --clahe-clip 3.0
+
+# 关闭增强（恢复原图直送 YOLO）
+./run.sh --no-enhance
+```
+
+参数：
+
+```text
+--enhance-mode {auto,force,off}    增强模式，默认 auto
+--no-enhance                       关闭增强（= --enhance-mode off）
+--light-threshold <float>          auto 触发阈值（HSV-V 0-255），默认 90
+--clahe-clip <float>               CLAHE clipLimit，默认 2.5；设 0 关闭 CLAHE
+--clahe-tile <int>                 CLAHE 网格大小，默认 8
+--gamma <float>                    Gamma 矫正，<1 提亮 >1 压暗，1.0 不启用，默认 1.0
+--no-awb                           关闭简易灰度世界白平衡
+--no-enhance-compare               关闭增强前后对比图自动保存
+--enhance-compare-path <path>      对比图输出路径，默认 /tmp/enhance_compare_latest.jpg
+--enhance-compare-dir <dir>        对比图历史存档目录（可选，按时间戳命名）
+--enhance-compare-interval <int>   对比图最小保存间隔帧数，默认 30
+```
+
+调参建议：
+
+- 画面整体偏色（黄/蓝）→ 保留默认 `--awb`（开），三通道会被拉回中灰。
+- 暗部细节仍糊 → 提高 `--clahe-clip` 到 3.0-4.0，或设 `--gamma 0.7`。
+- 反光物体仍被压得过亮 → 关闭白平衡 `--no-awb`，只保留 CLAHE。
+- 增强后画面噪声也变大 → 降低 `--clahe-tile` 让局部更平滑，或下调 `--gamma`。
+
+### 增强前后对比图
+
+为了直观看补光到底有没有效果，程序会在触发增强时自动保存一张**左右并排对比图**：
+
+```text
++---------------- 增强前 BEFORE (原始) ----------------+---------------- 增强后 AFTER ----------------+
+| mean_v=40  std_v=15                                  | mean_v=75  std_v=25                             |
+| 触发=弱光  CLAHE(clip=2.5,tile=8)  gamma=0.8  ...    |                                                 |
++------------------------------------------------------+-------------------------------------------------+
+|              [原始画面 + YOLO 框]                    |              [增强画面 + YOLO 框]               |
++------------------------------------------------------+-------------------------------------------------+
+```
+
+要点：
+
+- 两侧使用**同一套检测框坐标**，可直接对比"增强前后召回是否变多"。
+- 标题条显示触发原因、`mean_v / std_v` 变化、CLAHE/Gamma/AWB 参数、检测数。
+- 中文用 PIL + 系统 Noto CJK 字体渲染；无中文字体时自动回退英文（`cv2.putText`）。
+- 未触发增强（光照正常）时不会重复写盘；`auto` 模式下只有在弱光帧才产出。
+
+输出位置：
+
+```text
+/tmp/enhance_compare_latest.jpg         # 默认，始终覆盖最新一张
+<--enhance-compare-dir>/enhance_compare_<时间戳>.jpg   # 可选历史存档
+```
+
+调试启动示例：
+
+```bash
+# 弱光自动触发 + 保留最近一张对比图（默认行为）
+./run.sh --enhance-mode auto --gamma 0.8
+
+# 强制每帧增强，并存档到指定目录，方便回看
+./run.sh --enhance-mode force --gamma 0.7 \
+         --enhance-compare-dir /home/nvidia/grasp/识别/results/enhance_compare
+
+# 关闭对比图（只在性能紧张时使用）
+./run.sh --no-enhance-compare
+```
+
+也可以在识别窗口里按 `c` 手动保存当前对比图。
+
+相关环境变量：
+
+```text
+ENHANCE_COMPARE_ENABLE=1            对比图总开关（默认 1）
+ENHANCE_COMPARE_PATH=/tmp/enhance_compare_latest.jpg
+ENHANCE_COMPARE_DIR=<目录>          历史存档目录，留空则只保留最新一张
+ENHANCE_COMPARE_INTERVAL=30         最小保存间隔帧数
+```
+
+### 抓取流程中的对比图
+
+`dipan/shelf_grasp.py` 在抓取失败时除了原有的 `shelf_failure_latest.jpg`，还会一并输出增强对比图：
+
+```text
+[失败诊断图] /tmp/shelf_failure_latest.jpg
+[增强对比图] /tmp/shelf_enhance_compare_latest.jpg (左=增强前, 右=增强后)
+```
+
+- 路径可用环境变量 `SHELF_ENHANCE_COMPARE_PATH` 覆盖，默认与失败诊断图同目录。
+- 仅当识别模块确实记录过增强帧时才产出；光照正常时不会额外生成。
+- 每轮抓取开始时会与失败诊断图一起清理旧文件，避免查看过期结果。
+- 对比图内容受识别模块的 `ENHANCE_COMPARE_ENABLE` / `--no-enhance` 等配置控制。
+
 ### 操作
 
 | 操作 | 功能 |
 |------|------|
 | 鼠标点击检测框 | 选中/取消选中目标 |
 | `s` | 保存截图和 JSON |
+| `c` | 手动保存增强前后对比图 |
 | `q` | 退出 |
 
 ## 数据集抽帧
