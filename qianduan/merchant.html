@@ -260,8 +260,8 @@
                     <div class="card-title"><span>设备管理 <span class="count" id="deviceCount">0 台</span></span></div>
                     <div class="table-wrapper">
                         <table>
-                            <thead><tr><th>设备</th><th>SN</th><th>状态</th><th>在线</th><th>存放位置</th></tr></thead>
-                            <tbody id="deviceBody"><tr><td colspan="5" class="loading">加载中...</td></tr></tbody>
+                            <thead><tr><th>设备</th><th>SN</th><th>状态</th><th>在线</th><th>电量</th><th>存放位置</th></tr></thead>
+                            <tbody id="deviceBody"><tr><td colspan="6" class="loading">加载中...</td></tr></tbody>
                         </table>
                     </div>
                 </div>
@@ -528,14 +528,26 @@
             return '<span class="status-badge warn">未接入</span>';
         }
 
+        function devicePowerLabel(device) {
+            const power = device && device.power;
+            if (!power) return '-';
+            const parts = [];
+            const battery = power.battery;
+            const chassis = power.chassis;
+            if (battery && battery.online) parts.push(`🔋${battery.percent == null ? '--' : battery.percent + '%'}`);
+            if (chassis && chassis.online) parts.push(`🛞${chassis.capacity == null ? '--' : chassis.capacity + '%'}`);
+            return parts.length ? parts.join(' / ') : '-';
+        }
+
         function renderDevices(devices) {
             const body = document.getElementById('deviceBody');
-            if (!devices.length) { body.innerHTML = '<tr><td colspan="5" class="empty-state">暂无绑定设备</td></tr>'; return; }
+            if (!devices.length) { body.innerHTML = '<tr><td colspan="6" class="empty-state">暂无绑定设备</td></tr>'; return; }
             body.innerHTML = devices.map((device) => `<tr>
                 <td><strong>${esc(device.name) || esc(device.id)}</strong><br><small>${esc(device.id)}</small></td>
                 <td>${esc(device.sn) || '-'}</td>
                 <td><span class="status-badge ${device.status === 'deployed' ? 'on' : (device.status === 'in_stock' ? 'warn' : 'off')}">${esc(device.statusLabel || device.status)}</span></td>
                 <td>${deviceOnlineBadge(device)}</td>
+                <td>${devicePowerLabel(device)}</td>
                 <td>${esc(device.location) || '-'}</td>
             </tr>`).join('');
         }

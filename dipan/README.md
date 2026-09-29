@@ -20,6 +20,7 @@
 | `tool_geometry.py` | 末端共享几何：法兰坐标系下的灵巧手附属相机尺寸与碰撞近似 |
 | `hand_eye_calib.py` | ArUco 手眼标定，生成 `calib_eye_in_hand.json` |
 | `move_robot.py` | 底盘 TCP 控制，移动到药架/充电点/取消任务，并返回底盘电量 |
+| `battery_monitor.py` | 485 电池板监控：自动扫描串口、读取 JSON 电压、换算百分比写入 `runtime/battery.json` |
 | `test_aero_current_grasp.py` | Aero Hand 电流夹紧测试：0号固定，其余关节渐闭，电流上升后停止 |
 | `demo_aero_contact_states.py` | Aero Hand 接触状态识别 demo：空载、浅层接触、持续接触、饱和堆积、挤压溢出 |
 | `shelf_layers.json` | 货架层观察位姿，程序内 `l` 菜单维护 |
@@ -726,3 +727,19 @@ python3 move_robot.py cancel    # 取消移动
 ```bash
 CHARGE_RETURN_ON_DOCKING=0 python3 move_robot.py charge
 ```
+
+## 485 电池板电量监控
+
+`battery_monitor.py` 是常驻小进程，真实模式下由 `qianduan/server.js` 自动拉起（可设
+`BATTERY_MONITOR_ENABLE=0` 关闭），也可手动运行：
+
+```bash
+python3 battery_monitor.py
+```
+
+- 协议：RS485 / 115200 8N1，板子周期上报 JSON，`battery` 字段为电池电压（V）。
+- 自动扫描串口；用 `BATTERY_SERIAL=/dev/ttyTHS1` 可指定，用
+  `BATTERY_SKIP_PORTS=/dev/ttyUSB0` 跳过灵巧手串口。
+- 百分比按 `BATTERY_FULL_V`（默认 `52.0`）和 `BATTERY_EMPTY_V`（默认 `42.0`）
+  线性换算，请按实际电池组修改。
+- 结果写入 `runtime/battery.json`，后端 `/api/device/info` 的 `power.battery` 读取它。

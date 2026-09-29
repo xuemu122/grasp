@@ -442,6 +442,8 @@ async function init() {
     setInterval(() => {
         if (!document.hidden) refreshCatalog();
     }, 15000);
+    refreshPowerStatus();
+    setInterval(refreshPowerStatus, 15000);
 }
 
 async function refreshCatalog() {
@@ -1368,6 +1370,39 @@ function updateRobotStatus(status, text) {
     if (!robotStatus) return;
     const dotClass = status === 'busy' ? 'busy' : 'online';
     robotStatus.innerHTML = `<span class="status-dot ${dotClass}"></span> ${text}`;
+}
+
+// ========== 电量显示（485 电池板 + 底盘）==========
+function renderPowerStatus(power) {
+    const el = document.getElementById('powerStatus');
+    if (!el) return;
+    const parts = [];
+    const battery = power && power.battery;
+    const chassis = power && power.chassis;
+    if (battery && battery.online) {
+        const pct = battery.percent == null ? '--' : `${battery.percent}%`;
+        const volt = battery.voltage == null ? '' : ` ${Number(battery.voltage).toFixed(1)}V`;
+        parts.push(`🔋 电池 ${pct}${volt}`);
+    }
+    if (chassis && chassis.online) {
+        const cap = chassis.capacity == null ? '--' : `${chassis.capacity}%`;
+        parts.push(`🛞 底盘 ${cap}${chassis.charging ? ' ⚡' : ''}`);
+    }
+    if (!parts.length) {
+        el.hidden = true;
+        el.textContent = '';
+        return;
+    }
+    el.hidden = false;
+    el.textContent = parts.join('  ');
+}
+
+async function refreshPowerStatus() {
+    try {
+        const res = await fetch('/api/device/info', { cache: 'no-store' });
+        const json = await res.json();
+        if (res.ok && json.code === 0) renderPowerStatus(json.data && json.data.power);
+    } catch (error) { /* 离线时静默 */ }
 }
 
 // ========== 语音交互 ==========

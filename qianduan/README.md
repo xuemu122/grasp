@@ -573,6 +573,11 @@ __filter_preview__\n
 | `CHASSIS_NAVIGATION_ENABLE` | 空/关闭 | 设为 `1` 时在抓取前导航到商品绑定的 marker |
 | `CHASSIS_PLACE_MARKER` | `fangzhi` | 首次没有设置文件时使用的默认放置 marker |
 | `CHASSIS_CHARGE_MARKER` | `charge_point_1F_35744` | 充电桩 marker 的缺省值；实际值以管理页/商家页“充电桩”选择（`chassis_settings.json` 的 `charge_marker`）优先 |
+| `BATTERY_MONITOR_ENABLE` | `1` | 真实模式下是否自动启动 485 电池监控进程；设 `0` 关闭 |
+| `BATTERY_MONITOR_SCRIPT` | `dipan/battery_monitor.py` | 电池监控进程路径 |
+| `BATTERY_STATE_FILE` | `dipan/runtime/battery.json` | 电池监控写出的状态文件，`/api/device/info` 的 `power.battery` 读取它 |
+| `BATTERY_FULL_V` / `BATTERY_EMPTY_V` | `52.0` / `42.0` | 电池板电压换算百分比的满/空电压，按实际电池组设置 |
+| `CHASSIS_POWER_TIMEOUT_MS` / `CHASSIS_POWER_CACHE_MS` | `3000` / `5000` | 读取底盘 `/api/get_power_status` 的超时与缓存 |
 | `ORDER_CALLBACK_OUTBOX_FILE` | 订单 JSON 同目录下的 `order_callback_outbox.json` | 盒子完成回调持久化队列 |
 | `ORDER_CALLBACK_RETRY_INTERVAL_MS` | `15000` | 完成回调重试基础间隔 |
 | `ORDER_CALLBACK_TLS_INSECURE` | `0` | 仅现场自签名证书临时设为 `1`，生产保持 `0` |
