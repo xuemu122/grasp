@@ -573,7 +573,8 @@ __filter_preview__\n
 | `CHASSIS_NAVIGATION_ENABLE` | 空/关闭 | 设为 `1` 时在抓取前导航到商品绑定的 marker |
 | `CHASSIS_PLACE_MARKER` | `fangzhi` | 首次没有设置文件时使用的默认放置 marker |
 | `CHASSIS_CHARGE_MARKER` | `charge_point_1F_35744` | 充电桩 marker 的缺省值；实际值以管理页/商家页“充电桩”选择（`chassis_settings.json` 的 `charge_marker`）优先 |
-| `BATTERY_MONITOR_ENABLE` | `1` | 真实模式下是否自动启动 485 电池监控进程；设 `0` 关闭 |
+| `BATTERY_MONITOR_ENABLE` | `1` | 真实模式下是否自动启动 485 电池监控进程；设 `0` 关闭（没装电池板的机器可设 0，或不设也不报错） |
+| `BATTERY_SCAN_USB` | 关闭 | 电池板走 USB-RS485 时才设 `1`；默认只扫板载 `ttyTHS*`，避免抢灵巧手串口 |
 | `BATTERY_MONITOR_SCRIPT` | `dipan/battery_monitor.py` | 电池监控进程路径 |
 | `BATTERY_STATE_FILE` | `dipan/runtime/battery.json` | 电池监控写出的状态文件，`/api/device/info` 的 `power.battery` 读取它 |
 | `BATTERY_FULL_V` / `BATTERY_EMPTY_V` | `52.0` / `42.0` | 电池板电压换算百分比的满/空电压，按实际电池组设置 |

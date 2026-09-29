@@ -738,8 +738,11 @@ python3 battery_monitor.py
 ```
 
 - 协议：RS485 / 115200 8N1，板子周期上报 JSON，`battery` 字段为电池电压（V）。
-- 自动扫描串口；用 `BATTERY_SERIAL=/dev/ttyTHS1` 可指定，用
-  `BATTERY_SKIP_PORTS=/dev/ttyUSB0` 跳过灵巧手串口。
+- 默认只扫盒子的板载 485（`/dev/ttyTHS*`），**不扫 USB**，避免和灵巧手抢串口；
+  若电池板走 USB-RS485，用 `BATTERY_SCAN_USB=1` 或直接 `BATTERY_SERIAL=/dev/ttyUSB0`。
+- 自动扫描时可用 `BATTERY_SKIP_PORTS` 跳过指定串口。
 - 百分比按 `BATTERY_FULL_V`（默认 `52.0`）和 `BATTERY_EMPTY_V`（默认 `42.0`）
   线性换算，请按实际电池组修改。
 - 结果写入 `runtime/battery.json`，后端 `/api/device/info` 的 `power.battery` 读取它。
+- **没装电池板的机器**：扫不到就一直静默重试，`power.battery.online=false`，页面显示 `-`，
+  不报错；也可用 `BATTERY_MONITOR_ENABLE=0` 直接不启动该进程。

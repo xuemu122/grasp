@@ -3218,7 +3218,7 @@ const server = http.createServer(async (req, res) => {
 
     // ========== 设备管理 ==========
     if (pathname === '/api/device/info' && req.method === 'GET') {
-        const chassis = await readChassisPower();
+        const chassis = readChassisPower();
         sendJSON(res, {
             code: 0,
             data: {
@@ -4573,6 +4573,7 @@ const startHttpServer = () => server.listen(PORT, HOST, () => {
                 broadcastRobotStatus('standby', `机器人启动上电失败: ${error.message}`);
             });
         ensureBatteryMonitor();
+        setInterval(() => { refreshChassisPower().catch(() => {}); }, CHASSIS_POWER_CACHE_MS).unref?.();
     }
     refreshChassisMapSnapshot()
         .then((snapshot) => log(`底盘地图已更新到本地: ${snapshot.map.map_name || snapshot.map.hotel_id}/${snapshot.map.floor}`))
@@ -5007,35 +5008,47 @@ function readBatteryState() {
     return value;
 }
 
-// 读取底盘电源（TCP /api/get_power_status），带短缓存与超时，失败不影响调用方。
-let chassisPowerCache = { at: 0, promise: null };
-function readChassisPower() {
-    if (!ROBOT_GRASP_REAL) return Promise.resolve({ online: false, simulated: true });
-    const now = Date.now();
-    if (chassisPowerCache.promise && now - chassisPowerCache.at < CHASSIS_POWER_CACHE_MS) {
-        return chassisPowerCache.promise;
-    }
-    const promise = (async () => {
+// 读取底盘电源（TCP /api/get_power_status）。异步刷新、缓存返回，绝不阻塞调用方。
+let chassisPowerValue = { online: false };
+let chassisPowerRefreshing = null;
+let chassisPowerLastAt = 0;
+function refreshChassisPower() {
+    if (!ROBOT_GRASP_REAL) return Promise.resolve(chassisPowerValue);
+    if (chassisPowerRefreshing) return chassisPowerRefreshing;
+    chassisPowerRefreshing = (async () => {
         try {
             const client = new ChassisClient({ host: CHASSIS_HOST, port: CHASSIS_PORT, timeoutMs: CHASSIS_POWER_TIMEOUT_MS });
             const response = await client.request('/api/get_power_status');
             if (!response || response.status !== 'OK') {
-                return { online: false, error: chassisResponseError(response) };
+                chassisPowerValue = { online: false, error: chassisResponseError(response) };
+            } else {
+                const info = chassisResults(response);
+                chassisPowerValue = {
+                    online: true,
+                    capacity: info.battery_capacity === undefined ? null : info.battery_capacity,
+                    voltage: info.battery_voltage === undefined ? null : info.battery_voltage,
+                    current: info.battery_current === undefined ? null : info.battery_current,
+                    charging: Boolean(info.charger_connected_notice)
+                };
             }
-            const info = chassisResults(response);
-            return {
-                online: true,
-                capacity: info.battery_capacity === undefined ? null : info.battery_capacity,
-                voltage: info.battery_voltage === undefined ? null : info.battery_voltage,
-                current: info.battery_current === undefined ? null : info.battery_current,
-                charging: Boolean(info.charger_connected_notice)
-            };
         } catch (error) {
-            return { online: false, error: error.message };
+            chassisPowerValue = { online: false, error: error.message };
+        } finally {
+            chassisPowerLastAt = Date.now();
+            chassisPowerRefreshing = null;
         }
+        return chassisPowerValue;
     })();
-    chassisPowerCache = { at: now, promise };
-    return promise;
+    return chassisPowerRefreshing;
+}
+
+// 非阻塞：返回缓存的底盘电量，过期则后台刷新（不 await）。
+function readChassisPower() {
+    if (!ROBOT_GRASP_REAL) return { online: false, simulated: true };
+    if (Date.now() - chassisPowerLastAt > CHASSIS_POWER_CACHE_MS) {
+        refreshChassisPower().catch(() => {});
+    }
+    return chassisPowerValue;
 }
 
 function chassisResponseError(response) {

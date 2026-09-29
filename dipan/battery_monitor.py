@@ -18,7 +18,11 @@
 - BATTERY_FULL_V        满电电压，默认 52.0
 - BATTERY_EMPTY_V       空电电压，默认 42.0
 - BATTERY_STATE_FILE    状态文件，默认 dipan/runtime/battery.json
-- BATTERY_SCAN_TTYS     设为 1 时也扫描 /dev/ttyS*（默认不扫，避免干扰控制台串口）
+- BATTERY_SCAN_USB      设为 1 时才扫描 /dev/ttyUSB*、/dev/ttyACM*（默认不扫，避免抢灵巧手串口）
+- BATTERY_SCAN_TTYS     设为 1 时才扫描 /dev/ttyS*（默认不扫，避免干扰控制台串口）
+
+没装电池板的机器：扫描不到就会一直静默重试，`/api/device/info` 里
+`power.battery.online=false`，不会报错；也可用 `BATTERY_MONITOR_ENABLE=0` 直接不启动。
 """
 
 import glob
@@ -42,6 +46,7 @@ FULL_V = float(os.getenv("BATTERY_FULL_V", "52.0"))
 EMPTY_V = float(os.getenv("BATTERY_EMPTY_V", "42.0"))
 SCAN_LISTEN_S = float(os.getenv("BATTERY_SCAN_LISTEN_S", "2.5"))
 RESCAN_DELAY_S = float(os.getenv("BATTERY_RESCAN_DELAY_S", "5"))
+SCAN_USB = os.getenv("BATTERY_SCAN_USB", "").lower() in ("1", "true", "yes", "on")
 SCAN_TTYS = os.getenv("BATTERY_SCAN_TTYS", "").lower() in ("1", "true", "yes", "on")
 
 _JSON_RE = re.compile(rb"\{[^{}]*\}")
@@ -55,17 +60,20 @@ def candidate_ports():
     if EXPLICIT_PORT:
         return [EXPLICIT_PORT]
     ports = []
-    # 板载 UART 优先（盒子自带 485 多在 ttyTHS*），避免先动 USB 抢到灵巧手
-    patterns = ["/dev/ttyTHS*", "/dev/ttyUSB*", "/dev/ttyACM*"]
+    # 默认只扫盒子的板载 485（ttyTHS*），不动 USB，避免抢灵巧手串口
+    patterns = ["/dev/ttyTHS*"]
+    if SCAN_USB:
+        patterns += ["/dev/ttyUSB*", "/dev/ttyACM*"]
     if SCAN_TTYS:
         patterns.append("/dev/ttyS*")
     for pattern in patterns:
         for device in sorted(glob.glob(pattern)):
             if device not in ports:
                 ports.append(device)
-    for info in list_ports.comports():
-        if info.device and info.device not in ports:
-            ports.append(info.device)
+    if SCAN_USB:
+        for info in list_ports.comports():
+            if info.device and info.device not in ports:
+                ports.append(info.device)
     return [p for p in ports if p not in SKIP_PORTS]
 
 
@@ -167,11 +175,19 @@ def stream(ser, port):
 
 def main():
     print(f"[电池] 启动: baud={BAUD} full={FULL_V}V empty={EMPTY_V}V state={STATE_FILE}", flush=True)
+    last_notice = None
+
+    def notice(message, error):
+        nonlocal last_notice
+        write_state({"online": False, "error": error})
+        if message != last_notice:
+            print(f"{message}，{RESCAN_DELAY_S:.0f}s 后重试", flush=True)
+            last_notice = message
+
     while True:
         ports = candidate_ports()
         if not ports:
-            write_state({"online": False, "error": "未找到可用串口"})
-            print(f"[电池] 未找到可用串口，{RESCAN_DELAY_S:.0f}s 后重试", flush=True)
+            notice("[电池] 未找到可用串口", "未找到可用串口")
             time.sleep(RESCAN_DELAY_S)
             continue
         identified = False
@@ -180,6 +196,7 @@ def main():
             if ser is None:
                 continue
             identified = True
+            last_notice = None
             print(f"[电池] 已连接 {port}", flush=True)
             try:
                 stream(ser, port)
@@ -192,8 +209,7 @@ def main():
                     pass
             break
         if not identified:
-            write_state({"online": False, "error": "未识别到电池板"})
-            print(f"[电池] 未识别到电池板，{RESCAN_DELAY_S:.0f}s 后重试", flush=True)
+            notice("[电池] 未识别到电池板", "未识别到电池板")
             time.sleep(RESCAN_DELAY_S)
 
 
