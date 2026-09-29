@@ -171,18 +171,22 @@ def write_state(payload):
 def handle_packet(port, packet):
     voltage = to_float(packet.get("battery"))
     percent = battery_percent(voltage)
+    temperature = packet.get("temperature")
+    if temperature in (None, ""):
+        temperature = packet.get("temperature1")
     write_state({
         "online": True,
         "port": port,
         "voltage": voltage,
         "percent": percent,
-        "temperature": to_float(packet.get("temperature")),
+        "temperature": to_float(temperature),
         "temperature1": to_float(packet.get("temperature1")),
         "temperature2": to_float(packet.get("temperature2")),
         "raw": packet,
     })
+    temp_text = temperature if temperature not in (None, "") else "-"
     print(f"[电池] {port} 电压={voltage}V 电量={percent}% "
-          f"温度={packet.get('temperature')}C", flush=True)
+          f"温度={temp_text}C", flush=True)
 
 
 def try_port(port):
