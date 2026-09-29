@@ -735,6 +735,8 @@ CHARGE_RETURN_ON_DOCKING=0 python3 move_robot.py charge
 
 ```bash
 python3 battery_monitor.py
+python3 battery_monitor.py --probe   # 逐个扫所有串口，打印收到内容，用来找板子接在哪个口
+python3 battery_monitor.py --once    # 扫到一帧就退出，快速验证接线
 ```
 
 - 协议：RS485 / 115200 8N1，板子周期上报 JSON，`battery` 字段为电池电压（V）。

@@ -23,12 +23,18 @@
 
 没装电池板的机器：扫描不到就会一直静默重试，`/api/device/info` 里
 `power.battery.online=false`，不会报错；也可用 `BATTERY_MONITOR_ENABLE=0` 直接不启动。
+
+离线测试用法：
+- `python3 battery_monitor.py --probe`  列出/逐个扫描所有串口，打印收到的原始数据，
+  用来确认电池板接在哪个口（不受默认“只扫 ttyTHS”限制）。
+- `python3 battery_monitor.py --once`   正常扫描，收到一帧就打印并退出。
 """
 
 import glob
 import json
 import os
 import re
+import sys
 import time
 
 import serial
@@ -46,6 +52,7 @@ FULL_V = float(os.getenv("BATTERY_FULL_V", "52.0"))
 EMPTY_V = float(os.getenv("BATTERY_EMPTY_V", "42.0"))
 SCAN_LISTEN_S = float(os.getenv("BATTERY_SCAN_LISTEN_S", "2.5"))
 RESCAN_DELAY_S = float(os.getenv("BATTERY_RESCAN_DELAY_S", "5"))
+PROBE_LISTEN_S = float(os.getenv("BATTERY_PROBE_LISTEN_S", "3"))
 SCAN_USB = os.getenv("BATTERY_SCAN_USB", "").lower() in ("1", "true", "yes", "on")
 SCAN_TTYS = os.getenv("BATTERY_SCAN_TTYS", "").lower() in ("1", "true", "yes", "on")
 
@@ -156,8 +163,8 @@ def try_port(port):
     return None
 
 
-def stream(ser, port):
-    """持续读取已识别到的电池板。"""
+def stream(ser, port, once=False):
+    """持续读取已识别到的电池板；once=True 时读到一帧就返回。"""
     buffer = b""
     while True:
         data = ser.read(256)
@@ -171,9 +178,59 @@ def stream(ser, port):
         if packet:
             handle_packet(port, packet)
             buffer = b""
+            if once:
+                return
+
+
+def probe_ports():
+    """列出并逐个扫描所有候选串口，打印收到的原始数据，用于现场找电池板。"""
+    devices = []
+    for pattern in ("/dev/ttyTHS*", "/dev/ttyUSB*", "/dev/ttyACM*", "/dev/ttyS*"):
+        for device in sorted(glob.glob(pattern)):
+            if device not in devices:
+                devices.append(device)
+    for info in list_ports.comports():
+        if info.device and info.device not in devices:
+            devices.append(info.device)
+    devices = [d for d in devices if d not in SKIP_PORTS]
+    print(f"[探测] 候选串口: {devices}", flush=True)
+    for device in devices:
+        try:
+            ser = serial.Serial(device, BAUD, timeout=0.3)
+        except Exception as exc:
+            print(f"[探测] {device} 打不开: {exc}", flush=True)
+            continue
+        print(f"[探测] {device} 打开成功，读取 {PROBE_LISTEN_S:.1f}s ...", flush=True)
+        deadline = time.time() + PROBE_LISTEN_S
+        buffer = b""
+        try:
+            while time.time() < deadline:
+                data = ser.read(256)
+                if data:
+                    buffer += data
+                else:
+                    time.sleep(0.02)
+        finally:
+            try:
+                ser.close()
+            except Exception:
+                pass
+        if not buffer:
+            print(f"[探测] {device} 无数据", flush=True)
+            continue
+        text = buffer.decode("utf-8", "replace")
+        print(f"[探测] {device} 收到 {len(buffer)} 字节: {text[:200]!r}", flush=True)
+        packet = parse_board_packet(text)
+        if packet:
+            print(f"[探测] {device} ← 识别为电池板: {packet}", flush=True)
 
 
 def main():
+    args = [a.strip() for a in sys.argv[1:]]
+    if "--probe" in args:
+        probe_ports()
+        return
+    once = "--once" in args
     print(f"[电池] 启动: baud={BAUD} full={FULL_V}V empty={EMPTY_V}V state={STATE_FILE}", flush=True)
     last_notice = None
 
@@ -199,7 +256,7 @@ def main():
             last_notice = None
             print(f"[电池] 已连接 {port}", flush=True)
             try:
-                stream(ser, port)
+                stream(ser, port, once=once)
             except Exception as exc:
                 print(f"[电池] {port} 读取中断: {exc}", flush=True)
             finally:
@@ -207,6 +264,8 @@ def main():
                     ser.close()
                 except Exception:
                     pass
+            if once:
+                return
             break
         if not identified:
             notice("[电池] 未识别到电池板", "未识别到电池板")
