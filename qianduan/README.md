@@ -577,7 +577,8 @@ __filter_preview__\n
 | `BATTERY_SCAN_USB` | 关闭 | 电池板走 USB-RS485 时才设 `1`；默认只扫板载 `ttyTHS*`，避免抢灵巧手串口 |
 | `BATTERY_MONITOR_SCRIPT` | `dipan/battery_monitor.py` | 电池监控进程路径 |
 | `BATTERY_STATE_FILE` | `dipan/runtime/battery.json` | 电池监控写出的状态文件，`/api/device/info` 的 `power.battery` 读取它 |
-| `BATTERY_FULL_V` / `BATTERY_EMPTY_V` | `52.0` / `42.0` | 电池板电压换算百分比的满/空电压，按实际电池组设置 |
+| `BATTERY_CHEMISTRY` / `BATTERY_CELLS` | `lifepo4` / `15` | 电池类型与串联节数；铁锂默认按 15 串查表换算，比线性准 |
+| `BATTERY_SOC_TABLE` | 内置铁锂表 | 自定义 SOC 表（整包电压:百分比），优先于内置表；`BATTERY_CHEMISTRY=linear` 时才用 `BATTERY_FULL_V`/`BATTERY_EMPTY_V` |
 | `CHASSIS_POWER_TIMEOUT_MS` / `CHASSIS_POWER_CACHE_MS` | `3000` / `5000` | 读取底盘 `/api/get_power_status` 的超时与缓存 |
 | `ORDER_CALLBACK_OUTBOX_FILE` | 订单 JSON 同目录下的 `order_callback_outbox.json` | 盒子完成回调持久化队列 |
 | `ORDER_CALLBACK_RETRY_INTERVAL_MS` | `15000` | 完成回调重试基础间隔 |

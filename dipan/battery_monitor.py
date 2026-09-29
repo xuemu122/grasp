@@ -15,8 +15,11 @@
 - BATTERY_SERIAL        指定串口（如 /dev/ttyTHS1）；不填则自动扫描
 - BATTERY_BAUD          波特率，默认 115200
 - BATTERY_SKIP_PORTS    扫描时跳过的串口（逗号分隔，避免和灵巧手抢串口）
-- BATTERY_FULL_V        满电电压，默认 52.0
-- BATTERY_EMPTY_V       空电电压，默认 42.0
+- BATTERY_CHEMISTRY     电池类型，默认 lifepo4（磷酸铁锂，按单体查表）；设 linear 用满/空电压线性换算
+- BATTERY_CELLS         串联节数，默认 15（48V 铁锂 = 15S）
+- BATTERY_FULL_V        线性模式满电电压，默认 54.75
+- BATTERY_EMPTY_V       线性模式空电电压，默认 37.5
+- BATTERY_SOC_TABLE     自定义 SOC 表，如 "37.5:0,46:20,48.9:50,51:100"（整包电压:百分比），优先于内置表
 - BATTERY_STATE_FILE    状态文件，默认 dipan/runtime/battery.json
 - BATTERY_SCAN_USB      设为 1 时才扫描 /dev/ttyUSB*、/dev/ttyACM*（默认不扫，避免抢灵巧手串口）
 - BATTERY_SCAN_TTYS     设为 1 时才扫描 /dev/ttyS*（默认不扫，避免干扰控制台串口）
@@ -48,8 +51,34 @@ STATE_FILE = os.path.abspath(os.path.expanduser(
     os.getenv("BATTERY_STATE_FILE", os.path.join(RUNTIME_DIR, "battery.json"))))
 EXPLICIT_PORT = os.getenv("BATTERY_SERIAL", "").strip()
 SKIP_PORTS = {p.strip() for p in os.getenv("BATTERY_SKIP_PORTS", "").split(",") if p.strip()}
-FULL_V = float(os.getenv("BATTERY_FULL_V", "52.0"))
-EMPTY_V = float(os.getenv("BATTERY_EMPTY_V", "42.0"))
+FULL_V = float(os.getenv("BATTERY_FULL_V", "54.75"))
+EMPTY_V = float(os.getenv("BATTERY_EMPTY_V", "37.5"))
+CHEMISTRY = os.getenv("BATTERY_CHEMISTRY", "lifepo4").strip().lower()
+CELLS = max(1, int(os.getenv("BATTERY_CELLS", "15")))
+# 磷酸铁锂单体静置电压 -> SOC（%），曲线中段很平，必须查表
+LIFEPO4_CELL_SOC = [
+    (2.50, 0), (3.00, 10), (3.20, 20), (3.22, 30), (3.25, 40),
+    (3.26, 50), (3.27, 60), (3.30, 70), (3.32, 80), (3.35, 90), (3.40, 100),
+]
+
+
+def _parse_soc_table(raw):
+    """解析自定义 SOC 表，如 '37.5:0,45:10,48:50,51:100'（整包电压:百分比）。"""
+    table = []
+    for part in str(raw or "").split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        voltage, percent = part.split(":", 1)
+        try:
+            table.append((float(voltage), float(percent)))
+        except ValueError:
+            continue
+    table.sort(key=lambda item: item[0])
+    return table
+
+
+CUSTOM_SOC_TABLE = _parse_soc_table(os.getenv("BATTERY_SOC_TABLE", ""))
 SCAN_LISTEN_S = float(os.getenv("BATTERY_SCAN_LISTEN_S", "2.5"))
 RESCAN_DELAY_S = float(os.getenv("BATTERY_RESCAN_DELAY_S", "5"))
 PROBE_LISTEN_S = float(os.getenv("BATTERY_PROBE_LISTEN_S", "3"))
@@ -103,16 +132,34 @@ def parse_board_packet(text):
 
 
 def battery_percent(voltage):
-    if voltage is None or FULL_V <= EMPTY_V:
+    if voltage is None:
         return None
-    ratio = (voltage - EMPTY_V) / (FULL_V - EMPTY_V)
-    return max(0, min(100, int(round(ratio * 100))))
+    if CUSTOM_SOC_TABLE:
+        table = CUSTOM_SOC_TABLE
+    elif CHEMISTRY == "lifepo4":
+        table = [(v * CELLS, s) for v, s in LIFEPO4_CELL_SOC]
+    else:
+        if FULL_V <= EMPTY_V:
+            return None
+        table = [(EMPTY_V, 0.0), (FULL_V, 100.0)]
+    if voltage <= table[0][0]:
+        return 0
+    if voltage >= table[-1][0]:
+        return 100
+    for (v0, s0), (v1, s1) in zip(table, table[1:]):
+        if v0 <= voltage <= v1:
+            if v1 == v0:
+                return int(round(s1))
+            return int(round(s0 + (voltage - v0) / (v1 - v0) * (s1 - s0)))
+    return None
 
 
 def write_state(payload):
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     payload = dict(payload)
     payload["updated_at"] = time.time()
+    payload["chemistry"] = CHEMISTRY
+    payload["cells"] = CELLS
     payload["full_v"] = FULL_V
     payload["empty_v"] = EMPTY_V
     temp = f"{STATE_FILE}.{os.getpid()}.tmp"

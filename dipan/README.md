@@ -743,8 +743,9 @@ python3 battery_monitor.py --once    # 扫到一帧就退出，快速验证接�
 - 默认只扫盒子的板载 485（`/dev/ttyTHS*`），**不扫 USB**，避免和灵巧手抢串口；
   若电池板走 USB-RS485，用 `BATTERY_SCAN_USB=1` 或直接 `BATTERY_SERIAL=/dev/ttyUSB0`。
 - 自动扫描时可用 `BATTERY_SKIP_PORTS` 跳过指定串口。
-- 百分比按 `BATTERY_FULL_V`（默认 `52.0`）和 `BATTERY_EMPTY_V`（默认 `42.0`）
-  线性换算，请按实际电池组修改。
+- 电池为磷酸铁锂：默认按 **15 串**（48V 铁锂）单体 SOC 表换算（`BATTERY_CELLS` 默认 `15`），
+  比直线准。要覆盖可设 `BATTERY_SOC_TABLE`（如 `37.5:0,46:20,48.9:50,51:100`）；要线性换算设
+  `BATTERY_CHEMISTRY=linear` 并用 `BATTERY_FULL_V`/`BATTERY_EMPTY_V`。
 - 结果写入 `runtime/battery.json`，后端 `/api/device/info` 的 `power.battery` 读取它。
 - **没装电池板的机器**：扫不到就一直静默重试，`power.battery.online=false`，页面显示 `-`，
   不报错；也可用 `BATTERY_MONITOR_ENABLE=0` 直接不启动该进程。
