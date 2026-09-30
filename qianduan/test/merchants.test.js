@@ -152,6 +152,17 @@ test('merchant login is scoped to the stores it owns', async (t) => {
     assert.equal(merchantOrders.json.total, 1);
     assert.equal(merchantOrders.json.data[0].storeId, storeA.json.data.id);
 
+    const refundOrderA = await requestJson(`${baseUrl}/api/merchant/orders/${encodeURIComponent(orderA.json.orderId)}/refund`, {
+        method: 'POST', cookie: merchantCookie, body: { reason: '商家测试退款' }
+    });
+    assert.equal(refundOrderA.response.status, 200);
+    assert.equal(refundOrderA.json.data.paymentStatus, 'REFUNDED');
+
+    const refundForeignOrder = await requestJson(`${baseUrl}/api/merchant/orders/${encodeURIComponent(orderB.json.orderId)}/refund`, {
+        method: 'POST', cookie: merchantCookie, body: { reason: '越权退款' }
+    });
+    assert.equal(refundForeignOrder.response.status, 404);
+
     const overview = await requestJson(`${baseUrl}/api/merchant/overview`, { cookie: merchantCookie });
     assert.equal(overview.json.data.stores.length, 1);
     assert.equal(overview.json.data.stores[0].id, storeA.json.data.id);

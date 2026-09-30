@@ -3742,6 +3742,45 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    const merchantOrderRefundMatch = pathname.match(/^\/api\/merchant\/orders\/([^/]+)\/refund$/);
+    if (merchantOrderRefundMatch && req.method === 'POST') {
+        const auth = requireMerchant(req, res);
+        if (!auth) return;
+        const orderId = decodeURIComponent(merchantOrderRefundMatch[1]);
+        const order = orderById(orderId);
+        if (!order || order.source === 'test' || !order.storeId || !auth.merchant.storeIds.includes(order.storeId)) {
+            sendJSON(res, { code: 1, message: '订单不存在或不属于本店' }, 404);
+            return;
+        }
+        const body = await parseBody(req);
+        const refundInProgress = ['REFUNDING', 'PARTIAL_REFUNDING'].includes(order.status)
+            || ['REFUNDING', 'PARTIAL_REFUNDING'].includes(order.paymentStatus);
+        if (refundInProgress) {
+            sendJSON(res, { code: 1, message: '上一笔退款仍在处理中，请等待结果确认' }, 409);
+            return;
+        }
+        const refundablePaidOrder = ['PAID', 'PLACED', 'COMPLETED', 'PARTIALLY_COMPLETED', 'FAILED'].includes(order.status)
+            && order.paymentStatus === 'PAID';
+        const refundablePartialOrder = order.status === 'PARTIALLY_COMPLETED'
+            && order.paymentStatus === 'PARTIALLY_REFUNDED'
+            && remainingRefundAmount(order) > 0.001;
+        if (!refundablePaidOrder && !refundablePartialOrder) {
+            sendJSON(res, { code: 1, message: '仅已支付或已完成订单可退款' }, 409);
+            return;
+        }
+        const reason = String(body && body.reason || '商家退款').slice(0, 200);
+        try {
+            const refunded = await refundOrder(order, reason, 'merchant');
+            sendJSON(res, { code: 0, data: publicOrder(refunded) });
+        } catch (error) {
+            order.refundStatus = 'FAIL';
+            order.refundReason = `${reason} (${error.message})`;
+            saveOrder(order);
+            sendJSON(res, { code: 1, message: `退款失败: ${error.message}` }, 502);
+        }
+        return;
+    }
+
     if (pathname === '/api/merchant/inventory-reviews' && req.method === 'GET') {
         const auth = requireMerchant(req, res);
         if (!auth) return;

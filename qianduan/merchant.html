@@ -107,6 +107,28 @@
             .mc-form-card { position: static; max-height: none; }
         }
         @media (max-width: 640px) { .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        .inventory-config-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 8px; color: var(--gray-500); font-size: 0.82rem; }
+        .inventory-config-summary { color: var(--gray-700); font-weight: 700; }
+        .inventory-config-hint { white-space: nowrap; }
+        .inventory-config-scroll { max-height: min(42vh, 420px); overflow: auto; border: 1px solid var(--gray-200); border-radius: 8px; padding: 10px; background: var(--gray-50); }
+        .inventory-shelf-grid { display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 12px; }
+        .inventory-shelf-card { min-width: 0; padding: 12px; border: 1px solid var(--gray-200); border-left: 4px solid var(--gray-300); border-radius: 8px; background: #fff; }
+        .inventory-shelf-card.zone-a { border-left-color: #60A5FA; }
+        .inventory-shelf-card.zone-b { border-left-color: #A78BFA; }
+        .inventory-shelf-card.zone-c { border-left-color: #34D399; }
+        .inventory-shelf-card.zone-d { border-left-color: #F59E0B; }
+        .inventory-shelf-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+        .inventory-shelf-zone { padding: 2px 8px; border-radius: 10px; background: var(--gray-100); color: var(--gray-600); font-size: 0.75rem; font-weight: 700; }
+        .inventory-shelf-card select { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--gray-200); border-radius: 8px; background: #fff; }
+        .inventory-point-list { display: grid; gap: 8px; }
+        .inventory-point-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; align-items: center; }
+        .inventory-shelf-footer { display: flex; justify-content: flex-end; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+        .inventory-shelf-footer .inventory-config-hint { margin-right: auto; }
+        .inventory-add-shelf { min-height: 150px; border: 2px dashed var(--gray-300); border-radius: 8px; background: transparent; color: var(--gray-500); cursor: pointer; font: inherit; font-weight: 700; display: grid; place-content: center; gap: 6px; }
+        .inventory-add-shelf:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
+        .inventory-add-shelf .add-icon { font-size: 2rem; line-height: 1; }
+        @media (max-width: 700px) { .inventory-shelf-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        @media (max-width: 460px) { .inventory-shelf-grid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
@@ -286,8 +308,8 @@
                     </div>
                     <div class="table-wrapper">
                         <table>
-                            <thead><tr><th>订单号</th><th>商品</th><th>金额</th><th>设备</th><th>状态</th><th>创建时间</th></tr></thead>
-                            <tbody id="orderBody"><tr><td colspan="6" class="loading">加载中...</td></tr></tbody>
+                            <thead><tr><th>订单号</th><th>商品</th><th>金额</th><th>设备</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+                            <tbody id="orderBody"><tr><td colspan="7" class="loading">加载中...</td></tr></tbody>
                         </table>
                     </div>
                     <div class="pagination">
@@ -304,6 +326,13 @@
                         <span class="status-badge warn" id="mcScanBadge">未运行</span>
                     </div>
                     <p id="mcScanMessage" style="color:var(--gray-500);font-size:0.84rem;margin-bottom:10px;">配置货架底盘点位后，可按货架顺序识别每架第 1、第 2 层（不抓取）。</p>
+                    <div class="inventory-config-toolbar">
+                        <span class="inventory-config-summary" id="mcInventoryConfigSummary">已配置 0 个点位</span>
+                        <span class="inventory-config-hint" id="mcInventoryConfigHint">每个货架可配置 1–6 个点位，新增货架默认 2 个</span>
+                    </div>
+                    <div class="inventory-config-scroll">
+                        <div class="inventory-shelf-grid" id="mcInventoryShelfConfigBody"></div>
+                    </div>
                     <div class="toolbar">
                         <button class="btn btn-primary" type="button" id="mcScanStart" onclick="mcStartScan()">开始自动巡架</button>
                         <button class="btn btn-danger" type="button" id="mcScanStop" onclick="mcStopScan()" disabled>停止巡架</button>
@@ -385,7 +414,7 @@
             if (target === 'products') { loadMerchantProducts(); loadMerchantMarkers(); loadMerchantCatalog(); }
             if (target === 'devices' || target === 'dashboard') loadOverview();
             if (target === 'orders') loadOrders(orderPage || 1);
-            if (target === 'inventory-scan') mcLoadScan();
+            if (target === 'inventory-scan') { mcLoadScan(); mcLoadChassis(); }
             if (target === 'chassis') { mcLoadChassis(); mcLoadNavConfig(); }
         }
 
@@ -832,10 +861,20 @@
                 document.getElementById('orderPageInfo').textContent = `第 ${orderPage} / ${orderTotalPages} 页`;
                 document.getElementById('orderPrev').disabled = orderPage <= 1;
                 document.getElementById('orderNext').disabled = orderPage >= orderTotalPages;
-                if (!json.data.length) { body.innerHTML = '<tr><td colspan="6" class="empty-state">暂无订单</td></tr>'; return; }
+                if (!json.data.length) { body.innerHTML = '<tr><td colspan="7" class="empty-state">暂无订单</td></tr>'; return; }
                 body.innerHTML = json.data.map((order) => {
                     const items = (order.items || []).map((item) => `${esc(item.name)} × ${item.qty}`).join('<br>');
                     const label = statusLabels[order.status] || order.status;
+                    const refundedAmount = Number(order.refundedAmount || 0);
+                    const remainingRefundAmount = Number(order.remainingRefundAmount ?? Math.max(0, Number(order.totalAmount || 0) - refundedAmount));
+                    const refundFinished = order.paymentStatus === 'REFUNDED' || remainingRefundAmount <= 0.001;
+                    const refundInProgress = ['REFUNDING', 'PARTIAL_REFUNDING'].includes(order.paymentStatus)
+                        || ['PROCESSING', 'PENDING'].includes(order.refundStatus);
+                    const canRefund = !refundFinished && !refundInProgress && (
+                        (['PAID', 'COMPLETED', 'PLACED', 'PARTIALLY_COMPLETED', 'FAILED'].includes(order.status) && order.paymentStatus === 'PAID')
+                        || (order.status === 'PARTIALLY_COMPLETED' && order.paymentStatus === 'PARTIALLY_REFUNDED')
+                    );
+                    const refundButtonLabel = refundedAmount > 0 ? `退剩余 ¥${remainingRefundAmount.toFixed(2)}` : '退款';
                     return `<tr>
                         <td><strong>${esc(order.orderId)}</strong></td>
                         <td class="order-items">${items || '-'}</td>
@@ -843,10 +882,32 @@
                         <td>${esc(order.deviceSn || order.deviceId || '-')}</td>
                         <td><span class="status-badge ${order.status === 'COMPLETED' ? 'on' : (order.status === 'REFUNDED' ? 'off' : 'warn')}">${esc(label)}</span></td>
                         <td>${esc(order.createdAt ? new Date(order.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-')}</td>
+                        <td class="actions">${canRefund ? `<button class="btn btn-danger btn-sm" type="button" onclick="refundMerchantOrder('${esc(order.orderId)}', ${remainingRefundAmount})">${refundButtonLabel}</button>` : ''}</td>
                     </tr>`;
                 }).join('');
             } catch (error) {
-                body.innerHTML = `<tr><td colspan="6" class="empty-state">${esc(error.message)}</td></tr>`;
+                body.innerHTML = `<tr><td colspan="7" class="empty-state">${esc(error.message)}</td></tr>`;
+            }
+        }
+
+        async function refundMerchantOrder(orderId, remainingAmount = null) {
+            const amountHint = Number.isFinite(Number(remainingAmount))
+                ? `（最多可退 ¥${Number(remainingAmount).toFixed(2)}）`
+                : '';
+            const reason = window.prompt(`请输入退款原因${amountHint}`, '商家退款');
+            if (reason === null) return;
+            try {
+                const res = await merchantFetch(`/api/merchant/orders/${encodeURIComponent(orderId)}/refund`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reason: reason.trim() || '商家退款' })
+                });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '退款失败');
+                showToast('退款申请已提交', 'success');
+                await loadOrders(orderPage);
+            } catch (error) {
+                showToast(error.message, 'error');
             }
         }
 
@@ -1136,6 +1197,7 @@
                 const json = await res.json();
                 if (!res.ok || json.code !== 0) throw new Error(json.message || '巡架状态读取失败');
                 mcScanData = json.data || { shelves: [], task: { status: 'idle', results: [] }, running: false };
+                if (!mcInventoryConfigDirty) mcRenderInventoryConfig();
                 mcRenderScan();
                 mcUpdateScanControls();
                 if (!mcScanData.running) await mcLoadScanReviews();
@@ -1188,6 +1250,188 @@
             } finally {
                 mcUpdateScanControls();
             }
+        }
+
+        // ===== 巡检点位配置（与管理端一致）=====
+        const MC_MAX_SHELVES = 99;
+        const MC_SHELF_NAMES = Array.from({ length: MC_MAX_SHELVES }, (_, index) => {
+            let value = index + 1;
+            let name = '';
+            while (value > 0) { value -= 1; name = String.fromCharCode(65 + (value % 26)) + name; value = Math.floor(value / 26); }
+            return name;
+        });
+        let mcInventoryConfigDraft = [];
+        let mcInventoryConfigDirty = false;
+        let mcInventoryConfigDirtyShelves = new Set();
+
+        function mcCloneShelves(rows) {
+            return (Array.isArray(rows) ? rows : []).map((row) => ({
+                shelf: String(row.shelf || row.zone || '').trim().toUpperCase(),
+                originalShelf: String(row.shelf || row.zone || '').trim().toUpperCase(),
+                markers: Array.isArray(row.markers)
+                    ? row.markers.map((marker) => String(marker || '').trim())
+                    : [String(row.marker || '').trim()]
+            })).filter((row) => row.shelf);
+        }
+        function mcShelvesFromDom() {
+            return [...document.querySelectorAll('#mcInventoryShelfConfigBody .inventory-shelf-card')].map((card) => ({
+                shelf: card.querySelector('[data-field="shelf"]')?.value || '',
+                originalShelf: card.dataset.originalShelf || card.querySelector('[data-field="shelf"]')?.value || '',
+                markers: [...card.querySelectorAll('[data-field="marker"]')].map((select) => select.value || '')
+            }));
+        }
+        function mcShelfOptions(selected) {
+            const names = selected && !MC_SHELF_NAMES.includes(selected) ? [selected, ...MC_SHELF_NAMES] : MC_SHELF_NAMES;
+            return names.map((shelf) => `<option value="${shelf}"${shelf === selected ? ' selected' : ''}>${shelf}货架</option>`).join('');
+        }
+        function mcMarkerOptions(selected = '') {
+            const markers = [...(mcMapData.markers || [])].sort((a, b) => a.floor - b.floor || a.name.localeCompare(b.name, 'zh-CN'));
+            let options = '<option value="">请选择点位</option>';
+            for (const marker of markers) {
+                options += `<option value="${esc(marker.name)}"${marker.name === selected ? ' selected' : ''}>${esc(marker.name)} (${marker.x.toFixed(2)}, ${marker.y.toFixed(2)})</option>`;
+            }
+            if (selected && !markers.some((marker) => marker.name === selected)) {
+                options += `<option value="${esc(selected)}" selected>${esc(selected)}（底盘当前未返回）</option>`;
+            }
+            return options;
+        }
+        function mcRenderInventoryConfig() {
+            const body = document.getElementById('mcInventoryShelfConfigBody');
+            if (!body) return;
+            const shelves = mcInventoryConfigDraft.length ? mcInventoryConfigDraft : mcCloneShelves(mcScanData.shelves);
+            mcInventoryConfigDraft = shelves;
+            const cards = shelves.map((row, shelfIndex) => {
+                const shelf = MC_SHELF_NAMES.includes(row.shelf) ? row.shelf : (row.shelf || 'A');
+                const markers = Array.isArray(row.markers) && row.markers.length ? row.markers : [''];
+                const originalShelf = row.originalShelf || '';
+                const dirty = mcInventoryConfigDirtyShelves.has(shelfIndex);
+                return `<div class="inventory-shelf-card zone-${shelf.toLowerCase()}" data-inventory-shelf-index="${shelfIndex}" data-original-shelf="${esc(originalShelf)}">
+                    <div class="inventory-shelf-head">
+                        <select data-field="shelf" aria-label="选择货架" onchange="mcMarkInventoryConfigDirty(this)">${mcShelfOptions(shelf)}</select>
+                        <span class="inventory-shelf-zone">${shelf}货架</span>
+                    </div>
+                    <div class="inventory-point-list">
+                        ${markers.map((marker, pointIndex) => `<div class="inventory-point-row" data-inventory-point-index="${pointIndex}">
+                            <select data-field="marker" aria-label="${shelf}货架第${pointIndex + 1}个点位" onchange="mcMarkInventoryConfigDirty(this)">${mcMarkerOptions(marker)}</select>
+                            <button class="btn btn-primary btn-sm" type="button" title="前往此点位" onclick="mcNavigateInventoryPoint(this)">前往</button>
+                            <button class="btn btn-danger btn-sm" type="button" title="移除此点位" onclick="mcRemoveInventoryPoint(${shelfIndex}, ${pointIndex})"${markers.length <= 1 ? ' disabled' : ''}>−</button>
+                        </div>`).join('')}
+                    </div>
+                    <div class="inventory-shelf-footer">
+                        <button class="btn btn-primary btn-sm" type="button" onclick="mcAddInventoryPoint(${shelfIndex})"${markers.length >= 6 ? ' disabled' : ''}>+ 点位</button>
+                        <span class="inventory-config-hint">${dirty ? '未保存' : (originalShelf ? '已保存' : '新货架')}</span>
+                        <button class="btn btn-primary btn-sm" type="button" onclick="mcSaveInventoryShelf(${shelfIndex})">保存</button>
+                        <button class="btn btn-danger btn-sm" type="button" onclick="mcRemoveInventoryShelf(${shelfIndex})"${shelves.length <= 1 ? ' disabled' : ''}>删除</button>
+                    </div>
+                </div>`;
+            }).join('');
+            const addCard = shelves.length < MC_SHELF_NAMES.length
+                ? '<button class="inventory-add-shelf" type="button" id="mcAddInventoryShelfButton" onclick="mcAddInventoryShelf()"><span class="add-icon">+</span><span>增加货架</span></button>' : '';
+            body.innerHTML = cards + addCard;
+            mcUpdateInventoryConfigSummary();
+        }
+        function mcUpdateInventoryConfigSummary() {
+            if (document.querySelector('#mcInventoryShelfConfigBody .inventory-shelf-card')) mcInventoryConfigDraft = mcShelvesFromDom();
+            const configured = mcInventoryConfigDraft.reduce((sum, shelf) => sum + shelf.markers.filter((marker) => String(marker || '').trim()).length, 0);
+            const summary = document.getElementById('mcInventoryConfigSummary');
+            if (summary) summary.textContent = `${mcInventoryConfigDraft.length} 个货架，已配置 ${configured} 个点位`;
+            const hint = document.getElementById('mcInventoryConfigHint');
+            if (hint) hint.textContent = mcInventoryConfigDirty ? '有未保存的点位配置' : '每个货架可配置 1–6 个点位，新增货架默认 2 个';
+            const addButton = document.getElementById('mcAddInventoryShelfButton');
+            if (addButton) addButton.disabled = mcInventoryConfigDraft.length >= MC_SHELF_NAMES.length;
+        }
+        function mcMarkInventoryConfigDirty(control) {
+            mcInventoryConfigDraft = mcShelvesFromDom();
+            mcInventoryConfigDirty = true;
+            const card = control?.closest?.('.inventory-shelf-card');
+            if (card) mcInventoryConfigDirtyShelves.add(Number(card.dataset.inventoryShelfIndex));
+            mcRenderInventoryConfig();
+        }
+        async function mcSaveInventoryShelf(index) {
+            mcInventoryConfigDraft = mcShelvesFromDom();
+            const row = mcInventoryConfigDraft[index];
+            if (!row) return;
+            const shelf = String(row.shelf || '').toUpperCase();
+            if (!MC_SHELF_NAMES.includes(shelf)) return showToast('请选择有效货架编号', 'error');
+            if (mcInventoryConfigDraft.some((item, itemIndex) => itemIndex !== index && item.shelf === shelf)) return showToast(`${shelf}货架已经存在`, 'error');
+            if (row.markers.length < 1 || row.markers.length > 6) return showToast('每个货架只能配置 1-6 个点位', 'error');
+            const card = document.querySelector(`.inventory-shelf-card[data-inventory-shelf-index="${index}"]`);
+            card?.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+            try {
+                const res = await mcFetch(`/api/merchant/console/inventory-scan/config/${encodeURIComponent(shelf)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ markers: row.markers, previous_shelf: row.originalShelf || '' })
+                });
+                const json = await res.json();
+                if (!res.ok || json.code !== 0) throw new Error(json.message || '货架保存失败');
+                const saved = mcCloneShelves([json.data])[0];
+                if (!saved) throw new Error('保存结果中缺少当前货架');
+                mcScanData.shelves = [
+                    ...mcCloneShelves(mcScanData.shelves).filter((item) => item.shelf !== shelf && item.shelf !== row.originalShelf),
+                    saved
+                ];
+                mcInventoryConfigDraft[index] = { ...saved, originalShelf: shelf };
+                mcInventoryConfigDirtyShelves.delete(index);
+                mcInventoryConfigDirty = mcInventoryConfigDirtyShelves.size > 0;
+                mcRenderInventoryConfig();
+                showToast(`${shelf}货架已保存`, 'success');
+            } catch (error) {
+                showToast(error.message, 'error');
+                mcRenderInventoryConfig();
+            }
+        }
+        function mcAddInventoryShelf() {
+            mcInventoryConfigDraft = mcShelvesFromDom();
+            const shelf = MC_SHELF_NAMES.find((name) => !mcInventoryConfigDraft.some((row) => row.shelf === name));
+            if (!shelf) return showToast('已达到货架数量上限', 'warning');
+            mcInventoryConfigDraft.push({ shelf, originalShelf: '', markers: ['', ''] });
+            mcInventoryConfigDirty = true;
+            mcInventoryConfigDirtyShelves.add(mcInventoryConfigDraft.length - 1);
+            mcRenderInventoryConfig();
+        }
+        async function mcRemoveInventoryShelf(index) {
+            mcInventoryConfigDraft = mcShelvesFromDom();
+            if (mcInventoryConfigDraft.length <= 1) return showToast('至少保留一个货架', 'warning');
+            const row = mcInventoryConfigDraft[index];
+            if (row?.originalShelf) {
+                if (!window.confirm(`确认删除 ${row.originalShelf} 货架吗？`)) return;
+                try {
+                    const res = await mcFetch(`/api/merchant/console/inventory-scan/config/${encodeURIComponent(row.originalShelf)}`, { method: 'DELETE' });
+                    const json = await res.json();
+                    if (!res.ok || json.code !== 0) throw new Error(json.message || '货架删除失败');
+                    mcScanData.shelves = mcCloneShelves(json.data);
+                } catch (error) {
+                    showToast(error.message, 'error');
+                    return;
+                }
+            }
+            mcInventoryConfigDraft.splice(index, 1);
+            mcInventoryConfigDirtyShelves = new Set([...mcInventoryConfigDirtyShelves].filter((item) => item !== index).map((item) => item > index ? item - 1 : item));
+            mcInventoryConfigDirty = mcInventoryConfigDirtyShelves.size > 0;
+            mcRenderInventoryConfig();
+        }
+        function mcAddInventoryPoint(shelfIndex) {
+            mcInventoryConfigDraft = mcShelvesFromDom();
+            const row = mcInventoryConfigDraft[shelfIndex];
+            if (!row || row.markers.length >= 6) return showToast('每个货架最多 6 个点位', 'warning');
+            row.markers.push('');
+            mcInventoryConfigDirty = true;
+            mcInventoryConfigDirtyShelves.add(shelfIndex);
+            mcRenderInventoryConfig();
+        }
+        function mcRemoveInventoryPoint(shelfIndex, pointIndex) {
+            mcInventoryConfigDraft = mcShelvesFromDom();
+            const row = mcInventoryConfigDraft[shelfIndex];
+            if (!row || row.markers.length <= 1) return showToast('每个货架至少保留一个点位', 'warning');
+            row.markers.splice(pointIndex, 1);
+            mcInventoryConfigDirty = true;
+            mcInventoryConfigDirtyShelves.add(shelfIndex);
+            mcRenderInventoryConfig();
+        }
+        function mcNavigateInventoryPoint(button) {
+            const marker = button.closest('.inventory-point-row')?.querySelector('[data-field="marker"]')?.value || '';
+            mcNavigate(marker, button);
         }
 
         async function mcLoadScanReviews() {
