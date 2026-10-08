@@ -13,10 +13,10 @@ from tool_geometry import tool_size_label_mm
 
 DOBOT_IP = os.getenv("DOBOT_IP", "192.168.5.1")
 DOBOT_PORT = 29999
-HAND_WEIGHT = float(os.getenv("HAND_WEIGHT_KG", "0.6"))
+HAND_WEIGHT = float(os.getenv("HAND_WEIGHT_KG", "0.8"))
 HAND_COG_X = float(os.getenv("HAND_COG_X_M", "0.0"))
 HAND_COG_Y = float(os.getenv("HAND_COG_Y_M", "0.0"))
-HAND_COG_Z = float(os.getenv("HAND_COG_Z_M", "0.12"))
+HAND_COG_Z = float(os.getenv("HAND_COG_Z_M", "0.25"))
 HOME_JOINTS_DEG = [-44.1, -20.2, 134.6, -112.7, -46.0, 90.6]
 ROBOT_POLL_S = float(os.getenv("ROBOT_POLL_S", "0.2"))
 SELF_COLLISION_ENABLE = os.getenv("SELF_COLLISION_ENABLE", "1").lower() in ("1", "true", "yes", "on")

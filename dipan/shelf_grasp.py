@@ -24,6 +24,11 @@ if VISION_DIR not in sys.path:
 from orbbec_detect import MedicineLocatorSystem, RealSenseCamera
 from orbbec_detect import _assess_lighting
 
+try:
+    from servo_joint import ServoJoint
+except Exception:  # 舵机模块缺失时不影响主流程
+    ServoJoint = None
+
 from dobot_arm import DobotArm, _clamp_cp
 from grasp_planner import (
     EDGE_MIDPOINT_GRASP_ENABLE,
@@ -98,13 +103,13 @@ def _shrink_box_bounds(boxes, shrink_m):
 HAND_LENGTH = HAND_LENGTH_Z_M      # 法兰 → 指尖 (米)
 HAND_PALM_LENGTH_M = HAND_PALM_LENGTH_Z_M  # 法兰 → 掌心前端 (米)
 HAND_FINGER_THICKNESS_M = float(os.getenv("HAND_FINGER_THICKNESS_M", "0.03"))  # 手指厚度 (米)
-HAND_WEIGHT = float(os.getenv("HAND_WEIGHT_KG", "0.6"))
+HAND_WEIGHT = float(os.getenv("HAND_WEIGHT_KG", "1"))
 HAND_W_Y = HAND_PALM_WIDTH_Y_M     # 手 Y 方向宽度 (米)
 HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.12, 0.008, 0.008)
+SIDE_GRASP_OFFSET_M = (-0.165, -0.02, 0.008)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.035)
 
@@ -149,6 +154,34 @@ HAND_BACKEND = os.getenv(
 LHAND_DOBOT_BAUD = int(os.getenv("LHAND_DOBOT_BAUD", "115200"))
 LHAND_RS485_NODE_ID = int(os.getenv("LHAND_RS485_NODE_ID", "1"))
 LHAND_DOBOT_CONTROL = os.getenv("LHAND_DOBOT_CONTROL", "compact").strip().lower()
+
+# ── 第 7 关节：串口舵机（FTcontrol 协议）──
+# 层板观察位 / 放置过渡点 / 放置点 / 收起 都保持 SERVO_HOLD_ANGLE；
+# 抓取阶段若配置了 SERVO_GRASP_ANGLE 则转到该角度，未配置则不动。
+SERVO_HOLD_ANGLE = float(os.getenv("SERVO_HOLD_ANGLE", "150"))
+SERVO_GRASP_ANGLE = os.getenv("SERVO_GRASP_ANGLE", "360").strip()
+_servo = None
+
+
+def servo_set_angle(angle, label=""):
+    if _servo is None or not getattr(_servo, "ok", False):
+        return False
+    if _servo.set_angle(angle):
+        print(f"[舵机] {label or '设置'} → {float(angle):.0f}°")
+        return True
+    return False
+
+
+def servo_hold():
+    """结构化位姿（层板/过渡/放置/收起）：舵机保持 SERVO_HOLD_ANGLE。"""
+    return servo_set_angle(SERVO_HOLD_ANGLE, "保持")
+
+
+def servo_grasp():
+    """抓取阶段舵机角度（SERVO_GRASP_ANGLE）；未配置则保持不动。"""
+    if SERVO_GRASP_ANGLE:
+        return servo_set_angle(float(SERVO_GRASP_ANGLE), "抓取")
+    return False
 LHAND_FLEX_PROFILE = os.path.abspath(os.path.expanduser(os.getenv(
     "LHAND_FLEX_PROFILE",
     os.path.join(os.path.dirname(__file__), "runtime", "lhandpro_empty.csv"),
@@ -882,6 +915,7 @@ def save_place_transition_low():
 
 def go_to_place_transition_low(arm: "DobotArm"):
     """关节运动到低位进层过渡点"""
+    servo_hold()
     if _place_transition_low_pose is None:
         print("  [低位过渡点] 未记录，先用 l t s 记录")
         return False
@@ -906,6 +940,7 @@ def save_stow_pose():
 
 def go_to_layer(arm: "DobotArm", layer_idx: int):
     """移动机械臂到指定货架层的观察位姿 (MovL 笛卡尔)"""
+    servo_hold()
     if layer_idx not in _shelf_layer_poses:
         print(f"  [错误] 第{layer_idx}层未记录! 先用 l s 记录当前位姿")
         return False
@@ -927,6 +962,7 @@ def go_to_layer(arm: "DobotArm", layer_idx: int):
 
 def go_to_layer_from_non_shelf_pose(arm: "DobotArm", layer_idx: int, visit_place_transition: bool = True):
     """从放置/未知位姿安全进层；先抬高，再经高位过渡后垂直下落。"""
+    servo_hold()
     if layer_idx not in _shelf_layer_poses:
         print(f"  [错误] 第{layer_idx}层未记录! 先用 l s 记录当前位姿")
         return False
@@ -1026,6 +1062,7 @@ def go_to_layer_from_non_shelf_pose(arm: "DobotArm", layer_idx: int, visit_place
 
 def go_to_layer_from_stow(arm: "DobotArm", layer_idx: int):
     """从收起位直接关节运动到目标层，避免绕行放置过渡点。"""
+    servo_hold()
     if not is_at_stow_pose(arm):
         print("  [收起位进层][中止] 当前位姿不再匹配收起位, 不发送运动命令")
         return False
@@ -1044,6 +1081,7 @@ def go_to_layer_from_stow(arm: "DobotArm", layer_idx: int):
 
 def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: float = 120.0):
     """先抬高再回到指定层, 用于避开放置点到货架层的直线路径"""
+    servo_hold()
     if layer_idx not in _shelf_layer_poses:
         print(f"  [错误] 第{layer_idx}层未记录! 先用 l s 记录当前位姿")
         return False
@@ -1078,6 +1116,7 @@ def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: flo
 
 def go_to_place_point(arm: "DobotArm", visit_transition: bool = True):
     """移动机械臂到记录的放置点 (MovL 笛卡尔)"""
+    servo_hold()
     if _place_point_pose is None:
         print("  [错误] 放置点未记录! 先用 p 进入放置点管理, 拖到目标位置后输入 s")
         return False
@@ -1108,6 +1147,7 @@ def go_to_place_point(arm: "DobotArm", visit_transition: bool = True):
 
 def go_to_place_transition(arm: "DobotArm"):
     """如果记录了放置过渡点，则先移动到过渡点。未记录时直接跳过。"""
+    servo_hold()
     if _place_transition_pose is None:
         return True
     pose, name = _place_transition_pose
@@ -1156,6 +1196,7 @@ def go_to_stow_pose(
     skip_transition: bool = False,
 ):
     """移动到收起姿态；已知在货架层时直接关节收起，避免多余过渡点。"""
+    servo_hold()
     if _stow_pose is None:
         print("  [收起姿态] 未记录, 跳过。可用 u 菜单拖动记录")
         return False
@@ -2098,6 +2139,14 @@ def main():
         hand = _create_hand(arm)
         _connect_and_open_hand(hand)
 
+    # ── 第 7 关节：串口舵机（FTcontrol 协议）──
+    global _servo
+    if ServoJoint is not None:
+        _servo = ServoJoint()
+        if _servo.connect():
+            atexit.register(_servo.close)
+            servo_hold()
+
     if _current_layer_idx == STARTUP_LAYER_IDX:
         save_shelf_layers()
     if not SHELF_GRASP_IDLE_STARTUP and not SAFE_NAV_STARTUP and _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
@@ -2778,6 +2827,7 @@ def main():
             # ========================================================
             # ── 执行 ──
             print("\n执行抓取动作...")
+            servo_grasp()
 
             # 1. 张开手
             if not SKIP_HAND:
