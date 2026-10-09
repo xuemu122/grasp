@@ -109,7 +109,7 @@ HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.105, -0.15, 0.008)
+SIDE_GRASP_OFFSET_M = (-0.105, -0.16, 0.008)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.035)
 
