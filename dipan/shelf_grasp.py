@@ -109,7 +109,7 @@ HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.115, -0.135, 0.008)
+SIDE_GRASP_OFFSET_M = (-0.105, -0.15, 0.008)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.035)
 
@@ -1139,19 +1139,41 @@ def go_to_place_point(arm: "DobotArm", visit_transition: bool = True):
             print("  [放置过渡点] 移动失败")
             return False
     print(f"\n[放置点] 移动到 {name} ...")
-    place_cp = _clamp_cp(PLACE_TRANSITION_CP) if PLACE_SMOOTH_TRANSITION else 0
-    if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100, cp=place_cp):
+    if _place_point_joints is not None:
+        ok = arm.move_pose_safe(pose, joints=_place_point_joints, speed=80)
+    else:
+        place_cp = _clamp_cp(PLACE_TRANSITION_CP) if PLACE_SMOOTH_TRANSITION else 0
+        ok = arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100, cp=place_cp)
+    if not ok:
         return False
     time.sleep(MOTION_SETTLE_S)
-    try:
-        cur = arm.get_pose()
-    except Exception:
-        print("  [警告] 无法确认是否到达放置点, 本次不自动张手")
-        return False
-    err_mm = np.linalg.norm(np.array(cur[:3]) - np.array(pose[:3]))
-    if err_mm > 30:
-        print(f"  [警告] 当前距放置点 {err_mm:.0f}mm, 本次不自动张手")
-        return False
+    if _place_point_joints is not None:
+        # 主动等到关节角真正到位, 避免 _wait_motion_done 提前返回导致提前张手
+        joint_err = None
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            try:
+                cur_j = arm.get_joints()
+            except Exception:
+                cur_j = None
+            if cur_j is not None:
+                joint_err = max(abs(float(a) - float(b)) for a, b in zip(cur_j, _place_point_joints))
+                if joint_err <= 3.0:
+                    break
+            time.sleep(0.1)
+        if joint_err is None or joint_err > 3.0:
+            print(f"  [警告] 放置点关节角未到位 (误差={joint_err}), 本次不自动张手")
+            return False
+    else:
+        try:
+            cur = arm.get_pose()
+        except Exception:
+            print("  [警告] 无法确认是否到达放置点, 本次不自动张手")
+            return False
+        err_mm = np.linalg.norm(np.array(cur[:3]) - np.array(pose[:3]))
+        if err_mm > 30:
+            print(f"  [警告] 当前距放置点 {err_mm:.0f}mm, 本次不自动张手")
+            return False
     return True
 
 
