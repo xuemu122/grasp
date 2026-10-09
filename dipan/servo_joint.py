@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""第 7 关节：串口总线舵机（FTcontrol duo6u0 协议）封装。
+"""第 7 关节：串口总线舵机（FTcontrol 协议）封装。
 
-协议（来自 FTcontrol/duo6u0.py）：
+协议（参考 FTcontrol/duo11.py）：
 - 串口总线舵机，默认 /dev/servo（udev 软链），1,000,000 bps，ID=1。
-- 位置 0..4095 对应 0..360°；写目标位置前可先写目标速度。
-- 寄存器：使能 0x28、目标位置 0x2A、目标速度 0x2E、当前位置 0x38、当前负载 0x3C。
+- 位置 0..4095 对应 0..360°；写位置前先写加速度和速度。
+- 寄存器：使能 0x28、加速度 0x29（1字节,0~254,越小越柔和,0=最大）、
+  目标位置 0x2A、目标速度 0x2E、当前位置 0x38、当前负载 0x3C、
+  Moving 0x42（0=停/到位，1=在动）。
 
 环境变量：
 - SERVO_ENABLE  0 关闭（默认开）
 - SERVO_PORT    默认 /dev/servo
 - SERVO_BAUD    默认 1000000
 - SERVO_ID      默认 1
-- SERVO_SPEED   默认速度，默认 10
+- SERVO_SPEED   默认速度，默认 800
+- SERVO_ACC     默认加速度（0~254，越小越柔和），默认 20
 
 连接失败不抛异常：`ok=False`，所有操作安全空转，抓取主程序照常运行。
 """
@@ -28,14 +31,17 @@ except Exception:  # pragma: no cover
 PORT = os.getenv("SERVO_PORT", "/dev/servo")
 BAUD = int(os.getenv("SERVO_BAUD", "1000000"))
 SERVO_ID = int(os.getenv("SERVO_ID", "1"))
-DEFAULT_SPEED = int(os.getenv("SERVO_SPEED", "10"))
+DEFAULT_SPEED = int(os.getenv("SERVO_SPEED", "800"))
+DEFAULT_ACC = int(os.getenv("SERVO_ACC", "20"))
 ENABLE = os.getenv("SERVO_ENABLE", "").strip().lower() not in ("0", "false", "no", "off")
 
 ADDR_TORQUE_ENABLE = 0x28
+ADDR_GOAL_ACC = 0x29
 ADDR_GOAL_POSITION_L = 0x2A
 ADDR_GOAL_SPEED_L = 0x2E
 ADDR_PRESENT_POSITION_L = 0x38
 ADDR_PRESENT_LOAD_L = 0x3C
+ADDR_MOVING = 0x42
 
 POS_MAX = 4095
 DEG_MAX = 360.0
@@ -68,12 +74,18 @@ def pos_to_angle(pos):
     return float(pos) / (POS_MAX + 1) * DEG_MAX
 
 
+def _angle_diff(a, b):
+    diff = abs(float(a) - float(b)) % DEG_MAX
+    return min(diff, DEG_MAX - diff)
+
+
 class ServoJoint:
-    def __init__(self, port=None, baud=None, servo_id=None, speed=None):
+    def __init__(self, port=None, baud=None, servo_id=None, speed=None, acc=None):
         self.port = port or PORT
         self.baud = int(baud or BAUD)
         self.servo_id = int(servo_id or SERVO_ID)
         self.speed = int(speed if speed is not None else DEFAULT_SPEED)
+        self.acc = int(acc if acc is not None else DEFAULT_ACC)
         self.ser = None
         self.ok = False
         self._lock = threading.Lock()
@@ -89,8 +101,10 @@ class ServoJoint:
             self.ser = serial.Serial(self.port, self.baud, timeout=0.1)
             time.sleep(0.2)
             self._tx_rx(_build_write_1byte(self.servo_id, ADDR_TORQUE_ENABLE, 1), 16)
+            self._write_acc(self.acc)
             self.ok = True
-            print(f"[舵机] 已连接 {self.port} @ {self.baud}, id={self.servo_id}")
+            print(f"[舵机] 已连接 {self.port} @ {self.baud}, id={self.servo_id}, "
+                  f"speed={self.speed}, acc={self.acc}")
             return True
         except Exception as exc:
             self.ser = None
@@ -111,15 +125,22 @@ class ServoJoint:
                 print(f"[舵机][警告] 通信失败: {exc}")
                 return b""
 
-    def set_angle(self, angle, speed=None):
-        """转到指定角度（0..360，180=中点），先写速度再写位置。"""
+    def _write_acc(self, acc):
+        acc = max(0, min(254, int(acc)))
+        return self._tx_rx(_build_write_1byte(self.servo_id, ADDR_GOAL_ACC, acc), 16)
+
+    def set_angle(self, angle, speed=None, acc=None):
+        """转到指定角度（0..360）：先写加速度、再写速度，最后写位置。"""
         if not self.ok or self.ser is None:
             return False
         pos = angle_to_pos(angle)
         spd = int(self.speed if speed is None else speed) & 0xFFFF
+        a = int(self.acc if acc is None else acc)
         with self._lock:
             try:
                 self.ser.reset_input_buffer()
+                self.ser.write(_build_write_1byte(self.servo_id, ADDR_GOAL_ACC, max(0, min(254, a))))
+                time.sleep(0.005)
                 self.ser.write(_build_write(self.servo_id, ADDR_GOAL_SPEED_L, spd))
                 time.sleep(0.01)
                 self.ser.write(_build_write(self.servo_id, ADDR_GOAL_POSITION_L, pos))
@@ -144,6 +165,44 @@ class ServoJoint:
         if len(resp) >= 7 and resp[0] == 0xFF and resp[1] == 0xFF:
             return pos_to_angle(resp[5] | (resp[6] << 8))
         return None
+
+    def is_moving(self):
+        """读 Moving(0x42)：True=在动，False=停/到位，None=读不到。"""
+        if not self.ok or self.ser is None:
+            return None
+        with self._lock:
+            try:
+                self.ser.reset_input_buffer()
+                self.ser.write(_build_read(self.servo_id, ADDR_MOVING, 1))
+                time.sleep(0.01)
+                resp = self.ser.read(8)
+            except Exception:
+                return None
+        if len(resp) >= 6 and resp[0] == 0xFF and resp[1] == 0xFF:
+            return resp[5] != 0
+        return None
+
+    def wait_until_reached(self, angle, timeout=1.5, tolerance_deg=3.0, poll_s=0.03):
+        """等待舵机到达 angle（优先读 Moving，退化用位置容差）；超时返回 False。"""
+        if not self.ok or self.ser is None:
+            return False
+        deadline = time.time() + max(0.05, float(timeout))
+        time.sleep(0.05)  # 给运动启动留一点时间，避免刚开始就误判为“停”
+        stable = 0
+        while time.time() <= deadline:
+            moving = self.is_moving()
+            if moving is None:
+                cur = self.get_angle()
+                if cur is not None and _angle_diff(cur, angle) <= tolerance_deg:
+                    return True
+            elif not moving:
+                stable += 1
+                if stable >= 2:
+                    return True
+            else:
+                stable = 0
+            time.sleep(poll_s)
+        return False
 
     def close(self):
         if self.ser is not None:

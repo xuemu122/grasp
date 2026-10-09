@@ -109,7 +109,7 @@ HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.165, -0.02, 0.008)
+SIDE_GRASP_OFFSET_M = (-0.115, -0.135, 0.008)
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.035)
 
@@ -160,27 +160,33 @@ LHAND_DOBOT_CONTROL = os.getenv("LHAND_DOBOT_CONTROL", "compact").strip().lower(
 # 抓取阶段若配置了 SERVO_GRASP_ANGLE 则转到该角度，未配置则不动。
 SERVO_HOLD_ANGLE = float(os.getenv("SERVO_HOLD_ANGLE", "150"))
 SERVO_GRASP_ANGLE = os.getenv("SERVO_GRASP_ANGLE", "360").strip()
+SERVO_WAIT_TIMEOUT = float(os.getenv("SERVO_WAIT_TIMEOUT", "1.5"))
 _servo = None
 
 
-def servo_set_angle(angle, label=""):
+def servo_set_angle(angle, label="", wait=False):
     if _servo is None or not getattr(_servo, "ok", False):
         return False
-    if _servo.set_angle(angle):
-        print(f"[舵机] {label or '设置'} → {float(angle):.0f}°")
-        return True
-    return False
+    if not _servo.set_angle(angle):
+        return False
+    print(f"[舵机] {label or '设置'} → {float(angle):.0f}°")
+    if wait:
+        started = time.time()
+        reached = _servo.wait_until_reached(angle, timeout=SERVO_WAIT_TIMEOUT)
+        print(f"[舵机] {'到位' if reached else '等待超时'} ({float(angle):.0f}°) 用时 {time.time() - started:.2f}s")
+        return reached
+    return True
 
 
-def servo_hold():
+def servo_hold(wait=False):
     """结构化位姿（层板/过渡/放置/收起）：舵机保持 SERVO_HOLD_ANGLE。"""
-    return servo_set_angle(SERVO_HOLD_ANGLE, "保持")
+    return servo_set_angle(SERVO_HOLD_ANGLE, "保持", wait=wait)
 
 
 def servo_grasp():
-    """抓取阶段舵机角度（SERVO_GRASP_ANGLE）；未配置则保持不动。"""
+    """抓取阶段舵机角度（SERVO_GRASP_ANGLE）；到位后再继续。"""
     if SERVO_GRASP_ANGLE:
-        return servo_set_angle(float(SERVO_GRASP_ANGLE), "抓取")
+        return servo_set_angle(float(SERVO_GRASP_ANGLE), "抓取", wait=True)
     return False
 LHAND_FLEX_PROFILE = os.path.abspath(os.path.expanduser(os.getenv(
     "LHAND_FLEX_PROFILE",
@@ -210,7 +216,7 @@ LAYER_ENTRY_STARTUP = "startup"
 LAYER_ENTRY_UNKNOWN = "unknown"
 TARGET_DEPTH_REFINE_RADIUS_PX = int(os.getenv("TARGET_DEPTH_REFINE_RADIUS_PX", "10"))
 TARGET_DEPTH_REFINE_MAX_DELTA_M = float(os.getenv("TARGET_DEPTH_REFINE_MAX_DELTA_M", "0.08"))
-DEPTH_GUARD_ENABLE = os.getenv("DEPTH_GUARD_ENABLE", "1").lower() in ("1", "true", "yes", "on")
+DEPTH_GUARD_ENABLE = os.getenv("DEPTH_GUARD_ENABLE", "0").lower() in ("1", "true", "yes", "on")
 DEPTH_GUARD_STRIDE = int(os.getenv("DEPTH_GUARD_STRIDE", "8"))
 DEPTH_GUARD_CLEARANCE_M = float(os.getenv("DEPTH_GUARD_CLEARANCE_M", "0.002"))
 DEPTH_GUARD_HAND_BOX_SHRINK_M = float(os.getenv("DEPTH_GUARD_HAND_BOX_SHRINK_M", "0.005"))
@@ -289,6 +295,7 @@ _place_transition_low_joints = None  # [j1,j2,j3,j4,j5,j6]，可选
 # 收起姿态: 调用底盘前和退出程序前使用, 防止机械臂/灵巧手与环境碰撞
 STOW_POSE_FILE = os.path.join(os.path.dirname(__file__), "stow_pose.json")
 _stow_pose = None  # ([x,y,z,rx,ry,rz], name)
+_stow_pose_joints = None  # [j1..j6]，固定收起关节解，避免逆解分支漂移
 SAFE_NAV_STARTUP = os.getenv("SHELF_GRASP_SAFE_NAV_STARTUP", "0").lower() in ("1", "true", "yes", "on")
 STOW_VERIFY_POSITION_TOLERANCE_MM = float(os.getenv("STOW_VERIFY_POSITION_TOLERANCE_MM", "35"))
 STOW_VERIFY_ANGLE_TOLERANCE_DEG = float(os.getenv("STOW_VERIFY_ANGLE_TOLERANCE_DEG", "8"))
@@ -839,12 +846,13 @@ def load_place_transition():
 
 def load_stow_pose():
     """从 JSON 加载收起姿态，返回 (pose, name) 或 None"""
-    global _stow_pose
+    global _stow_pose, _stow_pose_joints
     if os.path.exists(STOW_POSE_FILE):
         with open(STOW_POSE_FILE) as f:
             data = json.load(f)
         if "pose" in data:
             _stow_pose = (data["pose"], data.get("name", "收起姿态"))
+            _stow_pose_joints = data.get("joints")
     return _stow_pose
 
 
@@ -934,6 +942,8 @@ def save_stow_pose():
         return
     pose, name = _stow_pose
     data = {"pose": pose, "name": name}
+    if _stow_pose_joints is not None:
+        data["joints"] = _stow_pose_joints
     with open(STOW_POSE_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
@@ -1147,7 +1157,7 @@ def go_to_place_point(arm: "DobotArm", visit_transition: bool = True):
 
 def go_to_place_transition(arm: "DobotArm"):
     """如果记录了放置过渡点，则先移动到过渡点。未记录时直接跳过。"""
-    servo_hold()
+    servo_hold(wait=True)
     if _place_transition_pose is None:
         return True
     pose, name = _place_transition_pose
@@ -1228,7 +1238,7 @@ def go_to_stow_pose(
         return False
     pose, name = _stow_pose
     print(f"\n[收起姿态] 安全关节运动到 {name} ...")
-    if not arm.move_pose_safe(pose, speed=80):
+    if not arm.move_pose_safe(pose, joints=_stow_pose_joints, speed=80):
         print("  [收起姿态] 移动失败")
         return False
     time.sleep(MOTION_SETTLE_S)
@@ -1588,7 +1598,7 @@ def _place_point_management(arm: "DobotArm"):
 
 def _stow_pose_management(arm: "DobotArm", from_shelf_pose: bool = False):
     """收起姿态管理子菜单: 记录、移动到、删除收起姿态"""
-    global _stow_pose
+    global _stow_pose, _stow_pose_joints
 
     while True:
         print(f"\n── 收起姿态管理 ──")
@@ -1617,12 +1627,17 @@ def _stow_pose_management(arm: "DobotArm", from_shelf_pose: bool = False):
             if not name:
                 name = "收起姿态"
             _stow_pose = (list(pose[:6]), name)
+            try:
+                _stow_pose_joints = list(arm.get_joints())[:6]
+            except Exception:
+                _stow_pose_joints = None
             save_stow_pose()
             print(f"  ✓ 收起姿态 ({name}) 已记录: pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
             continue
 
         if choice == "d":
             _stow_pose = None
+            _stow_pose_joints = None
             save_stow_pose()
             print("  ✓ 收起姿态已删除")
             continue
