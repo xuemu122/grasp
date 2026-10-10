@@ -726,3 +726,39 @@ python3 move_robot.py cancel    # 取消移动
 ```bash
 CHARGE_RETURN_ON_DOCKING=0 python3 move_robot.py charge
 ```
+
+## 本机（二号机 / 1.99）现场调参记录（未入 main 分支）
+
+以下为本机专用的改动与调参，**只在本机生效**，与 `main` 分支不同步。
+
+### 第 7 关节：串口舵机（手腕，/dev/servo）
+- 控制模块：`dipan/servo_joint.py`（FTcontrol 协议；1,000,000 8N1，ID=1）。
+- 写位置前先写 **加速度 0x29**、**速度 0x2E**、再写 **位置 0x2A**（来自 `FTcontrol/duo11.py`）。
+- 环境变量：
+  - `SERVO_HOLD_ANGLE` 默认 `180`（层板/过渡/放置/收起/回充保持角）
+  - `SERVO_GRASP_ANGLE` 默认 `360`（抓取角）
+  - `SERVO_SPEED` 默认 `800`、`SERVO_ACC` 默认 `20`（越小越柔和）
+  - `SERVO_WAIT_TIMEOUT` 默认 `1.5`、`SERVO_PORT` 默认 `/dev/servo`、`SERVO_ENABLE`
+- 行为：抓取角、以及“抓取后回放置过渡点”的保持角会**等到位**再继续（worker 不报到达，底盘就不走）。
+
+### Aero 手
+- 负载（对应上位机“负载使能”）：`HAND_WEIGHT_KG=1`、`HAND_COG_X_M=0`、`HAND_COG_Y_M=-0.14`、`HAND_COG_Z_M=0.35`（即 `SetPayload(1,0,-140,350)`）。
+- `AERO_TORQUE_LIMIT`（0~1000，默认 `0`=不限）：位置控制时的扭矩/电流上限，连接时对 0-6 号设置。
+- `AERO_FLEX_MAX_RECHECK` 默认 `3`：某指到 max 后多复查几轮再判 `@max`（减少误判空抓）。
+- 检测到手上电/重启（`[BOOT] ... homing`）时，会**等回零稳定**再读基线。
+- **保持补紧设为柔和版默认**：`AERO_HOLD_TIGHTEN_STEP=1`、`AERO_HOLD_JOINT1_STEP=1`、`AERO_HOLD_JOINT2_STEP=2`、`AERO_HOLD_MIN_EXTRA_MA=150`、`AERO_HOLD_CHECK_INTERVAL_S=0.3`。
+
+### 放置点位
+- `go_to_place_point` 用**记录的关节角 MovJ**到放置点，并**主动等到关节角误差 ≤3°** 才张手（避免提前松手）。
+
+### 已知硬件问题（现场）
+- 灵巧手 **6 号（pinky）电流读数坏**：恒为 ~154199mA 等不可能值。判定时可用
+  `AERO_FLEX_REQUIRED_FINGERS=3,4,5` 绕过它。
+- 手、相机、舵机的 USB 都挂在 `1-2` Hub 链上，易掉线；建议**直连 Jetson USB 口**。
+
+### 常用启动环境变量（叠加在上面的启动指令里）
+```
+SERVO_HOLD_ANGLE=180 SERVO_GRASP_ANGLE=360 SERVO_SPEED=800 SERVO_ACC=20
+AERO_TORQUE_LIMIT=500
+AERO_FLEX_REQUIRED_FINGERS=3,4,5
+```

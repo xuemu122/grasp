@@ -123,7 +123,36 @@ class AeroGripper:
         return max(finite), hot
 
     def connect(self):
+        self._apply_torque_limit()
         print("[Aero] 已连接")
+
+    def _apply_torque_limit(self, retries=2):
+        try:
+            limit = int(float(os.getenv("AERO_TORQUE_LIMIT", "0") or 0))
+        except (TypeError, ValueError):
+            limit = 0
+        if limit <= 0:
+            return
+        limit = max(0, min(1000, limit))
+        last_err = None
+        got = False
+        for _ in range(max(1, retries)):
+            try:
+                self.hand.set_torque(0, limit)
+                got = True
+                break
+            except Exception as exc:
+                last_err = exc
+                time.sleep(0.15)
+        if not got:
+            print(f"[Aero][警告] 设置扭矩上限失败(固件可能不支持 SET_TOR), 跳过: {last_err}")
+            return
+        for idx in range(1, 7):
+            try:
+                self.hand.set_torque(idx, limit)
+            except Exception:
+                pass
+        print(f"[Aero] 扭矩/电流上限已设为 {limit}/1000")
 
     def disconnect(self):
         self._stop_hold()
@@ -327,15 +356,15 @@ class AeroGripper:
         joints = tuple(sorted(int(idx) for idx in joints))
         if not joints or os.getenv("AERO_HOLD_TIGHTEN_ENABLE", "1").lower() not in ("1", "true", "yes", "on"):
             return None
-        min_extra_ma = float(os.getenv("AERO_HOLD_MIN_EXTRA_MA", str(max(60.0, contact_delta_ma * 0.55))))
-        normal_step = float(os.getenv("AERO_HOLD_TIGHTEN_STEP", os.getenv("AERO_FLEX_STEP", "3")))
+        min_extra_ma = float(os.getenv("AERO_HOLD_MIN_EXTRA_MA", "150"))
+        normal_step = float(os.getenv("AERO_HOLD_TIGHTEN_STEP", os.getenv("AERO_FLEX_STEP", "1")))
         joint1_step = max(
             0.1,
-            float(os.getenv("AERO_HOLD_JOINT1_STEP", os.getenv("AERO_FLEX_JOINT1_STEP", "2"))),
+            float(os.getenv("AERO_HOLD_JOINT1_STEP", os.getenv("AERO_FLEX_JOINT1_STEP", "1"))),
         )
         joint2_step = max(
             0.1,
-            float(os.getenv("AERO_HOLD_JOINT2_STEP", os.getenv("AERO_FLEX_JOINT2_STEP", "5"))),
+            float(os.getenv("AERO_HOLD_JOINT2_STEP", os.getenv("AERO_FLEX_JOINT2_STEP", "2"))),
         )
         normal_interval_s = float(os.getenv("AERO_FLEX_SETTLE", "0.05"))
         normal_consecutive = int(os.getenv("AERO_FLEX_CONSECUTIVE", "2"))
@@ -360,7 +389,7 @@ class AeroGripper:
                 for idx in joints
             },
             "consecutive": max(1, int(os.getenv("AERO_HOLD_TIGHTEN_CONSECUTIVE", str(normal_consecutive)))),
-            "interval_s": max(0.01, float(os.getenv("AERO_HOLD_CHECK_INTERVAL_S", str(normal_interval_s)))),
+            "interval_s": max(0.01, float(os.getenv("AERO_HOLD_CHECK_INTERVAL_S", "0.3"))),
             "samples": max(1, int(os.getenv("AERO_HOLD_CURRENT_SAMPLES", "1"))),
             "sample_delay_s": max(0.0, float(os.getenv("AERO_HOLD_CURRENT_SAMPLE_DELAY", "0"))),
             "low_counts": {idx: 0 for idx in joints},
@@ -497,6 +526,7 @@ class AeroGripper:
             return False
         try:
             self._stop_hold()
+            self._apply_torque_limit()
             thumb0 = float(os.getenv("AERO_FLEX_THUMB0", "80"))
             start = float(os.getenv("AERO_FLEX_START", "0"))
             max_cmd = float(os.getenv("AERO_FLEX_MAX", "80"))
