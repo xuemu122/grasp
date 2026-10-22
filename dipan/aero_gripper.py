@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Aero Hand gripper wrapper."""
+"""Aero Hand gripper wrapper.
+
+本仓库的 Aero 手为“自锁”驱动：
+- 抓住物体后停止持续 CTRL_POS 驱动，机械结构自锁，断电也能保持抓取姿势；
+- 张开时必须由舵机主动反驱（反向驱动到 OPEN），不能靠断电/松力。
+
+环境变量：
+- AERO_SELF_LOCK_HOLD=1     抓取后停止 100Hz 保持（依赖机械自锁），默认 1
+- AERO_OPEN_REVERSE_DRIVE=1 张开时主动反驱，默认 1
+- AERO_OPEN_REVERSE_S=0.5   反驱持续时间（秒）
+- AERO_OPEN_REVERSE_HZ=20   反驱期间重复下发 OPEN 的频率
+"""
 
 import csv
 import os
@@ -106,6 +117,14 @@ class AeroGripper:
         self._hold_thread = None
         self._hold_sent = 0
         self._hold_failures = 0
+        # 自锁手：抓取后停止持续驱动，靠机械自锁保持；张开需主动反驱。
+        self._self_lock_hold = os.getenv("AERO_SELF_LOCK_HOLD", "1").strip().lower() in (
+            "1", "true", "yes", "on")
+        self._grasp_locked = False
+        self._reverse_open = os.getenv("AERO_OPEN_REVERSE_DRIVE", "1").strip().lower() in (
+            "1", "true", "yes", "on")
+        self._reverse_open_s = max(0.0, float(os.getenv("AERO_OPEN_REVERSE_S", "0.5")))
+        self._reverse_open_hz = max(1.0, float(os.getenv("AERO_OPEN_REVERSE_HZ", "20")))
 
     @staticmethod
     def _temperature_trip(temperatures, max_temperature_c):
@@ -374,6 +393,15 @@ class AeroGripper:
         result = self.hand.set_joint_positions(target)
         if result is False:
             raise RuntimeError("CTRL_POS 初始发送超时")
+        if self._self_lock_hold:
+            # 自锁手：目标下发一次即可，机械结构保持；不再启动 100Hz 驱动。
+            with self._hold_lock:
+                self._hold_pose = target
+                self._hold_monitor = monitor
+                self._hold_grip_ok = True
+            self._grasp_locked = True
+            print("[Aero] 自锁保持: 已停止持续驱动（断电保持抓取）")
+            return
         with self._hold_lock:
             self._hold_pose = target
             self._hold_monitor = monitor
@@ -404,13 +432,20 @@ class AeroGripper:
             self._hold_pose = None
             self._hold_monitor = None
             self._hold_grip_ok = True
+        self._grasp_locked = False
 
     def is_holding(self):
-        """Return whether the active hold loop is still sending CTRL_POS."""
+        """Return whether the hand is still holding the grasp.
+
+        自锁手：抓取后不再持续发送 CTRL_POS，但只要机械锁存就视为 holding。
+        """
+        if not self.ok:
+            return False
+        if self._grasp_locked:
+            return True
         thread = self._hold_thread
         return bool(
-            self.ok
-            and thread is not None
+            thread is not None
             and thread.is_alive()
             and self._hold_pose is not None
             and self._hold_grip_ok
@@ -423,10 +458,24 @@ class AeroGripper:
             return False
         try:
             self._stop_hold()
-            result = self.hand.set_joint_positions(self.OPEN)
-            if result is False:
-                raise RuntimeError("CTRL_POS 张开发送超时")
-            print("[Aero] 张开")
+            if self._reverse_open:
+                # 自锁手必须由舵机主动反驱才能张开，不能只松力/断电。
+                deadline = time.monotonic() + self._reverse_open_s
+                sent = 0
+                while True:
+                    result = self.hand.set_joint_positions(self.OPEN)
+                    if result is False:
+                        raise RuntimeError("CTRL_POS 张开发送超时")
+                    sent += 1
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(max(0.0, 1.0 / self._reverse_open_hz))
+                print(f"[Aero] 张开(反驱 {sent} 次, {self._reverse_open_s:.2f}s)")
+            else:
+                result = self.hand.set_joint_positions(self.OPEN)
+                if result is False:
+                    raise RuntimeError("CTRL_POS 张开发送超时")
+                print("[Aero] 张开")
             return True
         except Exception as e:
             self.ok = False

@@ -14,7 +14,11 @@ import os
 def _resolve_hand_model():
     requested = os.getenv("TOOL_HAND_MODEL", "").strip().lower()
     if not requested:
-        requested = "aero" if os.getenv("HAND_BACKEND", "").strip().lower() == "aero" else "dh116"
+        backend = os.getenv("HAND_BACKEND", "").strip().lower()
+        requested = "dh116" if backend in (
+            "dh116", "lhand", "lhandpro", "lhandpro_dobot",
+            "rs485", "dobot_modbus", "tool_rs485",
+        ) else "aero"
     aliases = {
         "aero": "aero",
         "old": "aero",

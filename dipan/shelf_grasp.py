@@ -24,6 +24,11 @@ if VISION_DIR not in sys.path:
 from orbbec_detect import MedicineLocatorSystem, RealSenseCamera
 from orbbec_detect import _assess_lighting
 
+try:
+    from servo_joint import ServoJoint
+except Exception:  # 舵机模块缺失时不影响主流程
+    ServoJoint = None
+
 from dobot_arm import DobotArm, _clamp_cp
 from grasp_planner import (
     EDGE_MIDPOINT_GRASP_ENABLE,
@@ -115,7 +120,7 @@ TOP_J6_DEG = 8.3
 APPROACH_LIFT_M = 0.00    # 对齐位额外抬高量, 当前不抬高
 GRASP_ADVANCE_M = 0.06    # 抓取时沿手指方向前进 4cm
 LOW_Z_GRASP_ADVANCE_M = 0.035  # 第4层低位空间更紧, 只探入 3.5cm
-PRE_CLOSE_LEFT_SHIFT_M = float(os.getenv("PRE_CLOSE_LEFT_SHIFT_M", "0.022"))
+PRE_CLOSE_LEFT_SHIFT_M = float(os.getenv("PRE_CLOSE_LEFT_SHIFT_M", "0"))
 GRASP_APPROACH_BACKOFF_M = float(os.getenv("GRASP_APPROACH_BACKOFF_M", "0.15"))  # 抓取前沿手指方向后退对齐
 TOP_APPROACH_BACKOFF_M = 0.15  # 上面抓时先在抓取轴线上退 15cm 再直线前进
 LOW_Z_APPROACH_SPEED = 60
@@ -149,6 +154,45 @@ HAND_BACKEND = os.getenv(
 LHAND_DOBOT_BAUD = int(os.getenv("LHAND_DOBOT_BAUD", "115200"))
 LHAND_RS485_NODE_ID = int(os.getenv("LHAND_RS485_NODE_ID", "1"))
 LHAND_DOBOT_CONTROL = os.getenv("LHAND_DOBOT_CONTROL", "compact").strip().lower()
+
+# ── 第 7 关节：串口舵机（FTcontrol 协议）──
+# 层板观察位 / 放置过渡点 / 放置点 / 收起 都保持 SERVO_HOLD_ANGLE；
+# 抓取阶段转到 SERVO_GRASP_ANGLE，并等待到位后再继续。
+SERVO_HOLD_ANGLE = float(os.getenv("SERVO_HOLD_ANGLE", "180"))
+SERVO_GRASP_ANGLE = os.getenv("SERVO_GRASP_ANGLE", "360").strip()
+SERVO_WAIT_TIMEOUT = float(os.getenv("SERVO_WAIT_TIMEOUT", "1.5"))
+_servo = None
+
+
+def servo_set_angle(angle, label="", wait=False):
+    if _servo is None or not getattr(_servo, "ok", False):
+        return False
+    if not _servo.set_angle(angle):
+        return False
+    print(f"[舵机] {label or '设置'} → {float(angle):.0f}°")
+    if not wait:
+        return True
+    started = time.time()
+    reached = _servo.wait_until_reached(angle, timeout=SERVO_WAIT_TIMEOUT)
+    elapsed = time.time() - started
+    if reached:
+        print(f"[舵机] 到位 ({float(angle):.0f}°) 用时 {elapsed:.2f}s")
+    else:
+        print(f"[舵机] 等待超时 ({float(angle):.0f}°) 用时 {elapsed:.2f}s")
+    return reached
+
+
+def servo_hold(wait=False):
+    """结构化位姿（层板/过渡/放置/收起）：舵机保持 SERVO_HOLD_ANGLE。"""
+    return servo_set_angle(SERVO_HOLD_ANGLE, "保持", wait=wait)
+
+
+def servo_grasp():
+    """抓取阶段舵机角度（SERVO_GRASP_ANGLE），并等待到位再继续。"""
+    if SERVO_GRASP_ANGLE:
+        return servo_set_angle(float(SERVO_GRASP_ANGLE), "抓取", wait=True)
+    return False
+
 LHAND_FLEX_PROFILE = os.path.abspath(os.path.expanduser(os.getenv(
     "LHAND_FLEX_PROFILE",
     os.path.join(os.path.dirname(__file__), "runtime", "lhandpro_empty.csv"),
@@ -877,6 +921,7 @@ def save_place_transition_low():
 
 def go_to_place_transition_low(arm: "DobotArm"):
     """关节运动到低位进层过渡点"""
+    servo_hold()
     if _place_transition_low_pose is None:
         print("  [低位过渡点] 未记录，先用 l t s 记录")
         return False
@@ -901,6 +946,7 @@ def save_stow_pose():
 
 def go_to_layer(arm: "DobotArm", layer_idx: int):
     """移动机械臂到指定货架层的观察位姿 (MovL 笛卡尔)"""
+    servo_hold()
     if layer_idx not in _shelf_layer_poses:
         print(f"  [错误] 第{layer_idx}层未记录! 先用 l s 记录当前位姿")
         return False
@@ -922,6 +968,7 @@ def go_to_layer(arm: "DobotArm", layer_idx: int):
 
 def go_to_layer_from_non_shelf_pose(arm: "DobotArm", layer_idx: int, visit_place_transition: bool = True):
     """从放置/未知位姿安全进层；先抬高，再经高位过渡后垂直下落。"""
+    servo_hold()
     if layer_idx not in _shelf_layer_poses:
         print(f"  [错误] 第{layer_idx}层未记录! 先用 l s 记录当前位姿")
         return False
@@ -1021,6 +1068,7 @@ def go_to_layer_from_non_shelf_pose(arm: "DobotArm", layer_idx: int, visit_place
 
 def go_to_layer_from_stow(arm: "DobotArm", layer_idx: int):
     """从收起位直接关节运动到目标层，避免绕行放置过渡点。"""
+    servo_hold()
     if not is_at_stow_pose(arm):
         print("  [收起位进层][中止] 当前位姿不再匹配收起位, 不发送运动命令")
         return False
@@ -1039,6 +1087,7 @@ def go_to_layer_from_stow(arm: "DobotArm", layer_idx: int):
 
 def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: float = 120.0):
     """先抬高再回到指定层, 用于避开放置点到货架层的直线路径"""
+    servo_hold()
     if layer_idx not in _shelf_layer_poses:
         print(f"  [错误] 第{layer_idx}层未记录! 先用 l s 记录当前位姿")
         return False
@@ -1073,6 +1122,7 @@ def go_to_layer_via_clearance(arm: "DobotArm", layer_idx: int, clearance_mm: flo
 
 def go_to_place_point(arm: "DobotArm", visit_transition: bool = True):
     """移动机械臂到记录的放置点 (MovL 笛卡尔)"""
+    servo_hold()
     if _place_point_pose is None:
         print("  [错误] 放置点未记录! 先用 p 进入放置点管理, 拖到目标位置后输入 s")
         return False
@@ -1103,6 +1153,7 @@ def go_to_place_point(arm: "DobotArm", visit_transition: bool = True):
 
 def go_to_place_transition(arm: "DobotArm"):
     """如果记录了放置过渡点，则先移动到过渡点。未记录时直接跳过。"""
+    servo_hold()
     if _place_transition_pose is None:
         return True
     pose, name = _place_transition_pose
@@ -1151,6 +1202,7 @@ def go_to_stow_pose(
     skip_transition: bool = False,
 ):
     """移动到收起姿态；已知在货架层时直接关节收起，避免多余过渡点。"""
+    servo_hold()
     if _stow_pose is None:
         print("  [收起姿态] 未记录, 跳过。可用 u 菜单拖动记录")
         return False
@@ -1287,6 +1339,8 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional[object], current_layer_idx
             if not go_to_place_transition(arm):
                 print("  [停止] 底盘移动前未能到达放置过渡点, 不调用底盘")
                 return False
+            # 抓取后回到放置过渡点：等手腕到位，再让底盘走
+            servo_hold(wait=True)
             held_at_transition = True
             if hand_ok and not hand.is_holding():
                 print("  [停止] 到达放置过渡点后灵巧手保持失败, 不调用底盘")
@@ -2070,6 +2124,14 @@ def main():
         hand = _create_hand(arm)
         _connect_and_open_hand(hand)
 
+    # ── 第 7 关节：串口舵机（FTcontrol 协议）──
+    global _servo
+    if ServoJoint is not None:
+        _servo = ServoJoint()
+        if _servo.connect():
+            atexit.register(_servo.close)
+            servo_hold()
+
     if _current_layer_idx == STARTUP_LAYER_IDX:
         save_shelf_layers()
     if not SHELF_GRASP_IDLE_STARTUP and not SAFE_NAV_STARTUP and _current_layer_idx and _current_layer_idx in _shelf_layer_poses:
@@ -2747,6 +2809,7 @@ def main():
             # ========================================================
             # ── 执行 ──
             print("\n执行抓取动作...")
+            servo_grasp()
 
             # 1. 张开手
             if not SKIP_HAND:
