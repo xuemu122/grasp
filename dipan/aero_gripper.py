@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Aero Hand gripper wrapper.
 
-本仓库的 Aero 手为“自锁”驱动：
-- 抓住物体后停止持续 CTRL_POS 驱动，机械结构自锁，断电也能保持抓取姿势；
-- 张开时必须由舵机主动反驱（反向驱动到 OPEN），不能靠断电/松力。
+默认按普通 Aero 手驱动：
+- 抓取后以 100Hz 持续发送 CTRL_POS 保持姿态；
+- 张开时直接下发一次 OPEN。
 
-环境变量：
-- AERO_SELF_LOCK_HOLD=1     抓取后停止 100Hz 保持（依赖机械自锁），默认 1
-- AERO_OPEN_REVERSE_DRIVE=1 张开时主动反驱，默认 1
+若使用“自锁”版本（断电也能保持、张开需反驱），显式开启：
+- AERO_SELF_LOCK_HOLD=1     抓取后停止持续驱动，依赖机械自锁
+- AERO_OPEN_REVERSE_DRIVE=1 张开时主动反驱
 - AERO_OPEN_REVERSE_S=0.5   反驱持续时间（秒）
 - AERO_OPEN_REVERSE_HZ=20   反驱期间重复下发 OPEN 的频率
 """
@@ -118,10 +118,11 @@ class AeroGripper:
         self._hold_sent = 0
         self._hold_failures = 0
         # 自锁手：抓取后停止持续驱动，靠机械自锁保持；张开需主动反驱。
-        self._self_lock_hold = os.getenv("AERO_SELF_LOCK_HOLD", "1").strip().lower() in (
+        # 普通 Aero 默认关闭这两项（0）。
+        self._self_lock_hold = os.getenv("AERO_SELF_LOCK_HOLD", "0").strip().lower() in (
             "1", "true", "yes", "on")
         self._grasp_locked = False
-        self._reverse_open = os.getenv("AERO_OPEN_REVERSE_DRIVE", "1").strip().lower() in (
+        self._reverse_open = os.getenv("AERO_OPEN_REVERSE_DRIVE", "0").strip().lower() in (
             "1", "true", "yes", "on")
         self._reverse_open_s = max(0.0, float(os.getenv("AERO_OPEN_REVERSE_S", "0.5")))
         self._reverse_open_hz = max(1.0, float(os.getenv("AERO_OPEN_REVERSE_HZ", "20")))

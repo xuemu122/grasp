@@ -7,8 +7,9 @@
   python3 test_aero_hold.py --mode flex  --hold 10          # 用柔性闭合（需空载曲线）
   python3 test_aero_hold.py --open-only                     # 只做反驱张开
 
-自锁模式（默认 AERO_SELF_LOCK_HOLD=1）下，闭合后只下发一次目标，之后不再发送
-CTRL_POS；保持期间脚本只读取位置/电流，不驱动。可手动拉拽或断手电源验证自锁。
+默认是普通 Aero（AERO_SELF_LOCK_HOLD=0，100Hz 持续保持）。若用自锁版本，
+启动时加 AERO_SELF_LOCK_HOLD=1 AERO_OPEN_REVERSE_DRIVE=1：闭合后只下发一次目标，
+之后不再发送 CTRL_POS；保持期间脚本只读取位置/电流，不驱动。
 """
 
 import argparse
