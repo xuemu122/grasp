@@ -295,6 +295,7 @@ _place_transition_low_joints = None  # [j1,j2,j3,j4,j5,j6]，可选
 # 收起姿态: 调用底盘前和退出程序前使用, 防止机械臂/灵巧手与环境碰撞
 STOW_POSE_FILE = os.path.join(os.path.dirname(__file__), "stow_pose.json")
 _stow_pose = None  # ([x,y,z,rx,ry,rz], name)
+_stow_pose_joints = None  # 记录收起姿态时的关节角，避免逆解选到翻转分支
 SAFE_NAV_STARTUP = os.getenv("SHELF_GRASP_SAFE_NAV_STARTUP", "0").lower() in ("1", "true", "yes", "on")
 STOW_VERIFY_POSITION_TOLERANCE_MM = float(os.getenv("STOW_VERIFY_POSITION_TOLERANCE_MM", "35"))
 STOW_VERIFY_ANGLE_TOLERANCE_DEG = float(os.getenv("STOW_VERIFY_ANGLE_TOLERANCE_DEG", "8"))
@@ -845,12 +846,16 @@ def load_place_transition():
 
 def load_stow_pose():
     """从 JSON 加载收起姿态，返回 (pose, name) 或 None"""
-    global _stow_pose
+    global _stow_pose, _stow_pose_joints
+    _stow_pose_joints = None
     if os.path.exists(STOW_POSE_FILE):
         with open(STOW_POSE_FILE) as f:
             data = json.load(f)
         if "pose" in data:
             _stow_pose = (data["pose"], data.get("name", "收起姿态"))
+            joints = data.get("joints")
+            if isinstance(joints, list) and len(joints) == 6:
+                _stow_pose_joints = [float(value) for value in joints]
     return _stow_pose
 
 
@@ -940,6 +945,8 @@ def save_stow_pose():
         return
     pose, name = _stow_pose
     data = {"pose": pose, "name": name}
+    if _stow_pose_joints is not None and len(_stow_pose_joints) == 6:
+        data["joints"] = [float(value) for value in _stow_pose_joints]
     with open(STOW_POSE_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
@@ -1234,7 +1241,11 @@ def go_to_stow_pose(
         return False
     pose, name = _stow_pose
     print(f"\n[收起姿态] 安全关节运动到 {name} ...")
-    if not arm.move_pose_safe(pose, speed=80):
+    if _stow_pose_joints is not None:
+        print("  [收起姿态] 使用记录关节角 MovJ")
+    else:
+        print("  [收起姿态][警告] 未记录关节角, 使用当前附近逆解；建议用 u 菜单重新记录")
+    if not arm.move_pose_safe(pose, joints=_stow_pose_joints, speed=80):
         print("  [收起姿态] 移动失败")
         return False
     time.sleep(MOTION_SETTLE_S)
@@ -1596,7 +1607,7 @@ def _place_point_management(arm: "DobotArm"):
 
 def _stow_pose_management(arm: "DobotArm", from_shelf_pose: bool = False):
     """收起姿态管理子菜单: 记录、移动到、删除收起姿态"""
-    global _stow_pose
+    global _stow_pose, _stow_pose_joints
 
     while True:
         print(f"\n── 收起姿态管理 ──")
@@ -1618,19 +1629,23 @@ def _stow_pose_management(arm: "DobotArm", from_shelf_pose: bool = False):
         if choice == "s":
             try:
                 pose = arm.get_pose()
+                joints = arm.get_joints()
             except Exception:
-                print("  无法获取当前位姿")
+                print("  无法获取当前位姿/关节角")
                 continue
             name = input('  收起姿态名称 (回车默认"收起姿态"): ').strip()
             if not name:
                 name = "收起姿态"
             _stow_pose = (list(pose[:6]), name)
+            _stow_pose_joints = [float(value) for value in joints[:6]]
             save_stow_pose()
             print(f"  ✓ 收起姿态 ({name}) 已记录: pose=({pose[0]:.0f},{pose[1]:.0f},{pose[2]:.0f},{pose[3]:.0f},{pose[4]:.0f},{pose[5]:.0f})")
+            print("  ✓ 已记录关节角: (" + ",".join(f"{value:.1f}" for value in _stow_pose_joints) + ")")
             continue
 
         if choice == "d":
             _stow_pose = None
+            _stow_pose_joints = None
             save_stow_pose()
             print("  ✓ 收起姿态已删除")
             continue
