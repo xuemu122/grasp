@@ -139,7 +139,7 @@ PLACE_RETURN_CLEARANCE_MM = float(os.getenv("PLACE_RETURN_CLEARANCE_MM", "140"))
 PLACE_RETURN_MAX_Z_MM = float(os.getenv("PLACE_RETURN_MAX_Z_MM", "820"))  # 回层抬高上限, 避免高位不可达
 
 # 调试开关: 屏蔽手, 只测试手眼标定 + 机械臂走位
-SKIP_HAND = False
+SKIP_HAND = os.getenv("SKIP_HAND", "0").strip().lower() in ("1", "true", "yes", "on")
 # YOLO 显示/输出阈值。抓取现场默认放宽到 0.7，避免框不上。
 DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.7"))
 # 透明矿泉水/塑料瓶在复杂光照下置信度会明显偏低，只对饮料类单独放宽。
