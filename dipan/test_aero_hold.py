@@ -3,12 +3,16 @@
 
 用法：
   python3 test_aero_hold.py --mode fixed --hold 10          # 闭合，保持10s，观察位置漂移
-  python3 test_aero_hold.py --mode fixed --hold 10 --open   # 保持后反驱张开
+  python3 test_aero_hold.py --mode fixed --hold 10 --open   # 保持后张开
   python3 test_aero_hold.py --mode flex  --hold 10          # 用柔性闭合（需空载曲线）
-  python3 test_aero_hold.py --open-only                     # 只做反驱张开
+  python3 test_aero_hold.py --open-only                     # 只张开
 
-默认是普通 Aero（AERO_SELF_LOCK_HOLD=0，100Hz 持续保持）。若用自锁版本，
-启动时加 AERO_SELF_LOCK_HOLD=1 AERO_OPEN_REVERSE_DRIVE=1：闭合后只下发一次目标，
+手型开关（默认普通 Aero）：
+  --hand-mode normal    普通 Aero：100Hz 持续保持 + 单次张开
+  --hand-mode selflock  自锁手：停止驱动保持 + 反驱张开
+
+默认是普通 Aero（AERO_HAND_MODE=normal，100Hz 持续保持）。若用自锁版本，
+传 --hand-mode selflock（或设 AERO_HAND_MODE=selflock）：闭合后只下发一次目标，
 之后不再发送 CTRL_POS；保持期间脚本只读取位置/电流，不驱动。
 """
 
@@ -56,12 +60,18 @@ def main():
     parser.add_argument("--open", action="store_true", dest="do_open",
                         help="保持结束后反驱张开")
     parser.add_argument("--open-only", action="store_true",
-                        help="只执行反驱张开，不闭合")
+                        help="只执行张开，不闭合")
+    parser.add_argument("--hand-mode", choices=("normal", "selflock"), default=None,
+                        help="normal=普通Aero；selflock=自锁手（设置 AERO_HAND_MODE）")
     parser.add_argument("--port", default=None, help="Aero 串口（默认自动检测）")
     args = parser.parse_args()
 
+    if args.hand_mode:
+        os.environ["AERO_HAND_MODE"] = args.hand_mode
+
     gripper = AeroGripper(port=args.port)
     gripper.connect()
+    print("hand_mode", "selflock" if gripper._self_lock_hold else "normal")
 
     if args.open_only:
         ok = gripper.open()

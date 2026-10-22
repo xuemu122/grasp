@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Aero Hand gripper wrapper.
 
-默认按普通 Aero 手驱动：
+手型开关：AERO_HAND_MODE=normal | selflock（默认 normal）
+
+normal（普通 Aero）：
 - 抓取后以 100Hz 持续发送 CTRL_POS 保持姿态；
 - 张开时直接下发一次 OPEN。
 
-若使用“自锁”版本（断电也能保持、张开需反驱），显式开启：
-- AERO_SELF_LOCK_HOLD=1     抓取后停止持续驱动，依赖机械自锁
-- AERO_OPEN_REVERSE_DRIVE=1 张开时主动反驱
-- AERO_OPEN_REVERSE_S=0.5   反驱持续时间（秒）
-- AERO_OPEN_REVERSE_HZ=20   反驱期间重复下发 OPEN 的频率
+selflock（自锁手，断电也能保持、张开需反驱）：
+- 抓取后停止持续驱动，依赖机械自锁；
+- 张开时主动反驱（AERO_OPEN_REVERSE_S / AERO_OPEN_REVERSE_HZ 可调）。
+
+兼容旧开关：显式设置 AERO_SELF_LOCK_HOLD / AERO_OPEN_REVERSE_DRIVE 会覆盖手型开关。
 """
 
 import csv
@@ -117,13 +119,19 @@ class AeroGripper:
         self._hold_thread = None
         self._hold_sent = 0
         self._hold_failures = 0
-        # 自锁手：抓取后停止持续驱动，靠机械自锁保持；张开需主动反驱。
-        # 普通 Aero 默认关闭这两项（0）。
-        self._self_lock_hold = os.getenv("AERO_SELF_LOCK_HOLD", "0").strip().lower() in (
-            "1", "true", "yes", "on")
+        # 手型开关：AERO_HAND_MODE=normal（普通 Aero，默认）或 selflock（自锁手）。
+        # 兼容旧的单选项 AERO_SELF_LOCK_HOLD / AERO_OPEN_REVERSE_DRIVE（显式设置时覆盖）。
+        hand_mode = os.getenv("AERO_HAND_MODE", "normal").strip().lower()
+        self._self_lock_hold = hand_mode in (
+            "selflock", "self-lock", "self_lock", "lock", "locking", "reverse")
+        self._reverse_open = self._self_lock_hold
+        lock_override = os.getenv("AERO_SELF_LOCK_HOLD")
+        if lock_override is not None and lock_override.strip():
+            self._self_lock_hold = lock_override.strip().lower() in ("1", "true", "yes", "on")
+        reverse_override = os.getenv("AERO_OPEN_REVERSE_DRIVE")
+        if reverse_override is not None and reverse_override.strip():
+            self._reverse_open = reverse_override.strip().lower() in ("1", "true", "yes", "on")
         self._grasp_locked = False
-        self._reverse_open = os.getenv("AERO_OPEN_REVERSE_DRIVE", "0").strip().lower() in (
-            "1", "true", "yes", "on")
         self._reverse_open_s = max(0.0, float(os.getenv("AERO_OPEN_REVERSE_S", "0.5")))
         self._reverse_open_hz = max(1.0, float(os.getenv("AERO_OPEN_REVERSE_HZ", "20")))
 
