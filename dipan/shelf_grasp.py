@@ -1142,6 +1142,31 @@ def go_to_place_point(arm: "DobotArm", visit_transition: bool = True):
             print("  [放置过渡点] 移动失败")
             return False
     print(f"\n[放置点] 移动到 {name} ...")
+    if _place_point_joints is not None:
+        print("  [放置点] 使用记录关节角 MovJ")
+        if not arm.move_pose_safe(pose, joints=_place_point_joints, speed=100):
+            return False
+        tol_deg = float(os.getenv("PLACE_POINT_JOINT_TOL_DEG", "3"))
+        timeout_s = float(os.getenv("PLACE_POINT_JOINT_TIMEOUT_S", "8"))
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            try:
+                current_joints = arm.get_joints()
+            except Exception:
+                time.sleep(0.1)
+                continue
+            err_deg = max(
+                abs(_angle_distance_deg(current_joints[index], _place_point_joints[index]))
+                for index in range(6)
+            )
+            if err_deg <= tol_deg:
+                print(f"  [放置点] 关节到位 (误差 {err_deg:.1f}°)")
+                return True
+            time.sleep(0.1)
+        print(f"  [警告] 放置点关节角未到位 (>{tol_deg:.0f}°), 本次不自动张手")
+        return False
+
+    # 没有记录关节角时，退回笛卡尔 MovL + 位置误差检查
     place_cp = _clamp_cp(PLACE_TRANSITION_CP) if PLACE_SMOOTH_TRANSITION else 0
     if not arm.movel(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], speed=100, cp=place_cp):
         return False
