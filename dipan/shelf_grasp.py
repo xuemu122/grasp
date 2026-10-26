@@ -33,6 +33,9 @@ from dobot_arm import DobotArm, _clamp_cp
 from grasp_planner import (
     EDGE_MIDPOINT_GRASP_ENABLE,
     FORCE_SIDE_GRASP,
+    NON_DRINK_SIDE_GRASP_LOW_TARGET_HEIGHT_M,
+    NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M,
+    NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M,
     SIDE_GRASP_MAX_HEIGHT_M,
     SIDE_GRASP_MIN_HEIGHT_M,
     SIDE_GRASP_LOWER_SHIFT_M,
@@ -42,6 +45,7 @@ from grasp_planner import (
     clamp_side_grasp_pixel_to_safe_clearance,
     detect_shelf_board_bounds,
     explain_target_filter,
+    is_non_drink,
     pick_target_box,
     plan_edge_grasp,
 )
@@ -110,6 +114,8 @@ HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
 SIDE_GRASP_OFFSET_M = (-0.09, 0.0045, 0.008)
+# 非饮料先复制侧抓偏移，后续可在这里单独改
+NON_DRINK_SIDE_GRASP_OFFSET_M = SIDE_GRASP_OFFSET_M
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.035)
 
@@ -2539,9 +2545,19 @@ def main():
             latest_failure_image = _draw_failure_diagnostic(best_img, detections, target, grip_pixel)
 
             if grip_mode.endswith("_side") and not EDGE_MIDPOINT_GRASP_ENABLE:
-                corrected_pixel, original_clearance_m, bottom_clearance_m = (
-                    clamp_side_grasp_pixel_to_safe_clearance(target, grip_pixel, camera.fy)
-                )
+                if is_non_drink(target):
+                    corrected_pixel, original_clearance_m, bottom_clearance_m = (
+                        clamp_side_grasp_pixel_to_safe_clearance(
+                            target, grip_pixel, camera.fy,
+                            NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M,
+                            NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M,
+                            NON_DRINK_SIDE_GRASP_LOW_TARGET_HEIGHT_M,
+                        )
+                    )
+                else:
+                    corrected_pixel, original_clearance_m, bottom_clearance_m = (
+                        clamp_side_grasp_pixel_to_safe_clearance(target, grip_pixel, camera.fy)
+                    )
                 if corrected_pixel is None or bottom_clearance_m is None:
                     clearance_label = (
                         "无效"
@@ -2573,9 +2589,15 @@ def main():
                     )
                     print(f"  [抓点硬纠偏] 更新抓取点: ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
                 else:
+                    if is_non_drink(target):
+                        band_min = NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M
+                        band_max = NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M
+                    else:
+                        band_min = SIDE_GRASP_MIN_HEIGHT_M
+                        band_max = SIDE_GRASP_MAX_HEIGHT_M
                     print(
                         f"  [抓点硬纠偏] 距检测框底边 {bottom_clearance_m*100:.1f}cm, "
-                        f"已在 {SIDE_GRASP_MIN_HEIGHT_M*100:.1f}..{SIDE_GRASP_MAX_HEIGHT_M*100:.1f}cm 安全区间"
+                        f"已在 {band_min*100:.1f}..{band_max*100:.1f}cm 安全区间"
                     )
 
             if SAVE_DEBUG_IMAGES:
@@ -2617,7 +2639,14 @@ def main():
 
             # ── 根据自动判定的抓取模式选择偏移参数 ──
             is_side_grasp = "side" in grip_mode
-            grasp_offset_m = SIDE_GRASP_OFFSET_M if is_side_grasp else TOP_GRASP_OFFSET_M
+            if is_side_grasp:
+                grasp_offset_m = (
+                    NON_DRINK_SIDE_GRASP_OFFSET_M
+                    if is_non_drink(target)
+                    else SIDE_GRASP_OFFSET_M
+                )
+            else:
+                grasp_offset_m = TOP_GRASP_OFFSET_M
             grip_label = "侧面抓" if is_side_grasp else "上面抓"
             fingertip_w = np.array([wx, wy, wz]) + np.array(grasp_offset_m)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面

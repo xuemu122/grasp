@@ -13,6 +13,43 @@ SIDE_GRASP_MAX_HEIGHT_M = float(os.getenv("SIDE_GRASP_MAX_HEIGHT_M", "0.15"))
 SIDE_GRASP_LOW_TARGET_HEIGHT_M = float(os.getenv("SIDE_GRASP_LOW_TARGET_HEIGHT_M", "0.068"))
 SIDE_GRASP_LOWER_SHIFT_M = float(os.getenv("SIDE_GRASP_LOWER_SHIFT_M", "0.015"))
 SIDE_GRASP_HEIGHT_OFFSET_M = float(os.getenv("SIDE_GRASP_HEIGHT_OFFSET_M", "0.01"))
+
+
+def _env_str_set(name, default=""):
+    return {part.strip() for part in os.getenv(name, default).split(",") if part.strip()}
+
+
+def _env_int_set(name):
+    values = set()
+    for part in os.getenv(name, "").split(","):
+        try:
+            values.add(int(part.strip()))
+        except ValueError:
+            continue
+    return values
+
+
+# 非饮料类单独一套侧抓参数（默认复制当前饮料侧抓参数，可用 NON_DRINK_* 单独调）
+NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv(
+    "NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M", str(SIDE_GRASP_MIN_HEIGHT_M)))
+NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M = float(os.getenv(
+    "NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M", str(SIDE_GRASP_MAX_HEIGHT_M)))
+NON_DRINK_SIDE_GRASP_LOW_TARGET_HEIGHT_M = float(os.getenv(
+    "NON_DRINK_SIDE_GRASP_LOW_TARGET_HEIGHT_M", str(SIDE_GRASP_LOW_TARGET_HEIGHT_M)))
+NON_DRINK_SIDE_GRASP_LOWER_SHIFT_M = float(os.getenv(
+    "NON_DRINK_SIDE_GRASP_LOWER_SHIFT_M", str(SIDE_GRASP_LOWER_SHIFT_M)))
+NON_DRINK_SIDE_GRASP_HEIGHT_OFFSET_M = float(os.getenv(
+    "NON_DRINK_SIDE_GRASP_HEIGHT_OFFSET_M", str(SIDE_GRASP_HEIGHT_OFFSET_M)))
+# 非饮料抓取点取检测框中间（X/Y 可分别关闭）
+NON_DRINK_GRASP_CENTER_X = os.getenv("NON_DRINK_GRASP_CENTER_X", "1").lower() in ("1", "true", "yes", "on")
+NON_DRINK_GRASP_CENTER_Y = os.getenv("NON_DRINK_GRASP_CENTER_Y", "1").lower() in ("1", "true", "yes", "on")
+# 非饮料判定：category 命中，或 class_id / class_name 显式指定
+NON_DRINK_CLASS_IDS = _env_int_set("NON_DRINK_CLASS_IDS")
+NON_DRINK_CLASS_NAMES = _env_str_set("NON_DRINK_CLASS_NAMES")
+NON_DRINK_CATEGORIES = {
+    value.lower()
+    for value in _env_str_set("NON_DRINK_CATEGORIES", "snack,medicine,food,非饮料,零食,药品")
+}
 LAYER_Z_FILTER_ENABLE = os.getenv("LAYER_Z_FILTER_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 LAYER_Z_TOLERANCE_M = float(os.getenv("LAYER_Z_TOLERANCE_M", "0.16"))
 SHELF_BOARD_FILTER_ENABLE = os.getenv("SHELF_BOARD_FILTER_ENABLE", "1").lower() in ("1", "true", "yes", "on")
@@ -54,27 +91,32 @@ def side_grasp_bottom_clearance_m(det, grip_pixel, fy):
     return (float(y2) - grip_v) * depth / fy
 
 
-def clamp_side_grasp_pixel_to_safe_clearance(det, grip_pixel, fy):
+def clamp_side_grasp_pixel_to_safe_clearance(det, grip_pixel, fy,
+                                             min_height_m=None, max_height_m=None,
+                                             low_target_m=None):
     """Move an out-of-range side-grasp pixel into the box-relative safe band."""
+    min_h = SIDE_GRASP_MIN_HEIGHT_M if min_height_m is None else float(min_height_m)
+    max_h = SIDE_GRASP_MAX_HEIGHT_M if max_height_m is None else float(max_height_m)
+    low_h = SIDE_GRASP_LOW_TARGET_HEIGHT_M if low_target_m is None else float(low_target_m)
     clearance_m = side_grasp_bottom_clearance_m(det, grip_pixel, fy)
     if clearance_m is None:
         return None, None, None
-    if SIDE_GRASP_MIN_HEIGHT_M <= clearance_m <= SIDE_GRASP_MAX_HEIGHT_M:
+    if min_h <= clearance_m <= max_h:
         return tuple(grip_pixel), clearance_m, clearance_m
 
     _, y1, _, y2 = [float(value) for value in det.bbox]
     depth = float(det.depth_m)
     real_h = max(0.0, (y2 - y1) * depth / float(fy))
-    if real_h < SIDE_GRASP_MIN_HEIGHT_M:
+    if real_h < min_h:
         return None, clearance_m, None
-    if clearance_m < SIDE_GRASP_MIN_HEIGHT_M:
+    if clearance_m < min_h:
         target_m = min(
-            max(SIDE_GRASP_LOW_TARGET_HEIGHT_M, SIDE_GRASP_MIN_HEIGHT_M),
-            SIDE_GRASP_MAX_HEIGHT_M,
+            max(low_h, min_h),
+            max_h,
             real_h,
         )
     else:
-        target_m = min(SIDE_GRASP_MAX_HEIGHT_M, real_h)
+        target_m = min(max_h, real_h)
     corrected_v = y2 - target_m * float(fy) / depth
     corrected_v = max(y1, min(y2, corrected_v))
     corrected_pixel = (float(grip_pixel[0]), corrected_v)
@@ -524,6 +566,22 @@ def pick_target_box(detections, transformer=None, flange_pose=None, layer_z_m=No
     return target, "right"
 
 
+def is_non_drink(det):
+    """Return True when the detection belongs to the non-beverage parameter set."""
+    class_id = getattr(det, "class_id", None)
+    if class_id is not None:
+        try:
+            if int(class_id) in NON_DRINK_CLASS_IDS:
+                return True
+        except (TypeError, ValueError):
+            pass
+    class_name = str(getattr(det, "class_name", "") or "").strip()
+    if class_name and class_name in NON_DRINK_CLASS_NAMES:
+        return True
+    category = str(getattr(det, "category", "") or "").strip().lower()
+    return bool(category) and category in NON_DRINK_CATEGORIES
+
+
 def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, depth_img=None):
     """
     边缘抓取:
@@ -550,24 +608,45 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
     real_h = pixel_h * depth / fy
     print(f"  盒宽: {pixel_w}px → {real_w*100:.1f}cm, 盒高: {pixel_h}px → {real_h*100:.1f}cm")
 
+    non_drink = is_non_drink(det)
+    if non_drink:
+        side_min_h = NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M
+        side_max_h = NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M
+        side_low_h = NON_DRINK_SIDE_GRASP_LOW_TARGET_HEIGHT_M
+        side_lower_shift = NON_DRINK_SIDE_GRASP_LOWER_SHIFT_M
+        side_height_offset = NON_DRINK_SIDE_GRASP_HEIGHT_OFFSET_M
+    else:
+        side_min_h = SIDE_GRASP_MIN_HEIGHT_M
+        side_max_h = SIDE_GRASP_MAX_HEIGHT_M
+        side_low_h = SIDE_GRASP_LOW_TARGET_HEIGHT_M
+        side_lower_shift = SIDE_GRASP_LOWER_SHIFT_M
+        side_height_offset = SIDE_GRASP_HEIGHT_OFFSET_M
+
     if EDGE_MIDPOINT_GRASP_ENABLE:
         pass
     elif FORCE_SIDE_GRASP or real_w <= 0.08:
-        edge_u = x1 if edge == "left" else x2
-        if real_h <= SIDE_GRASP_MIN_HEIGHT_M:
+        if non_drink and NON_DRINK_GRASP_CENTER_X:
+            edge_u = (x1 + x2) / 2.0
+        else:
+            edge_u = x1 if edge == "left" else x2
+        if real_h <= side_min_h:
             edge_u = (x1 + x2) / 2
             edge_v = y1
             mode = "top_center"
             print(
                 f"  → 检测框高度 {real_h*100:.1f}cm ≤ 侧抓下限 "
-                f"{SIDE_GRASP_MIN_HEIGHT_M*100:.1f}cm, 改为上面抓取"
+                f"{side_min_h*100:.1f}cm, 改为上面抓取"
             )
         else:
             original_height_m = real_h / 2.0
+            if non_drink and NON_DRINK_GRASP_CENTER_Y:
+                side_height_m = original_height_m
+            else:
+                side_height_m = original_height_m - side_lower_shift + side_height_offset
             side_height_m = float(np.clip(
-                original_height_m - SIDE_GRASP_LOWER_SHIFT_M + SIDE_GRASP_HEIGHT_OFFSET_M,
-                max(SIDE_GRASP_MIN_HEIGHT_M, SIDE_GRASP_LOW_TARGET_HEIGHT_M),
-                SIDE_GRASP_MAX_HEIGHT_M,
+                side_height_m,
+                max(side_min_h, side_low_h),
+                side_max_h,
             ))
             pixel_ratio = side_height_m / real_h
             pixel_ratio = max(0.0, min(1.0, pixel_ratio))
@@ -580,11 +659,22 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
                 if measured_clearance_m is None
                 else f"{measured_clearance_m*100:.1f}cm"
             )
-            width_label = "强制侧抓" if FORCE_SIDE_GRASP and real_w > 0.08 else "窄盒"
+            if non_drink:
+                width_label = "非饮料"
+            elif FORCE_SIDE_GRASP and real_w > 0.08:
+                width_label = "强制侧抓"
+            else:
+                width_label = "窄盒"
+            if non_drink and NON_DRINK_GRASP_CENTER_Y:
+                height_note = "取框高度中点"
+            else:
+                height_note = (
+                    f"下移 {side_lower_shift*100:.1f}cm, "
+                    f"抬高 {side_height_offset*100:.1f}cm"
+                )
             print(
-                f"  → {width_label} ({real_w*100:.1f}cm), 从{edge}侧边缘抓取, "
-                f"原高度 {original_height_m*100:.1f}cm, 下移 {SIDE_GRASP_LOWER_SHIFT_M*100:.1f}cm, "
-                f"抬高 {SIDE_GRASP_HEIGHT_OFFSET_M*100:.1f}cm, "
+                f"  → {width_label} ({real_w*100:.1f}cm), 从{edge}侧抓取, "
+                f"原高度 {original_height_m*100:.1f}cm, {height_note}, "
                 f"抓点距检测框底边 {clearance_label}, 像素=({edge_u:.0f},{edge_v:.0f})"
             )
     else:
