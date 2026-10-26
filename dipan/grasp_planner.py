@@ -9,9 +9,10 @@ import numpy as np
 TARGET_ROI_Y_MIN = int(os.getenv("TARGET_ROI_Y_MIN", "85"))
 TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "430"))
 SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv("SIDE_GRASP_MIN_HEIGHT_M", "0.080"))
-SIDE_GRASP_MAX_HEIGHT_M = float(os.getenv("SIDE_GRASP_MAX_HEIGHT_M", "0.11"))
+SIDE_GRASP_MAX_HEIGHT_M = float(os.getenv("SIDE_GRASP_MAX_HEIGHT_M", "0.15"))
 SIDE_GRASP_LOW_TARGET_HEIGHT_M = float(os.getenv("SIDE_GRASP_LOW_TARGET_HEIGHT_M", "0.068"))
 SIDE_GRASP_LOWER_SHIFT_M = float(os.getenv("SIDE_GRASP_LOWER_SHIFT_M", "0.015"))
+SIDE_GRASP_HEIGHT_OFFSET_M = float(os.getenv("SIDE_GRASP_HEIGHT_OFFSET_M", "0.01"))
 LAYER_Z_FILTER_ENABLE = os.getenv("LAYER_Z_FILTER_ENABLE", "1").lower() in ("1", "true", "yes", "on")
 LAYER_Z_TOLERANCE_M = float(os.getenv("LAYER_Z_TOLERANCE_M", "0.16"))
 SHELF_BOARD_FILTER_ENABLE = os.getenv("SHELF_BOARD_FILTER_ENABLE", "1").lower() in ("1", "true", "yes", "on")
@@ -564,7 +565,7 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
         else:
             original_height_m = real_h / 2.0
             side_height_m = float(np.clip(
-                original_height_m - SIDE_GRASP_LOWER_SHIFT_M,
+                original_height_m - SIDE_GRASP_LOWER_SHIFT_M + SIDE_GRASP_HEIGHT_OFFSET_M,
                 max(SIDE_GRASP_MIN_HEIGHT_M, SIDE_GRASP_LOW_TARGET_HEIGHT_M),
                 SIDE_GRASP_MAX_HEIGHT_M,
             ))
@@ -583,6 +584,7 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
             print(
                 f"  → {width_label} ({real_w*100:.1f}cm), 从{edge}侧边缘抓取, "
                 f"原高度 {original_height_m*100:.1f}cm, 下移 {SIDE_GRASP_LOWER_SHIFT_M*100:.1f}cm, "
+                f"抬高 {SIDE_GRASP_HEIGHT_OFFSET_M*100:.1f}cm, "
                 f"抓点距检测框底边 {clearance_label}, 像素=({edge_u:.0f},{edge_v:.0f})"
             )
     else:
