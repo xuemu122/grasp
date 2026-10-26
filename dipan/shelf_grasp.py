@@ -2985,7 +2985,33 @@ def main():
                 else:
                     print("  [抓取失败] 灵巧手闭合/保持失败，只执行机械臂安全退回，不调用底盘和放置流程")
 
-            # 5. 后退: 先沿手指方向退回对齐位, 再离开货架
+            # 5. 抓后先向上抬升，离开层板边缘后再水平后退
+            if grasp_succeeded:
+                lift_mm = float(os.getenv("GRASP_LIFT_MM", "55"))
+                lift_speed = int(os.getenv("GRASP_LIFT_SPEED", "60"))
+                try:
+                    lift_base = arm.get_pose()
+                except Exception as exc:
+                    print(f"  [停止] 抓后抬升前读取位姿失败: {exc}")
+                    worker_fail("抓后抬升前读取位姿失败")
+                    continue
+                print(f"  [抓后抬升] 向上抬 {lift_mm:.1f}mm ...")
+                if not arm.movel(
+                    float(lift_base[0]),
+                    float(lift_base[1]),
+                    float(lift_base[2]) + lift_mm,
+                    float(lift_base[3]),
+                    float(lift_base[4]),
+                    float(lift_base[5]),
+                    speed=lift_speed,
+                    allow_low_z=allow_low_z,
+                ):
+                    print("  [停止] 抓后抬升失败/报警, 停在当前位置, 不继续放置流程")
+                    worker_fail("抓后抬升失败")
+                    continue
+                time.sleep(GRASP_SETTLE_S)
+
+            # 6. 后退: 先沿手指方向退回对齐位, 再离开货架
             retreat_pt = np.array([ax+offset_x, ay+offset_y, az+offset_z])
             if not arm.movel(float(retreat_pt[0]), float(retreat_pt[1]), float(retreat_pt[2]), speed=100,
                              allow_low_z=allow_low_z):
