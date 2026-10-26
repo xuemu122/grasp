@@ -45,7 +45,10 @@ NON_DRINK_GRASP_CENTER_X = os.getenv("NON_DRINK_GRASP_CENTER_X", "1").lower() in
 NON_DRINK_GRASP_CENTER_Y = os.getenv("NON_DRINK_GRASP_CENTER_Y", "1").lower() in ("1", "true", "yes", "on")
 # 非饮料判定：category 命中，或 class_id / class_name 显式指定
 NON_DRINK_CLASS_IDS = _env_int_set("NON_DRINK_CLASS_IDS")
-NON_DRINK_CLASS_NAMES = _env_str_set("NON_DRINK_CLASS_NAMES")
+NON_DRINK_CLASS_NAMES = _env_str_set(
+    "NON_DRINK_CLASS_NAMES",
+    "浪味仙,乐事薯片（岩烧海苔味）,乐事薯片(岩烧海苔味),乐事薯片 岩烧海苔味",
+)
 NON_DRINK_CATEGORIES = {
     value.lower()
     for value in _env_str_set("NON_DRINK_CATEGORIES", "snack,medicine,food,非饮料,零食,药品")
