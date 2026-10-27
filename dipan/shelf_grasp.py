@@ -2146,17 +2146,29 @@ def main():
     camera = RealSenseCamera(width=640, height=480, fps=30)
     _repo_root = os.environ.get("GRASP_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     _recognition_dir = os.environ.get("GRASP_RECOGNITION_DIR", os.path.join(_repo_root, "识别"))
-    default_model_path = os.path.join(_recognition_dir, "best.engine")
+    default_model_path = os.path.join(_recognition_dir, "best1.engine")
+    if not os.path.exists(default_model_path):
+        default_model_path = os.path.join(_recognition_dir, "best.engine")
     if not os.path.exists(default_model_path):
         default_model_path = os.path.join(_recognition_dir, "best.pt")
     model_path = os.getenv("YOLO_MODEL_PATH", default_model_path)
+
+    aux_model_path = os.getenv("SNACK_MODEL_PATH", os.path.join(_recognition_dir, "best.engine"))
+    if (not os.path.exists(aux_model_path)
+            or os.path.abspath(aux_model_path) == os.path.abspath(model_path)):
+        aux_model_path = ""
+    aux_class_min_id = int(os.getenv("SNACK_CLASS_MIN_ID", "19"))
     print(f"  视觉模型: {model_path}")
+    if aux_model_path:
+        print(f"  零食辅助模型: {aux_model_path} (只取 class_id >= {aux_class_min_id})")
     locator = MedicineLocatorSystem(
         model_path=model_path,
         mapping_path=os.environ.get("SHELF_MAPPING_PATH", os.path.join(_recognition_dir, "shelf_mapping.yaml")),
         conf_threshold=DETECT_CONF_THRESHOLD,
         class_conf_thresholds={cls_id: WATER_CONF_THRESHOLD for cls_id in DRINK_CLASS_IDS},
         use_ocr=False,
+        aux_model_path=aux_model_path or None,
+        aux_class_min_id=aux_class_min_id,
     )
     locator.init_camera = lambda: None
     locator.camera = camera
