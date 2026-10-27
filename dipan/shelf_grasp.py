@@ -116,6 +116,19 @@ HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 SIDE_GRASP_OFFSET_M = (-0.09, 0.0045, 0.008)
 # 非饮料先复制侧抓偏移，后续可在这里单独改
 NON_DRINK_SIDE_GRASP_OFFSET_M = SIDE_GRASP_OFFSET_M
+# 非饮料（薯片等）柔性抓取参数：默认用现场测好的较柔一组
+NON_DRINK_AERO_FLEX_ENV = {
+    "AERO_FLEX_STEP": os.getenv("NON_DRINK_AERO_FLEX_STEP", "2"),
+    "AERO_FLEX_SETTLE": os.getenv("NON_DRINK_AERO_FLEX_SETTLE", "0.05"),
+    "AERO_FLEX_MIN_CMD": os.getenv("NON_DRINK_AERO_FLEX_MIN_CMD", "15"),
+    "AERO_FLEX_CONSECUTIVE": os.getenv("NON_DRINK_AERO_FLEX_CONSECUTIVE", "2"),
+    "AERO_FLEX_PROFILE_DELTA_MA": os.getenv("NON_DRINK_AERO_FLEX_PROFILE_DELTA_MA", "100"),
+    "AERO_FLEX_PROFILE_WINDOW_DEG": os.getenv("NON_DRINK_AERO_FLEX_PROFILE_WINDOW_DEG", "6"),
+    "AERO_FLEX_EXTRA_CLOSE": os.getenv("NON_DRINK_AERO_FLEX_EXTRA_CLOSE", "2"),
+    "AERO_FLEX_ACTIVE_JOINTS": os.getenv("NON_DRINK_AERO_FLEX_ACTIVE_JOINTS", "1,2,3,4,5,6"),
+    "AERO_FLEX_REQUIRED_FINGERS": os.getenv("NON_DRINK_AERO_FLEX_REQUIRED_FINGERS", "3,4,5,6"),
+    "AERO_HOLD_TIGHTEN_ENABLE": os.getenv("NON_DRINK_AERO_HOLD_TIGHTEN_ENABLE", "0"),
+}
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.035)
 
@@ -3013,7 +3026,25 @@ def main():
             grasp_succeeded = SKIP_HAND
             if not SKIP_HAND:
                 if HAND_GRASP_MODE in ("flex", "flexible", "current"):
-                    grasp_succeeded = hand.flexible_close()
+                    non_drink_grip = is_non_drink(target)
+                    saved_env = {}
+                    if non_drink_grip:
+                        saved_env = {key: os.environ.get(key) for key in NON_DRINK_AERO_FLEX_ENV}
+                        os.environ.update(NON_DRINK_AERO_FLEX_ENV)
+                        print(
+                            "  [非饮料] 薯片柔性参数: "
+                            f"delta={NON_DRINK_AERO_FLEX_ENV['AERO_FLEX_PROFILE_DELTA_MA']}mA, "
+                            f"extra_close={NON_DRINK_AERO_FLEX_ENV['AERO_FLEX_EXTRA_CLOSE']}°"
+                        )
+                    try:
+                        grasp_succeeded = hand.flexible_close()
+                    finally:
+                        if non_drink_grip:
+                            for key, old_value in saved_env.items():
+                                if old_value is None:
+                                    os.environ.pop(key, None)
+                                else:
+                                    os.environ[key] = old_value
                 else:
                     grasp_mode = "bottle" if HAND_GRASP_MODE == "bottle" and is_side_grasp else None
                     grasp_succeeded = hand.close(top=not is_side_grasp, mode=grasp_mode)
