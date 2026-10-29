@@ -423,7 +423,12 @@ async function init() {
     syncOrderButton();
     const loginForm = document.getElementById('orderLoginForm');
     if (loginForm) loginForm.addEventListener('submit', submitOrderLogin);
-    await ensureOrderContext();
+    if (window.GRASP_TEST_MODE) {
+        orderAuthMode = 'admin';
+        await ensureAdminTestContext();
+    } else {
+        await ensureOrderContext();
+    }
     connectWebSocket();
     await refreshCatalog();
     bindSearch();
@@ -1856,6 +1861,16 @@ async function handleVoiceOrder(rawText) {
 // 初始化语音识别
 function initVoice() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const nativeAvailable = window.AndroidSpeech && window.AndroidSpeech.isAvailable && window.AndroidSpeech.isAvailable();
+    if (nativeAvailable) {
+        initNativeVoice();
+        return;
+    }
+    const canCloudAsr = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+    if ((window.AndroidSpeech || !SR) && canCloudAsr) {
+        initCloudVoice();
+        return;
+    }
     if (!SR) {
         ['voiceModeSearch', 'voiceModeOrder'].forEach((id) => {
             const b = document.getElementById(id);
@@ -1903,6 +1918,211 @@ function initVoice() {
     voiceRecognition.onend = () => {
         if (isListening) setTimeout(() => { if (isListening && voiceRecognition) { try { voiceRecognition.start(); } catch (e) {} } }, 300);
     };
+    try {
+        const saved = localStorage.getItem('grasp_voice_mode');
+        if (saved === 'order' || saved === 'search') voiceMode = saved;
+    } catch (e) { /* ignore */ }
+    applyVoiceModeUI();
+}
+
+function initNativeVoice() {
+    voiceRecognition = {
+        start() { try { window.AndroidSpeech.start(); } catch (e) {} },
+        stop() { try { window.AndroidSpeech.stop(); } catch (e) {} },
+        abort() { try { window.AndroidSpeech.stop(); } catch (e) {} },
+    };
+    window.onAndroidSpeechPartial = (text) => {
+        voiceInterimText = text || '';
+        const hint = document.getElementById('voiceHintText');
+        if (hint) hint.textContent = text || '正在聆听...';
+    };
+    window.onAndroidSpeechResult = (text) => {
+        voiceFinalText = text || '';
+        const hint = document.getElementById('voiceHintText');
+        if (hint) hint.textContent = voiceFinalText || '正在聆听...';
+        if (!voiceFinalText) return;
+        const asrMs = voiceStartedAt ? (Date.now() - voiceStartedAt) : 0;
+        console.log(`[语音] 原生识别耗时(开始→最终文本) ${asrMs}ms: "${voiceFinalText}"`);
+        if (voiceMode === 'order') handleVoiceOrder(voiceFinalText);
+        else handleVoiceCommandSmart(voiceFinalText);
+        setTimeout(() => { if (isListening) stopVoice(); }, 1500);
+    };
+    window.onAndroidSpeechError = (err) => {
+        const hint = document.getElementById('voiceHintText');
+        if (hint) hint.textContent = '麦克风权限被拒绝';
+        if (isListening) {
+            setTimeout(() => {
+                if (isListening && voiceRecognition) { try { voiceRecognition.start(); } catch (e) {} }
+            }, 1000);
+        }
+    };
+    try {
+        const saved = localStorage.getItem('grasp_voice_mode');
+        if (saved === 'order' || saved === 'search') voiceMode = saved;
+    } catch (e) { /* ignore */ }
+    applyVoiceModeUI();
+}
+
+function initCloudVoice() {
+    let stream = null;
+    let recorder = null;
+    let chunks = [];
+    let mimeType = 'audio/webm';
+    let timer = null;
+    let meterTimer = null;
+    let audioCtx = null;
+    let analyser = null;
+    let maxLevel = 0;
+
+    const hintText = (text) => {
+        const hint = document.getElementById('voiceHintText');
+        if (hint) hint.textContent = text;
+    };
+
+    const stopMeter = () => {
+        if (meterTimer) { clearInterval(meterTimer); meterTimer = null; }
+        if (audioCtx) { try { audioCtx.close(); } catch (e) { /* ignore */ } audioCtx = null; }
+        analyser = null;
+    };
+
+    const readLevel = () => {
+        if (!analyser) return 0;
+        const buf = new Uint8Array(analyser.fftSize);
+        analyser.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i += 1) {
+            const v = (buf[i] - 128) / 128;
+            sum += v * v;
+        }
+        return Math.min(100, Math.round(Math.sqrt(sum / buf.length) * 300));
+    };
+
+    const cleanup = () => {
+        if (timer) { clearTimeout(timer); timer = null; }
+        stopMeter();
+        if (stream) { stream.getTracks().forEach((track) => track.stop()); stream = null; }
+        recorder = null;
+        chunks = [];
+    };
+
+    const upload = async () => {
+        if (!chunks.length) {
+            hintText('没有录到声音');
+            isListening = false;
+            applyVoiceModeUI();
+            cleanup();
+            return;
+        }
+        const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
+        const type = blob.type || mimeType || 'audio/webm';
+        const level = maxLevel;
+        cleanup();
+        hintText('识别中...');
+        try {
+            const res = await fetch(graspApi('/voice/asr'), {
+                method: 'POST',
+                headers: { 'Content-Type': type },
+                body: blob,
+            });
+            const json = await res.json();
+            const text = (json && (json.text || (json.data && json.data.text))) || '';
+            if (!res.ok || !text) {
+                const err = new Error((json && json.message) || '未识别到语音');
+                err.level = level;
+                throw err;
+            }
+            voiceFinalText = text;
+            hintText(text);
+            const asrMs = voiceStartedAt ? (Date.now() - voiceStartedAt) : 0;
+            console.log(`[语音] 云端识别耗时 ${asrMs}ms: "${text}"`);
+            if (voiceMode === 'order') handleVoiceOrder(text);
+            else handleVoiceCommandSmart(text);
+        } catch (e) {
+            console.warn('[语音] 云端识别失败', e);
+            if (e && e.level !== undefined && e.level <= 2) {
+                hintText('麦克风没有声音（音量 0%），请检查大屏麦克风');
+            } else {
+                hintText('语音识别失败: ' + e.message);
+            }
+        } finally {
+            isListening = false;
+            applyVoiceModeUI();
+            const hint = document.getElementById('voiceHint');
+            if (hint) {
+                setTimeout(() => {
+                    if (!isListening) hint.style.display = 'none';
+                }, 4500);
+            }
+        }
+    };
+
+    const stop = () => {
+        if (timer) { clearTimeout(timer); timer = null; }
+        if (recorder && recorder.state !== 'inactive') recorder.stop();
+        else cleanup();
+    };
+
+    const start = async () => {
+        if (recorder) return;
+        try {
+            let media = null;
+            try {
+                media = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        channelCount: 1,
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false,
+                    },
+                });
+            } catch (e) {
+                media = await navigator.mediaDevices.getUserMedia({ audio: true });
+            }
+            stream = media;
+            maxLevel = 0;
+            try {
+                const Ctx = window.AudioContext || window.webkitAudioContext;
+                audioCtx = new Ctx();
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 2048;
+                audioCtx.createMediaStreamSource(stream).connect(analyser);
+            } catch (e) {
+                analyser = null;
+            }
+            const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+            mimeType = '';
+            if (window.MediaRecorder && MediaRecorder.isTypeSupported) {
+                for (const candidate of candidates) {
+                    if (MediaRecorder.isTypeSupported(candidate)) { mimeType = candidate; break; }
+                }
+            }
+            chunks = [];
+            recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+            mimeType = recorder.mimeType || mimeType || 'audio/webm';
+            recorder.ondataavailable = (event) => {
+                if (event.data && event.data.size) chunks.push(event.data);
+            };
+            recorder.onstop = () => { upload(); };
+            recorder.start();
+            hintText(voiceMode === 'order' ? '请说要点什么…' : '正在聆听...');
+            if (analyser) {
+                meterTimer = setInterval(() => {
+                    const level = readLevel();
+                    if (level > maxLevel) maxLevel = level;
+                    hintText(`${voiceMode === 'order' ? '请说要点什么…' : '正在聆听...'} 音量 ${level}%`);
+                }, 200);
+            }
+            timer = setTimeout(() => { stop(); }, 8000);
+        } catch (e) {
+            console.warn('[语音] 麦克风打开失败', e);
+            hintText('麦克风权限被拒绝');
+            isListening = false;
+            applyVoiceModeUI();
+            cleanup();
+        }
+    };
+
+    voiceRecognition = { start, stop, abort: stop };
     try {
         const saved = localStorage.getItem('grasp_voice_mode');
         if (saved === 'order' || saved === 'search') voiceMode = saved;
@@ -2118,6 +2338,7 @@ async function logoutOrderMerchant() {
 }
 
 async function ensureAdminTestContext() {
+    orderAuthMode = 'admin';
     let session = null;
     try {
         const res = await fetch(orderApiUrl('/admin/session'), { cache: 'no-store' });
