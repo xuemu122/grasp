@@ -434,6 +434,58 @@ python3 test_aero_current_grasp.py --active-joints 1,2,3,4,5,6 --max 80 --step 2
 这会把“正常弯曲/预紧造成的电流”从判断里扣掉，只在比空载曲线额外高出阈值时才停止。
 `--per-finger` 会让 active-joints 里的 3-6 号手指分开判断；某根手指触发后会再闭合 `--extra-close` 度并锁住，直到这些手指都抓紧/到上限才退出。`--thumb-follow` 让 1/2 号拇指继续随步进闭合，但不作为“四指都抓紧”的退出条件。需要强制指定等待哪些手指时可加 `--required-fingers 3,4`。
 
+## Aero 小尺寸物体柔性抓握测试
+
+`test_aero_small_grasp.py` 针对“小物体 + 固定四指姿态”的抓握：0/1/5/6 号关节全程保持初始位，2 号拇指腱跟随递增，3/4 号手指按电流柔性闭合，碰到物体后锁住。
+
+默认初始位（GUI 滑块读数 × 100，单位度）：
+
+| 关节 | 名称 | 角度 | 说明 |
+| --- | --- | --- | --- |
+| 0 | thumb_abduction | 80.1 | 固定 |
+| 1 | thumb_flex | 50.1 | 固定 |
+| 2 | thumb_tendon | 0.0 | 跟随闭合，上限 `--thumb-max` |
+| 3 | index_finger | 15.2 | 柔性抓取 |
+| 4 | middle_finger | 13.9 | 柔性抓取 |
+| 5 | ring_finger | 0.0 | 固定（张开） |
+| 6 | pinky_finger | 0.0 | 固定（张开） |
+
+> 5/6 号原来跟随其他手指停在 80°，中指闭到 45° 左右会被顶住（电流飙到 2500mA），所以改成 0° 给中指让路。
+
+先空手采同一姿态的空载曲线（旧的全关节同动曲线在这个姿态下会误触发）：
+
+```bash
+cd /home/nvidia/grasp/dipan
+python3 test_aero_small_grasp.py --record-profile runtime/aero_small_empty.csv \
+  --max 50 --thumb-max 30 --step 2 --fast --restore-after
+```
+
+采曲线时，仍在继续闭合的电机电流 `>= --record-stop-ma`（默认 `1200` mA）连续 `--record-stop-consecutive`（默认 2）步即判为堵转并停止；已经到自身上限的关节不参与这个判断，等所有关节都到上限才正常结束。
+
+再执行抓取：
+
+```bash
+python3 test_aero_small_grasp.py --fast \
+  --profile runtime/aero_small_empty.csv --profile-delta-ma 150 \
+  --min-cmd 20 --extra-close 10 --thumb-max 30 --max 50 \
+  --hold-seconds 5 --release-after
+```
+
+主要参数：
+
+- `--active-joints`：允许运动的关节，默认 `2,3,4`
+- `--flex-fingers`：按电流判断接触并锁住的手指，默认 `3,4`
+- `--max` / `--step`：闭合上限与每步角度
+- `--thumb-max`：2 号拇指腱跟随上限
+- `--min-cmd`：低于该角度只记录不触发，默认 `20`
+- `--profile` / `--profile-delta-ma`：空载曲线与触发余量
+- `--extra-close`：触发后继续闭合的角度（顶紧量）
+- `--hold-seconds`：锁住后保持秒数
+- `--release-after` / `--restore-after`：结束后张开 / 回初始位
+- `--record-profile`：空手采空载曲线模式
+
+日志写在 `/tmp/aero_small_grasp_*.csv`，包含每步指令角、7 路电流、空载余量和触发原因。
+
 ## LHandPro RS485 柔性抓取
 
 新后端默认使用 `500000 baud`、`8N1`、`NodeID=1`，SDK 路径为

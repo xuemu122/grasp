@@ -2,6 +2,7 @@
 """Aero Hand gripper wrapper."""
 
 import csv
+from aero_passive_log import observe_hand
 import os
 import sys
 import threading
@@ -92,7 +93,7 @@ class AeroGripper:
     GRASP_BOTTLE = [100, 92, 75, 76, 75, 67, 69]
 
     def __init__(self, port=None):
-        self.hand = AeroHand(port=port)
+        self.hand = observe_hand(AeroHand(port=port))
         self.ok = True
         # Match the official power-grasp example's 10ms CTRL_POS loop.
         self._hold_hz = max(1.0, float(os.getenv("AERO_HOLD_HZ", "100")))
@@ -123,36 +124,7 @@ class AeroGripper:
         return max(finite), hot
 
     def connect(self):
-        self._apply_torque_limit()
         print("[Aero] 已连接")
-
-    def _apply_torque_limit(self, retries=2):
-        try:
-            limit = int(float(os.getenv("AERO_TORQUE_LIMIT", "0") or 0))
-        except (TypeError, ValueError):
-            limit = 0
-        if limit <= 0:
-            return
-        limit = max(0, min(1000, limit))
-        last_err = None
-        got = False
-        for _ in range(max(1, retries)):
-            try:
-                self.hand.set_torque(0, limit)
-                got = True
-                break
-            except Exception as exc:
-                last_err = exc
-                time.sleep(0.15)
-        if not got:
-            print(f"[Aero][警告] 设置扭矩上限失败(固件可能不支持 SET_TOR), 跳过: {last_err}")
-            return
-        for idx in range(1, 7):
-            try:
-                self.hand.set_torque(idx, limit)
-            except Exception:
-                pass
-        print(f"[Aero] 扭矩/电流上限已设为 {limit}/1000")
 
     def disconnect(self):
         self._stop_hold()
@@ -356,15 +328,15 @@ class AeroGripper:
         joints = tuple(sorted(int(idx) for idx in joints))
         if not joints or os.getenv("AERO_HOLD_TIGHTEN_ENABLE", "1").lower() not in ("1", "true", "yes", "on"):
             return None
-        min_extra_ma = float(os.getenv("AERO_HOLD_MIN_EXTRA_MA", "150"))
-        normal_step = float(os.getenv("AERO_HOLD_TIGHTEN_STEP", os.getenv("AERO_FLEX_STEP", "1")))
+        min_extra_ma = float(os.getenv("AERO_HOLD_MIN_EXTRA_MA", str(max(60.0, contact_delta_ma * 0.55))))
+        normal_step = float(os.getenv("AERO_HOLD_TIGHTEN_STEP", os.getenv("AERO_FLEX_STEP", "3")))
         joint1_step = max(
             0.1,
-            float(os.getenv("AERO_HOLD_JOINT1_STEP", os.getenv("AERO_FLEX_JOINT1_STEP", "1"))),
+            float(os.getenv("AERO_HOLD_JOINT1_STEP", os.getenv("AERO_FLEX_JOINT1_STEP", "2"))),
         )
         joint2_step = max(
             0.1,
-            float(os.getenv("AERO_HOLD_JOINT2_STEP", os.getenv("AERO_FLEX_JOINT2_STEP", "2"))),
+            float(os.getenv("AERO_HOLD_JOINT2_STEP", os.getenv("AERO_FLEX_JOINT2_STEP", "5"))),
         )
         normal_interval_s = float(os.getenv("AERO_FLEX_SETTLE", "0.05"))
         normal_consecutive = int(os.getenv("AERO_FLEX_CONSECUTIVE", "2"))
@@ -389,7 +361,7 @@ class AeroGripper:
                 for idx in joints
             },
             "consecutive": max(1, int(os.getenv("AERO_HOLD_TIGHTEN_CONSECUTIVE", str(normal_consecutive)))),
-            "interval_s": max(0.01, float(os.getenv("AERO_HOLD_CHECK_INTERVAL_S", "0.3"))),
+            "interval_s": max(0.01, float(os.getenv("AERO_HOLD_CHECK_INTERVAL_S", str(normal_interval_s)))),
             "samples": max(1, int(os.getenv("AERO_HOLD_CURRENT_SAMPLES", "1"))),
             "sample_delay_s": max(0.0, float(os.getenv("AERO_HOLD_CURRENT_SAMPLE_DELAY", "0"))),
             "low_counts": {idx: 0 for idx in joints},
@@ -488,37 +460,6 @@ class AeroGripper:
             pose[int(idx)] = float(value)
         return pose
 
-    def _probe_hand_reboot(self, max_wait_s=4.0, min_wait_s=1.2, tol_ma=40.0):
-        """主动读一次电流(触发手把启动横幅刷出来), 检测到重启就等回零稳定后返回 True。"""
-        import io
-        import contextlib
-
-        buf = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(buf):
-                self.hand.get_actuator_currents()
-        except Exception:
-            return False
-        low = buf.getvalue().lower()
-        if "[boot]" not in low and "homing" not in low:
-            return False
-        print("[Aero] 检测到手重启(BOOT/homing), 等待回零稳定 ...")
-        start = time.time()
-        prev = None
-        while time.time() - start < max_wait_s:
-            time.sleep(0.15)
-            cur = self._read_currents(samples=2)
-            if cur is None:
-                prev = None
-                continue
-            if prev is not None:
-                diff = max(abs(a - b) for a, b in zip(cur, prev))
-                if diff <= tol_ma and (time.time() - start) >= min_wait_s:
-                    break
-            prev = cur
-        return True
-
-
     def flexible_close(self):
         """Close fingers independently and stop after required fingers are tight."""
         if not self.ok:
@@ -526,7 +467,6 @@ class AeroGripper:
             return False
         try:
             self._stop_hold()
-            self._apply_torque_limit()
             thumb0 = float(os.getenv("AERO_FLEX_THUMB0", "80"))
             start = float(os.getenv("AERO_FLEX_START", "0"))
             max_cmd = float(os.getenv("AERO_FLEX_MAX", "80"))
@@ -544,7 +484,6 @@ class AeroGripper:
             delta_ma = float(os.getenv("AERO_FLEX_DELTA_MA", "180"))
             abs_ma = float(os.getenv("AERO_FLEX_ABS_MA", "650"))
             max_steps = int(os.getenv("AERO_FLEX_MAX_STEPS", "300"))
-            max_recheck = max(1, int(os.getenv("AERO_FLEX_MAX_RECHECK", "3")))
             temperature_every = max(1, int(os.getenv("AERO_FLEX_TEMPERATURE_EVERY", "10")))
             max_temperature_c = float(os.getenv("AERO_FLEX_MAX_TEMPERATURE_C", "65"))
             profile_value = os.getenv("AERO_FLEX_PROFILE", DEFAULT_AERO_FLEX_PROFILE).strip()
@@ -601,19 +540,12 @@ class AeroGripper:
                 values.setdefault(idx, start)
             self.hand.set_joint_positions(self._pose_from_values(thumb0, values))
             time.sleep(0.2)
-            if self._probe_hand_reboot():
-                # 手刚重启: 等回零稳定后重新摆起始位姿, 多采几帧再读基线
-                self.hand.set_joint_positions(self._pose_from_values(thumb0, values))
-                time.sleep(0.3)
-                baseline = self._read_currents(samples=max(3, samples), delay_s=sample_delay)
-            else:
-                baseline = self._read_currents(samples=samples, delay_s=sample_delay)
+            baseline = self._read_currents(samples=samples, delay_s=sample_delay)
             if baseline is None:
                 print("[Aero] 柔性抓取失败: 无法读取基线电流")
                 return False
 
             hit_counts = {idx: 0 for idx in required_fingers}
-            max_idle = {idx: 0 for idx in required_fingers}
             locked = {}
             contact_locked = set()
             print(
@@ -717,17 +649,9 @@ class AeroGripper:
                         values[idx] = min(max_cmd, values.get(idx, start) + step_by_joint.get(idx, step))
 
                 for idx in required_fingers:
-                    if idx in locked:
-                        continue
-                    if values.get(idx, start) >= max_cmd:
-                        # 到上限后不立即锁定：再复查 max_recheck 轮，避免重启/抖动漏判接触
-                        if idx in active_over:
-                            max_idle[idx] = 0
-                        else:
-                            max_idle[idx] = max_idle.get(idx, 0) + 1
-                        if max_idle[idx] >= max_recheck:
-                            locked[idx] = values.get(idx, max_cmd)
-                            events.append(f"{idx}:{COMPACT_NAMES[idx]}@max")
+                    if idx not in locked and values.get(idx, start) >= max_cmd:
+                        locked[idx] = values.get(idx, max_cmd)
+                        events.append(f"{idx}:{COMPACT_NAMES[idx]}@max")
 
                 if events:
                     print(f"[Aero] 柔性锁定: {', '.join(events)}")
@@ -738,13 +662,6 @@ class AeroGripper:
                             f"有效接触手指={sorted(contact_locked)}, "
                             f"少于要求 {min_contacts}, 判定为空抓"
                         )
-                        print("[Aero][调试] baseline=" + str([round(float(x), 1) for x in baseline]))
-                        if currents is not None:
-                            print("[Aero][调试] 末次 abs=" + str([round(float(x), 1) for x in abs_curr])
-                                  + " delta=" + str([round(float(x), 1) for x in delta]))
-                        if empty_profile:
-                            print("[Aero][调试] profile_extra=" + str([round(float(x), 1) for x in profile_extra]))
-                        print(f"[Aero][调试] 阈值 delta_ma={delta_ma} abs_ma={abs_ma} profile_delta_ma={profile_delta_ma} consecutive={consecutive}")
                         return False
                     final_pose = self._pose_from_values(thumb0, values)
                     hold_monitor = self._build_hold_monitor(

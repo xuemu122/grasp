@@ -239,7 +239,7 @@ class AeroHand:
             frame = self.ser.read(16)
             if len(frame) != 16:
                 continue 
-            if frame[0] == (opcode & 0xFF) and frame[1] == 0x00:
+            if frame[0] == (opcode & 0xFF) and frame[1] in (0x00, 0xFF):
                 return frame[2:]
         raise TimeoutError(f"ACK (opcode 0x{opcode:02X}) not received within {timeout_s}s")
     
@@ -354,7 +354,8 @@ class AeroHand:
     def _read_response_frame(self, opcode: int, timeout_s: float):
         """Read one protocol frame while skipping boot logs or stale bytes."""
         deadline = time.monotonic() + timeout_s
-        marker = bytes((opcode & 0xFF, 0x00))
+        opcode_byte = opcode & 0xFF
+        markers = (bytes((opcode_byte, 0x00)), bytes((opcode_byte, 0xFF)))
         pending = bytearray()
         discarded = bytearray()
 
@@ -367,10 +368,11 @@ class AeroHand:
             if len(pending) < 2:
                 continue
 
-            marker_index = pending.find(marker)
+            matches = [pending.find(marker) for marker in markers]
+            marker_index = min((index for index in matches if index >= 0), default=-1)
             if marker_index < 0:
                 # Keep a trailing opcode byte because the filler may arrive next.
-                keep = 1 if pending[-1] == marker[0] else 0
+                keep = 1 if pending[-1] == opcode_byte else 0
                 drop_count = len(pending) - keep
                 discarded.extend(pending[:drop_count])
                 del pending[:drop_count]
