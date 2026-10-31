@@ -479,12 +479,51 @@ python3 test_aero_small_grasp.py --fast \
 - `--thumb-max`：2 号拇指腱跟随上限
 - `--min-cmd`：低于该角度只记录不触发，默认 `20`
 - `--profile` / `--profile-delta-ma`：空载曲线与触发余量
-- `--extra-close`：触发后继续闭合的角度（顶紧量）
+- `--extra-close`：单指触发后继续闭合的角度
+- `--final-close` / `--final-step`：所有手指锁住后再一起顶紧的角度与步长（默认 8° / 1°，0 关闭）
+- `--final-max-ma`：顶紧阶段单指电流上限，超过即停止收紧（默认 1400mA）
+- `--final-target-ma`：顶紧目标电流，所有柔性手指都达到才停，抓得更紧（默认 0 关闭，建议 1400~1800）
 - `--hold-seconds`：锁住后保持秒数
 - `--release-after` / `--restore-after`：结束后张开 / 回初始位
 - `--record-profile`：空手采空载曲线模式
 
 日志写在 `/tmp/aero_small_grasp_*.csv`，包含每步指令角、7 路电流、空载余量和触发原因。
+
+### 小物品参数配置
+
+现场标定好的参数固化在 `dipan/config/small_object_grasp.json`，脚本默认读取（命令行显式传参优先）：
+
+```json
+{
+  "grasp": {
+    "profile": "runtime/aero_small_empty.csv",
+    "profile_delta_ma": 150,
+    "min_cmd": 20,
+    "consecutive": 2,
+    "extra_close": 12,
+    "final_close": 40,
+    "final_step": 1,
+    "final_target_ma": 1800,
+    "final_max_ma": 2500,
+    "thumb_max": 30,
+    "max": 100,
+    "hold_seconds": 20,
+    "release_after": true
+  },
+  "items": []
+}
+```
+
+- 当前这版是“能到多大就多大”的顶紧参数：`max=100`（关节极限）、`final_close=40`、`final_target_ma=1800`、`final_max_ma=2500`。
+- `items` 之后填小物品名称/关键词，供后续按商品选抓取参数。
+- 换一套参数用 `--config 其它.json`；`profile` 相对路径按 `dipan/` 解析。
+
+带上配置直接跑（先确保 `runtime/aero_small_empty.csv` 已用同一姿态采过）：
+
+```bash
+cd /home/nvidia/grasp/dipan
+python3 test_aero_small_grasp.py
+```
 
 ## LHandPro RS485 柔性抓取
 

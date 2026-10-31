@@ -1,0 +1,25 @@
+{
+  "_comment": "Aero 小物品抓取参数 (现场标定 2026-10-31, 5/6 号张开到 0, 3/4 柔性抓取). items 里后续填小物品名称/关键词.",
+  "grasp": {
+    "active_joints": "2,3,4",
+    "flex_fingers": "3,4",
+    "profile": "runtime/aero_small_empty.csv",
+    "profile_delta_ma": 150,
+    "profile_window_deg": 6,
+    "min_cmd": 20,
+    "consecutive": 2,
+    "extra_close": 12,
+    "final_close": 40,
+    "final_step": 1,
+    "final_target_ma": 1800,
+    "final_max_ma": 2500,
+    "thumb_max": 30,
+    "max": 100,
+    "hold_seconds": 20,
+    "settle": 0.05,
+    "samples": 1,
+    "sample_delay": 0.0,
+    "release_after": true
+  },
+  "items": []
+}

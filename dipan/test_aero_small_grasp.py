@@ -24,6 +24,7 @@
 
 import argparse
 import csv
+import json
 import os
 import sys
 import time
@@ -57,10 +58,46 @@ INITIAL_POSE = [80.1, 50.1, 0.0, 15.2, 13.9, 0.0, 0.0]
 OPEN_POSE = [80.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 THUMB_TENDON_IDX = 2
 DEFAULT_FLEX_FINGERS = (3, 4)
+DIPAN_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_CONFIG_PATH = os.path.join(DIPAN_DIR, "config", "small_object_grasp.json")
+
+
+def load_grasp_config(path):
+    """读取小物品抓取参数 JSON 的 grasp 段; 文件不存在时返回空字典."""
+    if not path or not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        print(f"[配置][警告] 读取 {path} 失败: {exc}")
+        return {}
+    grasp = data.get("grasp") if isinstance(data, dict) else None
+    return grasp if isinstance(grasp, dict) else {}
+
+
+def apply_config_defaults(parser, config):
+    """把 JSON 参数作为默认值; 命令行显式传参仍然优先."""
+    valid = {action.dest for action in parser._actions}
+    values = {}
+    for key, value in config.items():
+        if key not in valid:
+            continue
+        if key == "profile" and isinstance(value, str) and value and not os.path.isabs(value):
+            value = os.path.join(DIPAN_DIR, value)
+        values[key] = value
+    if values:
+        parser.set_defaults(**values)
 
 
 def parse_args():
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", default=os.getenv("AERO_SMALL_CONFIG", DEFAULT_CONFIG_PATH))
+    known, _ = pre.parse_known_args()
+    config = load_grasp_config(known.config)
+
     parser = argparse.ArgumentParser(description="Aero Hand 小尺寸物体柔性抓握测试")
+    parser.add_argument("--config", default=known.config, help="小物品抓取参数 JSON; 默认 dipan/config/small_object_grasp.json")
     parser.add_argument("--port", default=os.getenv("AERO_PORT"), help="Aero Hand 串口; 默认自动识别")
     parser.add_argument(
         "--initial",
@@ -117,6 +154,30 @@ def parse_args():
         default=int(os.getenv("AERO_SMALL_CONTACT_LOSS_CONSECUTIVE", "2")),
         help="收紧途中连续多少次失去接触才取消触发",
     )
+    parser.add_argument(
+        "--final-close",
+        type=float,
+        default=float(os.getenv("AERO_SMALL_FINAL_CLOSE", "8")),
+        help="所有柔性手指接触锁住后再一起收紧的角度(顶紧量); 0 表示不顶紧; 默认 8 度",
+    )
+    parser.add_argument(
+        "--final-step",
+        type=float,
+        default=float(os.getenv("AERO_SMALL_FINAL_STEP", "1")),
+        help="顶紧阶段每步角度; 默认 1 度",
+    )
+    parser.add_argument(
+        "--final-max-ma",
+        type=float,
+        default=float(os.getenv("AERO_SMALL_FINAL_MAX_MA", "1400")),
+        help="顶紧阶段单指电流上限, 超过就停止收紧; 默认 1400mA",
+    )
+    parser.add_argument(
+        "--final-target-ma",
+        type=float,
+        default=float(os.getenv("AERO_SMALL_FINAL_TARGET_MA", "0")),
+        help="顶紧阶段目标电流: 所有柔性手指都达到该电流才停(更紧); 0 表示只按角度收紧; 建议 1400~1800",
+    )
     parser.add_argument("--hold-seconds", type=float, default=float(os.getenv("AERO_SMALL_HOLD_SECONDS", "5")), help="锁住后保持秒数")
     parser.add_argument(
         "--record-profile",
@@ -146,6 +207,7 @@ def parse_args():
     parser.add_argument("--temperature-every", type=int, default=int(os.getenv("AERO_SMALL_TEMPERATURE_EVERY", "2")), help="每多少步读一次温度")
     parser.add_argument("--max-temperature-c", type=float, default=float(os.getenv("AERO_SMALL_MAX_TEMPERATURE_C", "65")), help="温度提示阈值")
     parser.add_argument("--log", default=os.getenv("AERO_SMALL_LOG", ""), help="CSV 日志路径; 默认 /tmp")
+    apply_config_defaults(parser, config)
     return parser.parse_args()
 
 
@@ -353,6 +415,8 @@ def main():
 
     hand = AeroHand(port=args.port)
     print("[小物体抓握] 已连接")
+    if args.config and os.path.isfile(args.config):
+        print(f"[小物体抓握] 参数配置: {args.config}")
     print("[小物体抓握] 初始位: " + " ".join(f"{i}:{initial[i]:.1f}" for i in range(7)))
     print(
         "[小物体抓握] 固定关节: "
@@ -362,7 +426,7 @@ def main():
     )
     print(
         f"[小物体抓握] 上限={args.max:.1f} step={args.step:.1f} extra_close={args.extra_close:.1f} "
-        f"min_cmd={args.min_cmd:.1f} consecutive={args.consecutive}"
+        f"final_close={args.final_close:.1f} min_cmd={args.min_cmd:.1f} consecutive={args.consecutive}"
         + (f" 空载曲线={args.profile} delta={args.profile_delta_ma:.0f}mA" if profile else
            f" delta阈值={args.delta_ma:.0f}mA abs阈值={args.abs_ma:.0f}mA")
     )
@@ -520,6 +584,44 @@ def main():
             if all(idx in locked for idx in flex_fingers):
                 print("[小物体抓握][完成] 已锁住: "
                       + ", ".join(f"{idx}:{COMPACT_NAMES[idx]}={locked[idx]:.1f}" for idx in sorted(locked)))
+                if args.final_close > 0:
+                    squeeze = {idx: float(locked[idx]) for idx in flex_fingers}
+                    total = 0.0
+                    print(f"[小物体抓握][顶紧] 接触后再收紧 {args.final_close:.1f}° (每步 {args.final_step:.1f}°, "
+                          f"电流上限 {args.final_max_ma:.0f}mA"
+                          + (f", 目标 {args.final_target_ma:.0f}mA" if args.final_target_ma > 0 else "") + ") ...")
+                    while total < args.final_close - 1e-6:
+                        step = min(args.final_step, args.final_close - total)
+                        pose = compact_pose(initial, {**values, **squeeze})
+                        final_pose = pose
+                        hand.set_joint_positions(pose)
+                        time.sleep(args.settle)
+                        squeeze_currents = read_currents(hand, max(args.samples, 2), args.sample_delay)
+                        if squeeze_currents is None:
+                            print("[小物体抓握][顶紧][警告] 电流读取失败, 停止收紧")
+                            break
+                        squeeze_abs = [abs(v) for v in squeeze_currents]
+                        hot = [idx for idx in sorted(flex_fingers) if squeeze_abs[idx] >= args.final_max_ma]
+                        print(
+                            "[小物体抓握][顶紧] "
+                            + " ".join(f"{idx}:{squeeze[idx]:.1f}" for idx in sorted(flex_fingers))
+                            + " abs=" + " ".join(f"{idx}:{squeeze_abs[idx]:.0f}" for idx in sorted(flex_fingers))
+                        )
+                        if hot:
+                            print("[小物体抓握][顶紧] 电流到上限, 停止收紧 ("
+                                  + ",".join(f"{idx}:{squeeze_abs[idx]:.0f}mA" for idx in hot) + ")")
+                            break
+                        if args.final_target_ma > 0:
+                            reached = [idx for idx in sorted(flex_fingers) if squeeze_abs[idx] >= args.final_target_ma]
+                            if len(reached) == len(flex_fingers):
+                                print("[小物体抓握][顶紧] 所有手指到目标电流, 停止收紧 ("
+                                      + ",".join(f"{idx}:{squeeze_abs[idx]:.0f}mA" for idx in reached) + ")")
+                                break
+                        for idx in squeeze:
+                            squeeze[idx] = min(args.max, squeeze[idx] + step)
+                        total += step
+                    print("[小物体抓握][顶紧] 结束, 最终角度: "
+                          + " ".join(f"{idx}:{squeeze[idx]:.1f}" for idx in sorted(flex_fingers)))
                 hold_seconds = max(0.0, args.hold_seconds)
                 print(f"[小物体抓握][保持] 保持 {hold_seconds:.1f}s ...")
                 end_time = time.time() + hold_seconds
