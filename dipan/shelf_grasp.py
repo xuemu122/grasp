@@ -33,6 +33,9 @@ from dobot_arm import DobotArm, _clamp_cp
 from grasp_planner import (
     EDGE_MIDPOINT_GRASP_ENABLE,
     FORCE_SIDE_GRASP,
+    NON_DRINK_SIDE_GRASP_LOW_TARGET_HEIGHT_M,
+    NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M,
+    NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M,
     SIDE_GRASP_MAX_HEIGHT_M,
     SIDE_GRASP_MIN_HEIGHT_M,
     SIDE_GRASP_LOWER_SHIFT_M,
@@ -42,6 +45,7 @@ from grasp_planner import (
     clamp_side_grasp_pixel_to_safe_clearance,
     detect_shelf_board_bounds,
     explain_target_filter,
+    is_non_drink,
     pick_target_box,
     plan_edge_grasp,
 )
@@ -110,6 +114,93 @@ HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
 SIDE_GRASP_OFFSET_M = (-0.123, -0.15, 0.008)
+# 非饮料先复制侧抓偏移，后续可在这里单独改
+NON_DRINK_SIDE_GRASP_OFFSET_M = SIDE_GRASP_OFFSET_M
+def _name_set(env_name, default):
+    return {part.strip() for part in os.getenv(env_name, default).split(",") if part.strip()}
+
+
+# 非饮料按商品名分组, 不同组用不同的柔性抓取参数
+CHIP_GRASP_NAMES = _name_set(
+    "NON_DRINK_CHIP_NAMES",
+    "趣多多饼干（咖啡味）,趣多多饼干(咖啡味),乐事薯片（番茄味）,乐事薯片(番茄味),亲亲虾条",
+)
+PUFF_GRASP_NAMES = _name_set(
+    "NON_DRINK_PUFF_NAMES",
+    "乐事薯片桶装（番茄味）,乐事薯片桶装(番茄味),丹芙巧克力脆,"
+    "奥利奥可可脆（爆汁草莓味）,奥利奥可可脆(爆汁草莓味),"
+    "奥利奥可可酥（熔岩巧克力味）,奥利奥可可酥(熔岩巧克力味),"
+    "奥利奥可可酥（爆汁草莓味）,奥利奥可可酥(爆汁草莓味),"
+    "奥利奥薄脆（原味）,奥利奥薄脆(原味),"
+    "奥利奥薄脆（酸甜草莓味）,奥利奥薄脆(酸甜草莓味),"
+    "好丽友派（巧克力味）,好丽友派(巧克力味),百醇（红酒巧克力味）,百醇(红酒巧克力味),"
+    "旺旺雪饼,名创优品Bululu经典盲盒,旺旺仙贝",
+)
+NECK_GRASP_NAMES = _name_set(
+    "NON_DRINK_NECK_NAMES",
+    "啃啃烤鸭脖（黑鸭味）,啃啃烤鸭脖(黑鸭味)",
+)
+
+# 鸭脖单独调; 先复制饮料的 xyz 偏移
+NECK_GRASP_OFFSET_M = SIDE_GRASP_OFFSET_M
+
+# 薯片组（原非饮料较柔参数）
+CHIP_AERO_FLEX_ENV = {
+    "AERO_FLEX_STEP": os.getenv("NON_DRINK_AERO_FLEX_STEP", "2"),
+    "AERO_FLEX_SETTLE": os.getenv("NON_DRINK_AERO_FLEX_SETTLE", "0.05"),
+    "AERO_FLEX_MIN_CMD": os.getenv("NON_DRINK_AERO_FLEX_MIN_CMD", "15"),
+    "AERO_FLEX_CONSECUTIVE": os.getenv("NON_DRINK_AERO_FLEX_CONSECUTIVE", "2"),
+    "AERO_FLEX_PROFILE_DELTA_MA": os.getenv("NON_DRINK_AERO_FLEX_PROFILE_DELTA_MA", "100"),
+    "AERO_FLEX_PROFILE_WINDOW_DEG": os.getenv("NON_DRINK_AERO_FLEX_PROFILE_WINDOW_DEG", "6"),
+    "AERO_FLEX_EXTRA_CLOSE": os.getenv("NON_DRINK_AERO_FLEX_EXTRA_CLOSE", "2"),
+    "AERO_FLEX_ACTIVE_JOINTS": os.getenv("NON_DRINK_AERO_FLEX_ACTIVE_JOINTS", "1,2,3,4,5,6"),
+    "AERO_FLEX_REQUIRED_FINGERS": os.getenv("NON_DRINK_AERO_FLEX_REQUIRED_FINGERS", "3,4,5,6"),
+    "AERO_HOLD_TIGHTEN_ENABLE": os.getenv("NON_DRINK_AERO_HOLD_TIGHTEN_ENABLE", "0"),
+}
+# 膨化/饼干组（旺旺那组参数: delta 140, consecutive 4）
+PUFF_AERO_FLEX_ENV = {
+    "AERO_FLEX_STEP": os.getenv("PUFF_AERO_FLEX_STEP", "2"),
+    "AERO_FLEX_SETTLE": os.getenv("PUFF_AERO_FLEX_SETTLE", "0.05"),
+    "AERO_FLEX_MIN_CMD": os.getenv("PUFF_AERO_FLEX_MIN_CMD", "15"),
+    "AERO_FLEX_CONSECUTIVE": os.getenv("PUFF_AERO_FLEX_CONSECUTIVE", "4"),
+    "AERO_FLEX_PROFILE_DELTA_MA": os.getenv("PUFF_AERO_FLEX_PROFILE_DELTA_MA", "140"),
+    "AERO_FLEX_PROFILE_WINDOW_DEG": os.getenv("PUFF_AERO_FLEX_PROFILE_WINDOW_DEG", "6"),
+    "AERO_FLEX_EXTRA_CLOSE": os.getenv("PUFF_AERO_FLEX_EXTRA_CLOSE", "2"),
+    "AERO_FLEX_ACTIVE_JOINTS": os.getenv("PUFF_AERO_FLEX_ACTIVE_JOINTS", "1,2,3,4,5,6"),
+    "AERO_FLEX_REQUIRED_FINGERS": os.getenv("PUFF_AERO_FLEX_REQUIRED_FINGERS", "3,4,5,6"),
+    "AERO_HOLD_TIGHTEN_ENABLE": os.getenv("PUFF_AERO_HOLD_TIGHTEN_ENABLE", "0"),
+}
+# 鸭脖组（小物品参数）
+NECK_AERO_FLEX_ENV = {
+    "AERO_FLEX_STEP": os.getenv("NECK_AERO_FLEX_STEP", "2"),
+    "AERO_FLEX_SETTLE": os.getenv("NECK_AERO_FLEX_SETTLE", "0.05"),
+    "AERO_FLEX_MIN_CMD": os.getenv("NECK_AERO_FLEX_MIN_CMD", "20"),
+    "AERO_FLEX_CONSECUTIVE": os.getenv("NECK_AERO_FLEX_CONSECUTIVE", "2"),
+    "AERO_FLEX_PROFILE_DELTA_MA": os.getenv("NECK_AERO_FLEX_PROFILE_DELTA_MA", "150"),
+    "AERO_FLEX_PROFILE_WINDOW_DEG": os.getenv("NECK_AERO_FLEX_PROFILE_WINDOW_DEG", "6"),
+    "AERO_FLEX_EXTRA_CLOSE": os.getenv("NECK_AERO_FLEX_EXTRA_CLOSE", "2"),
+    "AERO_FLEX_ACTIVE_JOINTS": os.getenv("NECK_AERO_FLEX_ACTIVE_JOINTS", "2,3,4"),
+    "AERO_FLEX_REQUIRED_FINGERS": os.getenv("NECK_AERO_FLEX_REQUIRED_FINGERS", "3,4"),
+    "AERO_HOLD_TIGHTEN_ENABLE": os.getenv("NECK_AERO_HOLD_TIGHTEN_ENABLE", "0"),
+}
+_neck_profile = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime", "aero_small_empty.csv")
+if os.path.exists(_neck_profile):
+    NECK_AERO_FLEX_ENV["AERO_FLEX_PROFILE"] = os.getenv("NECK_AERO_FLEX_PROFILE", _neck_profile)
+
+# 向后兼容旧名字
+NON_DRINK_AERO_FLEX_ENV = CHIP_AERO_FLEX_ENV
+
+
+def grasp_group_for(det):
+    """Return 'neck' / 'puff' / 'chip' / 'drink' for the target."""
+    name = str(getattr(det, "class_name", "") or "").strip()
+    if name in NECK_GRASP_NAMES:
+        return "neck"
+    if name in PUFF_GRASP_NAMES:
+        return "puff"
+    if name in CHIP_GRASP_NAMES:
+        return "chip"
+    return "chip" if is_non_drink(det) else "drink"
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
 TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.035)
 
@@ -1179,7 +1270,8 @@ def go_to_place_point(arm: "DobotArm", visit_transition: bool = True):
 
 def go_to_place_transition(arm: "DobotArm"):
     """如果记录了放置过渡点，则先移动到过渡点。未记录时直接跳过。"""
-    servo_hold(wait=True)
+    # 先发起手腕转动, 不阻塞; 机械臂同时往过渡点走, 到位后再等手腕
+    servo_hold()
     if _place_transition_pose is None:
         return True
     pose, name = _place_transition_pose
@@ -1365,6 +1457,8 @@ def finish_pick_cycle(arm: "DobotArm", hand: Optional[object], current_layer_idx
             if not go_to_place_transition(arm):
                 print("  [停止] 底盘移动前未能到达放置过渡点, 不调用底盘")
                 return False
+            # 抓取后回到放置过渡点：等手腕到位，再让底盘走
+            servo_hold(wait=True)
             held_at_transition = True
             if hand_ok and not hand.is_holding():
                 print("  [停止] 到达放置过渡点后灵巧手保持失败, 不调用底盘")
@@ -2152,17 +2246,30 @@ def main():
     camera = RealSenseCamera(width=640, height=480, fps=30)
     _repo_root = os.environ.get("GRASP_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     _recognition_dir = os.environ.get("GRASP_RECOGNITION_DIR", os.path.join(_repo_root, "识别"))
-    default_model_path = os.path.join(_recognition_dir, "best.engine")
+    # 双模型: 饮料 best1, 零食 best(只取 class_id >= SNACK_CLASS_MIN_ID)
+    default_model_path = os.path.join(_recognition_dir, "best1.engine")
+    if not os.path.exists(default_model_path):
+        default_model_path = os.path.join(_recognition_dir, "best.engine")
     if not os.path.exists(default_model_path):
         default_model_path = os.path.join(_recognition_dir, "best.pt")
     model_path = os.getenv("YOLO_MODEL_PATH", default_model_path)
+
+    aux_model_path = os.getenv("SNACK_MODEL_PATH", os.path.join(_recognition_dir, "best.engine"))
+    if (not os.path.exists(aux_model_path)
+            or os.path.abspath(aux_model_path) == os.path.abspath(model_path)):
+        aux_model_path = ""
+    aux_class_min_id = int(os.getenv("SNACK_CLASS_MIN_ID", "19"))
     print(f"  视觉模型: {model_path}")
+    if aux_model_path:
+        print(f"  零食辅助模型: {aux_model_path} (只取 class_id >= {aux_class_min_id})")
     locator = MedicineLocatorSystem(
         model_path=model_path,
         mapping_path=os.environ.get("SHELF_MAPPING_PATH", os.path.join(_recognition_dir, "shelf_mapping.yaml")),
         conf_threshold=DETECT_CONF_THRESHOLD,
         class_conf_thresholds={cls_id: WATER_CONF_THRESHOLD for cls_id in DRINK_CLASS_IDS},
         use_ocr=False,
+        aux_model_path=aux_model_path or None,
+        aux_class_min_id=aux_class_min_id,
     )
     locator.init_camera = lambda: None
     locator.camera = camera
@@ -2398,6 +2505,9 @@ def main():
             latest_failure_image = None
             _clear_failure_diagnostic()
 
+            # 识别前先把手腕转到抓取角, 拍照/识别时手已是抓取姿态
+            servo_grasp()
+
             # ── 获取当前法兰位姿 ──
             flange_pose = arm.get_pose()
             print(f"当前法兰: ({flange_pose[0]:.0f}, {flange_pose[1]:.0f}, {flange_pose[2]:.0f})mm "
@@ -2554,9 +2664,19 @@ def main():
             latest_failure_image = _draw_failure_diagnostic(best_img, detections, target, grip_pixel)
 
             if grip_mode.endswith("_side") and not EDGE_MIDPOINT_GRASP_ENABLE:
-                corrected_pixel, original_clearance_m, bottom_clearance_m = (
-                    clamp_side_grasp_pixel_to_safe_clearance(target, grip_pixel, camera.fy)
-                )
+                if is_non_drink(target):
+                    corrected_pixel, original_clearance_m, bottom_clearance_m = (
+                        clamp_side_grasp_pixel_to_safe_clearance(
+                            target, grip_pixel, camera.fy,
+                            NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M,
+                            NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M,
+                            NON_DRINK_SIDE_GRASP_LOW_TARGET_HEIGHT_M,
+                        )
+                    )
+                else:
+                    corrected_pixel, original_clearance_m, bottom_clearance_m = (
+                        clamp_side_grasp_pixel_to_safe_clearance(target, grip_pixel, camera.fy)
+                    )
                 if corrected_pixel is None or bottom_clearance_m is None:
                     clearance_label = (
                         "无效"
@@ -2588,9 +2708,15 @@ def main():
                     )
                     print(f"  [抓点硬纠偏] 更新抓取点: ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
                 else:
+                    if is_non_drink(target):
+                        band_min = NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M
+                        band_max = NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M
+                    else:
+                        band_min = SIDE_GRASP_MIN_HEIGHT_M
+                        band_max = SIDE_GRASP_MAX_HEIGHT_M
                     print(
                         f"  [抓点硬纠偏] 距检测框底边 {bottom_clearance_m*100:.1f}cm, "
-                        f"已在 {SIDE_GRASP_MIN_HEIGHT_M*100:.1f}..{SIDE_GRASP_MAX_HEIGHT_M*100:.1f}cm 安全区间"
+                        f"已在 {band_min*100:.1f}..{band_max*100:.1f}cm 安全区间"
                     )
 
             if SAVE_DEBUG_IMAGES:
@@ -2632,7 +2758,17 @@ def main():
 
             # ── 根据自动判定的抓取模式选择偏移参数 ──
             is_side_grasp = "side" in grip_mode
-            grasp_offset_m = SIDE_GRASP_OFFSET_M if is_side_grasp else TOP_GRASP_OFFSET_M
+            if is_side_grasp:
+                if is_non_drink(target):
+                    grasp_offset_m = (
+                        NECK_GRASP_OFFSET_M
+                        if grasp_group_for(target) == "neck"
+                        else NON_DRINK_SIDE_GRASP_OFFSET_M
+                    )
+                else:
+                    grasp_offset_m = SIDE_GRASP_OFFSET_M
+            else:
+                grasp_offset_m = TOP_GRASP_OFFSET_M
             grip_label = "侧面抓" if is_side_grasp else "上面抓"
             fingertip_w = np.array([wx, wy, wz]) + np.array(grasp_offset_m)
             flange_pt   = fingertip_w - HAND_LENGTH * fz_dir   # 法兰在手背面
@@ -2864,7 +3000,6 @@ def main():
             # ========================================================
             # ── 执行 ──
             print("\n执行抓取动作...")
-            servo_grasp()
 
             # 1. 张开手
             if not SKIP_HAND:
@@ -2987,7 +3122,31 @@ def main():
             grasp_succeeded = SKIP_HAND
             if not SKIP_HAND:
                 if HAND_GRASP_MODE in ("flex", "flexible", "current"):
-                    grasp_succeeded = hand.flexible_close()
+                    grasp_group = grasp_group_for(target)
+                    flex_env = {
+                        "chip": CHIP_AERO_FLEX_ENV,
+                        "puff": PUFF_AERO_FLEX_ENV,
+                        "neck": NECK_AERO_FLEX_ENV,
+                    }.get(grasp_group)
+                    saved_env = {}
+                    if flex_env:
+                        saved_env = {key: os.environ.get(key) for key in flex_env}
+                        os.environ.update(flex_env)
+                        print(
+                            f"  [非饮料/{grasp_group}] 柔性参数: "
+                            f"delta={flex_env['AERO_FLEX_PROFILE_DELTA_MA']}mA, "
+                            f"consecutive={flex_env['AERO_FLEX_CONSECUTIVE']}, "
+                            f"extra_close={flex_env['AERO_FLEX_EXTRA_CLOSE']}°"
+                        )
+                    try:
+                        grasp_succeeded = hand.flexible_close()
+                    finally:
+                        if flex_env:
+                            for key, old_value in saved_env.items():
+                                if old_value is None:
+                                    os.environ.pop(key, None)
+                                else:
+                                    os.environ[key] = old_value
                 else:
                     grasp_mode = "bottle" if HAND_GRASP_MODE == "bottle" and is_side_grasp else None
                     grasp_succeeded = hand.close(top=not is_side_grasp, mode=grasp_mode)
@@ -3000,7 +3159,33 @@ def main():
                 else:
                     print("  [抓取失败] 灵巧手闭合/保持失败，只执行机械臂安全退回，不调用底盘和放置流程")
 
-            # 5. 后退: 先沿手指方向退回对齐位, 再离开货架
+            # 5. 抓后先向上抬升，离开层板边缘后再水平后退
+            if grasp_succeeded:
+                lift_mm = float(os.getenv("GRASP_LIFT_MM", "55"))
+                lift_speed = int(os.getenv("GRASP_LIFT_SPEED", "60"))
+                try:
+                    lift_base = arm.get_pose()
+                except Exception as exc:
+                    print(f"  [停止] 抓后抬升前读取位姿失败: {exc}")
+                    worker_fail("抓后抬升前读取位姿失败")
+                    continue
+                print(f"  [抓后抬升] 向上抬 {lift_mm:.1f}mm ...")
+                if not arm.movel(
+                    float(lift_base[0]),
+                    float(lift_base[1]),
+                    float(lift_base[2]) + lift_mm,
+                    float(lift_base[3]),
+                    float(lift_base[4]),
+                    float(lift_base[5]),
+                    speed=lift_speed,
+                    allow_low_z=allow_low_z,
+                ):
+                    print("  [停止] 抓后抬升失败/报警, 停在当前位置, 不继续放置流程")
+                    worker_fail("抓后抬升失败")
+                    continue
+                time.sleep(GRASP_SETTLE_S)
+
+            # 6. 后退: 先沿手指方向退回对齐位, 再离开货架
             retreat_pt = np.array([ax+offset_x, ay+offset_y, az+offset_z])
             if not arm.movel(float(retreat_pt[0]), float(retreat_pt[1]), float(retreat_pt[2]), speed=100,
                              allow_low_z=allow_low_z):

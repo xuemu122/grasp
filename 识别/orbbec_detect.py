@@ -838,6 +838,8 @@ class RetailProductLocatorSystem:
                  class_conf_thresholds: Optional[Dict[int, float]] = None,
                  use_ocr: bool = False,
                  ocr_interval: int = 90,
+                 aux_model_path: Optional[str] = None,
+                 aux_class_min_id: int = 0,
                  enhance_mode: str = "auto",
                  light_threshold: float = 90.0,
                  clahe_clip: float = 2.5,
@@ -853,6 +855,21 @@ class RetailProductLocatorSystem:
         if not Path(model_path).exists():
             print(f"[模型][警告] 权重文件不存在: {model_path}")
         self.model = YOLO(model_path)
+        self.aux_model = None
+        self.aux_class_min_id = int(aux_class_min_id)
+        if aux_model_path:
+            aux_path = Path(aux_model_path)
+            main_path = Path(model_path)
+            if aux_path.exists() and aux_path.resolve() != main_path.resolve():
+                print(
+                    f"[模型] 加载辅助模型: {aux_model_path} "
+                    f"(只保留 class_id >= {self.aux_class_min_id})"
+                )
+                self.aux_model = YOLO(aux_model_path)
+                aux_names = getattr(self.aux_model, "names", {}) or {}
+                print(f"[模型] 辅助模型类别数: {len(aux_names)}")
+            else:
+                print(f"[模型] 辅助模型不存在或与主模型相同，跳过: {aux_model_path}")
         self.conf_threshold = conf_threshold
         self.raw_conf_threshold = min(raw_conf_threshold, conf_threshold)
         self.class_conf_thresholds = class_conf_thresholds or {}
@@ -1133,14 +1150,25 @@ class RetailProductLocatorSystem:
                     "after": (after_mean, after_std),
                 }
 
-        # YOLO 预测
+        # YOLO 预测：主模型 + 可选辅助模型（辅助模型只保留指定类别之后的类别）
         results = self.model.predict(
             source=yolo_input,
             conf=self.raw_conf_threshold,
             verbose=False,
         )
         result = results[0]
-        raw_boxes = list(result.boxes)
+        combined_boxes = [(box, result.names) for box in list(result.boxes)]
+        if getattr(self, "aux_model", None) is not None:
+            aux_predictions = self.aux_model.predict(
+                source=yolo_input,
+                conf=self.raw_conf_threshold,
+                verbose=False,
+            )
+            aux_result = aux_predictions[0]
+            for box in list(aux_result.boxes):
+                if int(box.cls[0]) >= self.aux_class_min_id:
+                    combined_boxes.append((box, aux_result.names))
+        raw_boxes = combined_boxes
         self.raw_box_count = len(raw_boxes)
         self.filtered_box_count = 0
         self.low_conf_box_count = 0
@@ -1149,10 +1177,10 @@ class RetailProductLocatorSystem:
         self.frame_counter += 1
         do_ocr_this_frame = self.use_ocr and (self.frame_counter % self.ocr_interval == 0)
 
-        for box in raw_boxes:
+        for box, names in raw_boxes:
             cls_id = int(box.cls[0])
             conf_score = float(box.conf[0])
-            class_name = result.names[cls_id]
+            class_name = names[cls_id]
             conf_threshold = self._threshold_for_class(cls_id)
 
             x1, y1, x2, y2 = map(int, box.xyxy[0])

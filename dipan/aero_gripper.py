@@ -93,6 +93,7 @@ class AeroGripper:
     GRASP_BOTTLE = [100, 92, 75, 76, 75, 67, 69]
 
     def __init__(self, port=None):
+        self._kd_observer = None
         self.hand = observe_hand(AeroHand(port=port))
         self.ok = True
         # Match the official power-grasp example's 10ms CTRL_POS loop.
@@ -189,6 +190,14 @@ class AeroGripper:
                     print("[Aero] 抓取姿态保持连续失败, 已禁用灵巧手")
                     return
 
+            observer = self._kd_observer
+            if observer is not None:
+                try:
+                    observer.sample(self.hand)
+                except Exception as exc:
+                    print(f"[KD] 反馈观察失败，关闭观察器；原位置保持继续: {exc}")
+                    observer.close()
+                    self._kd_observer = None
             now = time.monotonic()
             if now >= next_temperature_check:
                 next_temperature_check = now + temperature_interval_s
@@ -371,6 +380,14 @@ class AeroGripper:
         }
 
     def _start_hold(self, pose, monitor=None):
+        kd_config = os.getenv("AERO_KD_SHADOW_CONFIG", "")
+        if kd_config and self._kd_observer is None:
+            from kd_observer import KDObserver
+            output = os.getenv("AERO_KD_SHADOW_LOG", "")
+            if not output:
+                raise ValueError("AERO_KD_SHADOW_LOG is required; choose a new output file")
+            self._kd_observer = KDObserver(kd_config, output)
+            print("[KD] 实际反馈与增益记录已启用；仅观察，不改变电机指令。")
         target = [float(value) for value in pose]
         result = self.hand.set_joint_positions(target)
         if result is False:
@@ -400,11 +417,27 @@ class AeroGripper:
         thread = self._hold_thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=2.0)
+        if self._kd_observer is not None:
+            if thread is not None and thread.is_alive():
+                raise RuntimeError("保持线程未结束，不能并发操作串口或关闭KD日志")
+            self._kd_observer.close()
+            self._kd_observer = None
         self._hold_thread = None
         with self._hold_lock:
             self._hold_pose = None
             self._hold_monitor = None
             self._hold_grip_ok = True
+
+    def confirm_kd_reference(self, timeout_s=2.):
+        observer = self._kd_observer
+        if observer is None or not self.is_holding():
+            raise RuntimeError('KD观察器或保持循环未运行')
+        if observer.reference_ready.is_set():
+            raise RuntimeError('参考已确认，不允许重复重置调度时间')
+        observer.request_reference()
+        if not observer.reference_ready.wait(timeout_s):
+            raise RuntimeError('确认后未及时获得有效反馈；不开始测试')
+        print('[KD] 抓稳参考已捕获；从该反馈时刻开始调度计时，仅观察。')
 
     def is_holding(self):
         """Return whether the active hold loop is still sending CTRL_POS."""

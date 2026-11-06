@@ -30,6 +30,12 @@ const ROBOT_GRASP_MODE = (process.env.ROBOT_GRASP_MODE || 'sim').toLowerCase();
 const ROBOT_GRASP_REAL = ['real', 'robot', 'hardware'].includes(ROBOT_GRASP_MODE);
 const GRASP_SCRIPT = process.env.GRASP_SCRIPT || path.resolve(__dirname, '../dipan/shelf_grasp.py');
 const GRASP_CWD = path.dirname(GRASP_SCRIPT);
+const BATTERY_MONITOR_SCRIPT = process.env.BATTERY_MONITOR_SCRIPT || path.resolve(__dirname, '../dipan/battery_monitor.py');
+const BATTERY_STATE_FILE = process.env.BATTERY_STATE_FILE || path.resolve(__dirname, '../dipan/runtime/battery.json');
+const BATTERY_STALE_MS = Math.max(5000, Number(process.env.BATTERY_STALE_MS || 60000));
+const BATTERY_MONITOR_ENABLE = !/^(0|false|no|off)$/i.test(process.env.BATTERY_MONITOR_ENABLE || '1');
+const CHASSIS_POWER_TIMEOUT_MS = Math.max(500, Number(process.env.CHASSIS_POWER_TIMEOUT_MS || 3000));
+const CHASSIS_POWER_CACHE_MS = Math.max(500, Number(process.env.CHASSIS_POWER_CACHE_MS || 5000));
 const DOBOT_IP = process.env.DOBOT_IP || '192.168.5.1';
 const DOBOT_PORT = Number(process.env.DOBOT_PORT || 29999);
 const CHASSIS_HOST = process.env.CHASSIS_HOST || process.env.MOVE_ROBOT_HOST || '192.168.10.10';
@@ -875,6 +881,7 @@ async function probeBoxPresence(entry) {
         entry.sn = String(info.sn || '').trim();
         entry.storeName = info.storeName || null;
         entry.graspMode = info.graspMode || null;
+        entry.power = info.power || null;
         entry.checkedAt = now;
         entry.lastSeenAt = now;
         entry.error = '';
@@ -910,14 +917,15 @@ function devicePresence(device) {
         known: matches,
         checkedAt: presence.checkedAt,
         lastSeenAt: matches ? presence.lastSeenAt : null,
-        storeId: box.storeId
+        storeId: box.storeId,
+        power: (matches && fresh) ? (presence.power || null) : null
     };
 }
 
 function withDevicePresence(device) {
     if (!device || typeof device !== 'object') return device;
     const presence = devicePresence(device);
-    return { ...device, online: presence.online, presence };
+    return { ...device, online: presence.online, power: presence.power, presence };
 }
 
 function clientIp(req) {
@@ -3210,13 +3218,18 @@ const server = http.createServer(async (req, res) => {
 
     // ========== 设备管理 ==========
     if (pathname === '/api/device/info' && req.method === 'GET') {
+        const chassis = readChassisPower();
         sendJSON(res, {
             code: 0,
             data: {
                 sn: DEVICE_SN,
                 storeId: STORE_ID || null,
                 storeName: STORE_NAME || null,
-                graspMode: ROBOT_GRASP_MODE
+                graspMode: ROBOT_GRASP_MODE,
+                power: {
+                    battery: readBatteryState(),
+                    chassis
+                }
             }
         });
         return;
@@ -4559,6 +4572,8 @@ const startHttpServer = () => server.listen(PORT, HOST, () => {
                 log(`❌ 机器人启动上电失败: ${error.message}`);
                 broadcastRobotStatus('standby', `机器人启动上电失败: ${error.message}`);
             });
+        ensureBatteryMonitor();
+        setInterval(() => { refreshChassisPower().catch(() => {}); }, CHASSIS_POWER_CACHE_MS).unref?.();
     }
     refreshChassisMapSnapshot()
         .then((snapshot) => log(`底盘地图已更新到本地: ${snapshot.map.map_name || snapshot.map.hotel_id}/${snapshot.map.floor}`))
@@ -4596,6 +4611,7 @@ async function shutdownServerOnSignal(signal) {
     }
     processShutdownStarted = true;
     log(`收到 ${signal}，正在让抓取 worker 下使能并退出...`);
+    stopBatteryMonitor();
     const forceExitTimer = setTimeout(() => {
         log('退出清理达到 5 秒上限，强制结束服务');
         process.exit(1);
@@ -4963,6 +4979,76 @@ function chassisClient() {
 
 function chassisResults(response) {
     return response && response.results && typeof response.results === 'object' ? response.results : {};
+}
+
+// 读取 485 电池板监控进程写出的状态文件（dipan/battery_monitor.py）。
+let batteryStateCache = { at: 0, value: null };
+function readBatteryState() {
+    const now = Date.now();
+    if (batteryStateCache.value && now - batteryStateCache.at < 2000) return batteryStateCache.value;
+    let value = { online: false };
+    try {
+        if (fs.existsSync(BATTERY_STATE_FILE)) {
+            const data = JSON.parse(fs.readFileSync(BATTERY_STATE_FILE, 'utf8'));
+            const updatedAt = Number(data.updated_at) * 1000;
+            const fresh = updatedAt > 0 && (now - updatedAt) <= BATTERY_STALE_MS;
+            value = {
+                online: Boolean(data.online) && fresh,
+                voltage: data.voltage === undefined ? null : data.voltage,
+                percent: data.percent === undefined ? null : data.percent,
+                temperature: data.temperature === undefined ? null : data.temperature,
+                port: data.port || null,
+                updated_at: updatedAt || null
+            };
+        }
+    } catch (error) {
+        value = { online: false };
+    }
+    batteryStateCache = { at: now, value };
+    return value;
+}
+
+// 读取底盘电源（TCP /api/get_power_status）。异步刷新、缓存返回，绝不阻塞调用方。
+let chassisPowerValue = { online: false };
+let chassisPowerRefreshing = null;
+let chassisPowerLastAt = 0;
+function refreshChassisPower() {
+    if (!ROBOT_GRASP_REAL) return Promise.resolve(chassisPowerValue);
+    if (chassisPowerRefreshing) return chassisPowerRefreshing;
+    chassisPowerRefreshing = (async () => {
+        try {
+            const client = new ChassisClient({ host: CHASSIS_HOST, port: CHASSIS_PORT, timeoutMs: CHASSIS_POWER_TIMEOUT_MS });
+            const response = await client.request('/api/get_power_status');
+            if (!response || response.status !== 'OK') {
+                chassisPowerValue = { online: false, error: chassisResponseError(response) };
+            } else {
+                const info = chassisResults(response);
+                chassisPowerValue = {
+                    online: true,
+                    capacity: info.battery_capacity === undefined ? null : info.battery_capacity,
+                    voltage: info.battery_voltage === undefined ? null : info.battery_voltage,
+                    current: info.battery_current === undefined ? null : info.battery_current,
+                    charging: Boolean(info.charger_connected_notice)
+                };
+            }
+        } catch (error) {
+            chassisPowerValue = { online: false, error: error.message };
+        } finally {
+            chassisPowerLastAt = Date.now();
+            chassisPowerRefreshing = null;
+        }
+        return chassisPowerValue;
+    })();
+    return chassisPowerRefreshing;
+}
+
+// 非阻塞：返回缓存的底盘电量，过期则后台刷新（不 await）。
+function readChassisPower() {
+    if (!ROBOT_GRASP_REAL) return { online: false, simulated: true };
+    if (Date.now() - chassisPowerLastAt > CHASSIS_POWER_CACHE_MS) {
+        refreshChassisPower().catch(() => {});
+    }
+    return chassisPowerValue;
 }
 
 function chassisResponseError(response) {
@@ -5427,6 +5513,67 @@ function ensureRobotWorker() {
     });
 
     return robotWorkerStarting;
+}
+
+// 常驻 485 电池板监控进程：真实模式下随服务启动，异常退出后自动重启。
+let batteryMonitor = null;
+let batteryMonitorRestarting = null;
+let batteryMonitorStopped = false;
+function ensureBatteryMonitor() {
+    if (!ROBOT_GRASP_REAL || !BATTERY_MONITOR_ENABLE) return;
+    if (batteryMonitorStopped || batteryMonitor) return;
+    if (!fs.existsSync(BATTERY_MONITOR_SCRIPT)) {
+        log(`🔋 未找到电池监控脚本，跳过: ${BATTERY_MONITOR_SCRIPT}`);
+        return;
+    }
+    try {
+        log('🔋 启动 485 电池监控进程...');
+        const child = spawn('python3', [BATTERY_MONITOR_SCRIPT], {
+            cwd: path.dirname(BATTERY_MONITOR_SCRIPT),
+            env: {
+                ...process.env,
+                PYTHONUNBUFFERED: '1',
+                BATTERY_STATE_FILE
+            }
+        });
+        batteryMonitor = child;
+        const handleOutputLine = createLineHandler((line) => {
+            const trimmed = line.trim();
+            if (trimmed) log(`  [battery] ${trimmed}`);
+        });
+        child.stdout.on('data', handleOutputLine);
+        child.stderr.on('data', handleOutputLine);
+        child.on('error', (error) => {
+            log(`🔋 电池监控进程启动失败: ${error.message}`);
+            batteryMonitor = null;
+        });
+        child.on('close', (code) => {
+            log(`🔋 电池监控进程退出 code=${code}`);
+            batteryMonitor = null;
+            if (!batteryMonitorStopped && !batteryMonitorRestarting) {
+                batteryMonitorRestarting = setTimeout(() => {
+                    batteryMonitorRestarting = null;
+                    ensureBatteryMonitor();
+                }, 5000);
+                batteryMonitorRestarting.unref?.();
+            }
+        });
+    } catch (error) {
+        log(`🔋 电池监控进程启动异常: ${error.message}`);
+        batteryMonitor = null;
+    }
+}
+
+function stopBatteryMonitor() {
+    batteryMonitorStopped = true;
+    if (batteryMonitorRestarting) {
+        clearTimeout(batteryMonitorRestarting);
+        batteryMonitorRestarting = null;
+    }
+    if (batteryMonitor) {
+        try { batteryMonitor.kill('SIGTERM'); } catch (e) { /* ignore */ }
+        batteryMonitor = null;
+    }
 }
 
 function handleStowCommand(ws) {

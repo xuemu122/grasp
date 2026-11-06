@@ -437,8 +437,8 @@
             </div>
             <div class="table-wrapper">
                 <table>
-                    <thead><tr><th>设备</th><th>SN / 型号</th><th>状态</th><th>在线</th><th>所属门店</th><th>存放位置</th><th>更新时间</th><th>操作</th></tr></thead>
-                    <tbody id="deviceTableBody"><tr><td colspan="8" class="loading">加载中...</td></tr></tbody>
+                    <thead><tr><th>设备</th><th>SN / 型号</th><th>状态</th><th>在线</th><th>电量</th><th>所属门店</th><th>存放位置</th><th>更新时间</th><th>操作</th></tr></thead>
+                    <tbody id="deviceTableBody"><tr><td colspan="9" class="loading">加载中...</td></tr></tbody>
                 </table>
             </div>
         </div>
@@ -2006,11 +2006,22 @@
             return '<span class="status-badge warn">未接入</span>';
         }
 
+        function devicePowerLabel(device) {
+            const power = device && device.power;
+            if (!power) return '-';
+            const parts = [];
+            const battery = power.battery;
+            const chassis = power.chassis;
+            if (battery && battery.online) parts.push(`🔋${battery.percent == null ? '--' : battery.percent + '%'}`);
+            if (chassis && chassis.online) parts.push(`🛞${chassis.capacity == null ? '--' : chassis.capacity + '%'}`);
+            return parts.length ? parts.join(' / ') : '-';
+        }
+
         function renderDeviceTable() {
             const body = document.getElementById('deviceTableBody');
             if (!body) return;
             if (!deviceRecords.length) {
-                body.innerHTML = '<tr><td colspan="8" class="empty-state">暂无设备，请先新增设备</td></tr>';
+                body.innerHTML = '<tr><td colspan="9" class="empty-state">暂无设备，请先新增设备</td></tr>';
                 return;
             }
             body.innerHTML = deviceRecords.map((device) => {
@@ -2022,6 +2033,7 @@
                     <td>${esc(device.sn) || '-'}<br><small>${esc(device.model) || '未填写型号'}</small></td>
                     <td><span class="status-badge ${deviceStatusBadgeClass(device.status)}">${esc(device.statusLabel || device.status)}</span></td>
                     <td>${deviceOnlineBadge(device)}</td>
+                    <td>${devicePowerLabel(device)}</td>
                     <td>${storeLabel}</td>
                     <td>${esc(device.location) || '-'}</td>
                     <td>${esc(adminOrderTime(device.updatedAt))}</td>

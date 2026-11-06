@@ -525,6 +525,31 @@ cd /home/nvidia/grasp/dipan
 python3 test_aero_small_grasp.py
 ```
 
+### 非膨化袋装抓取
+
+`test_aero_bag_grasp.py` 复用同一套柔性抓取流程，参数在 `dipan/config/bag_grasp.json`。初始位姿（GUI 2026-10-31，滑块值按各关节上限换算：1 号上限 55°，3-6 号上限 90°）：
+
+| 关节 | 名称 | 角度 | 说明 |
+| --- | --- | --- | --- |
+| 0 | thumb_abduction | 80.3 | 固定 |
+| 1 | thumb_flex | 35.2 | 跟随闭合到关节上限 55° |
+| 2 | thumb_tendon | 0.0 | 跟随闭合，上限 `--thumb-max` |
+| 3 | index_finger | 32.0 | 柔性抓取 |
+| 4 | middle_finger | 36.0 | 柔性抓取 |
+| 5 | ring_finger | 36.9 | 柔性抓取 |
+| 6 | pinky_finger | 22.2 | 柔性抓取 |
+
+先空手采同一姿态曲线，再抓：
+
+```bash
+cd /home/nvidia/grasp/dipan
+python3 test_aero_bag_grasp.py --record-profile runtime/aero_bag_empty.csv \
+  --max 85 --thumb-max 30 --step 2 --fast --restore-after
+python3 test_aero_bag_grasp.py
+```
+
+袋装抓取默认 `max=85`（超过各关节上限自动夹住：1 号 55°、3-6 号 90°）、`extra_close=8`、`final_close=30`、`final_target_ma=1800`、`final_max_ma=2500`，可先按实测再调。
+
 ## LHandPro RS485 柔性抓取
 
 新后端默认使用 `500000 baud`、`8N1`、`NodeID=1`，SDK 路径为

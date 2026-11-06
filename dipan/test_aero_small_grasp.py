@@ -56,6 +56,8 @@ COMPACT_NAMES = [
 # 现场初始位(GUI 滑块读数 * 100), 单位: 度; 5/6 号已改为 0(张开), 否则中指闭合时会顶到无名指/小指
 INITIAL_POSE = [80.1, 50.1, 0.0, 15.2, 13.9, 0.0, 0.0]
 OPEN_POSE = [80.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+# SDK 的关节上限: 0 号 100°, 1 号(拇指屈) 55°, 2-6 号 90°
+JOINT_UPPER_LIMITS = [100.0, 55.0, 90.0, 90.0, 90.0, 90.0, 90.0]
 THUMB_TENDON_IDX = 2
 DEFAULT_FLEX_FINGERS = (3, 4)
 DIPAN_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -307,7 +309,7 @@ def compact_pose(initial, values):
     return pose
 
 
-def record_empty_profile(args, hand, initial, active_joints):
+def record_empty_profile(args, hand, initial, active_joints, baseline):
     """空手采曲线: 2/3/4 从初始位按 --step 走到 --max, 其余关节保持初始位.
 
     遇到堵转(单个电机电流超 --record-stop-ma 连续若干步)会提前停止, 避免中途卡住.
@@ -335,14 +337,20 @@ def record_empty_profile(args, hand, initial, active_joints):
         )
 
         cap_map = {
-            idx: (args.thumb_max if idx == THUMB_TENDON_IDX else args.max)
+            idx: (
+                min(args.thumb_max, JOINT_UPPER_LIMITS[idx])
+                if idx == THUMB_TENDON_IDX
+                else min(args.max, JOINT_UPPER_LIMITS[idx])
+            )
             for idx in values
         }
         # 已经到自身上限的关节不再继续转, 它的电流升高只是憋着, 不算整轮卡住;
-        # 只有还在继续闭合的关节超限才视为真堵转.
+        # 只有还在继续闭合、且相对初始位姿电流明显升高的关节才视为真堵转
+        # (有些手指在初始位姿本来就有较大静态电流, 用绝对值会误判).
         over_limit = [
             idx for idx in sorted(active_joints)
-            if values[idx] < cap_map[idx] - 1e-6 and abs_ma[idx] >= args.record_stop_ma
+            if values[idx] < cap_map[idx] - 1e-6
+            and (abs_ma[idx] - abs(baseline[idx])) >= args.record_stop_ma
         ]
         jam_counts = jam_counts + 1 if over_limit else 0
         if jam_counts >= max(1, args.record_stop_consecutive):
@@ -410,7 +418,9 @@ def main():
         parse_float_list(args.release_pose) if str(args.release_pose or "").strip() else list(OPEN_POSE)
     )
 
-    profile = load_empty_profile(args.profile) if args.profile else None
+    record_mode = bool(str(args.record_profile or "").strip())
+    # 采曲线模式下不读已有曲线, 否则第一次采就会因为文件不存在而报错
+    profile = load_empty_profile(args.profile) if (args.profile and not record_mode) else None
     log_path = args.log or f"/tmp/aero_small_grasp_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
     hand = AeroHand(port=args.port)
@@ -468,7 +478,7 @@ def main():
                 print(f"[小物体抓握] 初始温度: max={max(temperatures):.1f}C motor4={temperatures[4]:.1f}C")
 
             if str(args.record_profile or "").strip():
-                record_empty_profile(args, hand, initial, active_joints)
+                record_empty_profile(args, hand, initial, active_joints, baseline)
                 return
 
             step_idx = 0
@@ -531,14 +541,15 @@ def main():
                     if sent_values[idx] < args.min_cmd:
                         hit_counts[idx] = 0
                         continue
+                    finger_cap = min(args.max, JOINT_UPPER_LIMITS[idx])
                     hit_counts[idx] = hit_counts[idx] + 1 if idx in over else 0
                     if hit_counts[idx] >= max(1, args.consecutive):
-                        target = min(args.max, sent_values[idx] + args.extra_close)
+                        target = min(finger_cap, sent_values[idx] + args.extra_close)
                         pending_targets[idx] = float(target)
                         pending_loss_counts[idx] = 0
                         target_confirm_counts[idx] = 0
                         events.append(f"contact:{idx}@{sent_values[idx]:.1f}->target:{target:.1f}")
-                    elif sent_values[idx] >= args.max - 1e-6:
+                    elif sent_values[idx] >= finger_cap - 1e-6:
                         locked[idx] = float(sent_values[idx])
                         events.append(f"max:{idx}@{locked[idx]:.1f}")
 
@@ -546,7 +557,9 @@ def main():
                 for idx in next_values:
                     if idx in locked:
                         continue
-                    cap = args.thumb_max if idx == THUMB_TENDON_IDX else args.max
+                    cap = min(args.max, JOINT_UPPER_LIMITS[idx])
+                    if idx == THUMB_TENDON_IDX:
+                        cap = min(cap, args.thumb_max)
                     limit = min(cap, pending_targets.get(idx, cap))
                     next_values[idx] = min(float(limit), float(sent_values[idx]) + args.step)
 
@@ -618,7 +631,7 @@ def main():
                                       + ",".join(f"{idx}:{squeeze_abs[idx]:.0f}mA" for idx in reached) + ")")
                                 break
                         for idx in squeeze:
-                            squeeze[idx] = min(args.max, squeeze[idx] + step)
+                            squeeze[idx] = min(args.max, JOINT_UPPER_LIMITS[idx], squeeze[idx] + step)
                         total += step
                     print("[小物体抓握][顶紧] 结束, 最终角度: "
                           + " ".join(f"{idx}:{squeeze[idx]:.1f}" for idx in sorted(flex_fingers)))
@@ -634,13 +647,14 @@ def main():
         except KeyboardInterrupt:
             print("\n[小物体抓握] 用户中断")
         finally:
-            if args.release_after:
-                print("[小物体抓握] 张开: " + " ".join(f"{v:.1f}" for v in release_pose))
-                hand.set_joint_positions(release_pose)
-                time.sleep(0.3)
-            elif args.restore_after:
+            # --restore-after 优先于配置里的 release_after, 采曲线后能回到初始位姿
+            if args.restore_after:
                 print("[小物体抓握] 回到初始位")
                 hand.set_joint_positions(initial)
+                time.sleep(0.3)
+            elif args.release_after:
+                print("[小物体抓握] 张开: " + " ".join(f"{v:.1f}" for v in release_pose))
+                hand.set_joint_positions(release_pose)
                 time.sleep(0.3)
             else:
                 print("[小物体抓握] 保持最后姿态: " + " ".join(f"{v:.1f}" for v in final_pose))
