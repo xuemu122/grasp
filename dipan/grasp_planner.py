@@ -9,7 +9,7 @@ import numpy as np
 TARGET_ROI_Y_MIN = int(os.getenv("TARGET_ROI_Y_MIN", "85"))
 TARGET_ROI_Y_MAX = int(os.getenv("TARGET_ROI_Y_MAX", "430"))
 # 饮料侧抓保持东支原有标定值 (0.08~0.11, 无额外抬高)
-SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv("SIDE_GRASP_MIN_HEIGHT_M", "0.080"))
+SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv("SIDE_GRASP_MIN_HEIGHT_M", "0.093"))
 SIDE_GRASP_MAX_HEIGHT_M = float(os.getenv("SIDE_GRASP_MAX_HEIGHT_M", "0.11"))
 SIDE_GRASP_LOW_TARGET_HEIGHT_M = float(os.getenv("SIDE_GRASP_LOW_TARGET_HEIGHT_M", "0.068"))
 SIDE_GRASP_LOWER_SHIFT_M = float(os.getenv("SIDE_GRASP_LOWER_SHIFT_M", "0.015"))
@@ -32,7 +32,7 @@ def _env_int_set(name):
 
 # 非饮料类单独一套侧抓参数（默认复制当前饮料侧抓参数，可用 NON_DRINK_* 单独调）
 NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv(
-    "NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M", "0.09"))
+    "NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M", "0.093"))
 NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M = float(os.getenv(
     "NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M", "0.15"))
 NON_DRINK_SIDE_GRASP_LOW_TARGET_HEIGHT_M = float(os.getenv(
@@ -41,6 +41,22 @@ NON_DRINK_SIDE_GRASP_LOWER_SHIFT_M = float(os.getenv(
     "NON_DRINK_SIDE_GRASP_LOWER_SHIFT_M", str(SIDE_GRASP_LOWER_SHIFT_M)))
 NON_DRINK_SIDE_GRASP_HEIGHT_OFFSET_M = float(os.getenv(
     "NON_DRINK_SIDE_GRASP_HEIGHT_OFFSET_M", "0.015"))
+# 薯片类单独一套侧抓高度（最低点 7.5cm），可用 CHIP_* 单独调
+CHIP_GRASP_CLASS_NAMES = {
+    part.strip()
+    for part in os.getenv(
+        "NON_DRINK_CHIP_NAMES",
+        "浪味仙,趣多多饼干（咖啡味）,趣多多饼干(咖啡味),乐事薯片（番茄味）,乐事薯片(番茄味),"
+        "亲亲虾条,乐事薯片（岩烧海苔味）,乐事薯片(岩烧海苔味),乐事薯片 岩烧海苔味",
+    ).split(",")
+    if part.strip()
+}
+CHIP_SIDE_GRASP_MIN_HEIGHT_M = float(os.getenv(
+    "CHIP_SIDE_GRASP_MIN_HEIGHT_M", "0.075"))
+CHIP_SIDE_GRASP_MAX_HEIGHT_M = float(os.getenv(
+    "CHIP_SIDE_GRASP_MAX_HEIGHT_M", str(NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M)))
+CHIP_SIDE_GRASP_LOW_TARGET_HEIGHT_M = float(os.getenv(
+    "CHIP_SIDE_GRASP_LOW_TARGET_HEIGHT_M", str(NON_DRINK_SIDE_GRASP_LOW_TARGET_HEIGHT_M)))
 # 非饮料抓取点取检测框中间（X/Y 可分别关闭）
 NON_DRINK_GRASP_CENTER_X = os.getenv("NON_DRINK_GRASP_CENTER_X", "1").lower() in ("1", "true", "yes", "on")
 NON_DRINK_GRASP_CENTER_Y = os.getenv("NON_DRINK_GRASP_CENTER_Y", "1").lower() in ("1", "true", "yes", "on")
@@ -596,6 +612,12 @@ def is_non_drink(det):
     return bool(category) and category in NON_DRINK_CATEGORIES
 
 
+def is_chip_item(det):
+    """True for chip/crisp snack classes that use the chip grasp height band."""
+    class_name = str(getattr(det, "class_name", "") or "").strip()
+    return bool(class_name) and class_name in CHIP_GRASP_CLASS_NAMES
+
+
 def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, depth_img=None):
     """
     边缘抓取:
@@ -623,7 +645,14 @@ def plan_edge_grasp(det, edge, transformer, flange_pose, fx=390.4, camera=None, 
     print(f"  盒宽: {pixel_w}px → {real_w*100:.1f}cm, 盒高: {pixel_h}px → {real_h*100:.1f}cm")
 
     non_drink = is_non_drink(det)
-    if non_drink:
+    chip_item = non_drink and is_chip_item(det)
+    if chip_item:
+        side_min_h = CHIP_SIDE_GRASP_MIN_HEIGHT_M
+        side_max_h = CHIP_SIDE_GRASP_MAX_HEIGHT_M
+        side_low_h = CHIP_SIDE_GRASP_LOW_TARGET_HEIGHT_M
+        side_lower_shift = NON_DRINK_SIDE_GRASP_LOWER_SHIFT_M
+        side_height_offset = NON_DRINK_SIDE_GRASP_HEIGHT_OFFSET_M
+    elif non_drink:
         side_min_h = NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M
         side_max_h = NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M
         side_low_h = NON_DRINK_SIDE_GRASP_LOW_TARGET_HEIGHT_M

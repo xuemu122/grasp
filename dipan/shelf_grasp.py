@@ -31,6 +31,9 @@ except Exception:  # 舵机模块缺失时不影响主流程
 
 from dobot_arm import DobotArm, _clamp_cp
 from grasp_planner import (
+    CHIP_SIDE_GRASP_LOW_TARGET_HEIGHT_M,
+    CHIP_SIDE_GRASP_MAX_HEIGHT_M,
+    CHIP_SIDE_GRASP_MIN_HEIGHT_M,
     EDGE_MIDPOINT_GRASP_ENABLE,
     FORCE_SIDE_GRASP,
     NON_DRINK_SIDE_GRASP_LOW_TARGET_HEIGHT_M,
@@ -113,9 +116,9 @@ HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.123, -0.15, 0.008)
+SIDE_GRASP_OFFSET_M = (-0.130, -0.1455, 0.008)
 # 非饮料先复制侧抓偏移，后续可在这里单独改
-NON_DRINK_SIDE_GRASP_OFFSET_M = SIDE_GRASP_OFFSET_M
+NON_DRINK_SIDE_GRASP_OFFSET_M = (-0.130, -0.142, 0.008)
 def _name_set(env_name, default):
     return {part.strip() for part in os.getenv(env_name, default).split(",") if part.strip()}
 
@@ -123,7 +126,8 @@ def _name_set(env_name, default):
 # 非饮料按商品名分组, 不同组用不同的柔性抓取参数
 CHIP_GRASP_NAMES = _name_set(
     "NON_DRINK_CHIP_NAMES",
-    "趣多多饼干（咖啡味）,趣多多饼干(咖啡味),乐事薯片（番茄味）,乐事薯片(番茄味),亲亲虾条",
+    "浪味仙,趣多多饼干（咖啡味）,趣多多饼干(咖啡味),乐事薯片（番茄味）,乐事薯片(番茄味),亲亲虾条,"
+    "乐事薯片（岩烧海苔味）,乐事薯片(岩烧海苔味),乐事薯片 岩烧海苔味",
 )
 PUFF_GRASP_NAMES = _name_set(
     "NON_DRINK_PUFF_NAMES",
@@ -140,9 +144,41 @@ NECK_GRASP_NAMES = _name_set(
     "NON_DRINK_NECK_NAMES",
     "啃啃烤鸭脖（黑鸭味）,啃啃烤鸭脖(黑鸭味)",
 )
+MINISO_GRASP_NAMES = _name_set(
+    "NON_DRINK_MINISO_NAMES",
+    "名创优品Bululu经典盲盒",
+)
+BAICHUN_GRASP_NAMES = _name_set(
+    "NON_DRINK_BAICHUN_NAMES",
+    "百醇（红酒巧克力味）,百醇(红酒巧克力味)",
+)
+BUCKET_GRASP_NAMES = _name_set(
+    "NON_DRINK_BUCKET_NAMES",
+    "乐事薯片桶装（番茄味）,乐事薯片桶装(番茄味)",
+)
+OREO_GRASP_NAMES = _name_set(
+    "NON_DRINK_OREO_NAMES",
+    "奥利奥可可脆（爆汁草莓味）,奥利奥可可脆(爆汁草莓味),"
+    "奥利奥可可酥（熔岩巧克力味）,奥利奥可可酥(熔岩巧克力味),"
+    "奥利奥可可酥（爆汁草莓味）,奥利奥可可酥(爆汁草莓味),"
+    "奥利奥薄脆（原味）,奥利奥薄脆(原味),"
+    "奥利奥薄脆（酸甜草莓味）,奥利奥薄脆(酸甜草莓味)",
+)
 
-# 鸭脖单独调; 先复制饮料的 xyz 偏移
-NECK_GRASP_OFFSET_M = SIDE_GRASP_OFFSET_M
+# 鸭脖 / 盲盒 / 百醇单独调; 先复制饮料的 xyz 偏移
+NECK_GRASP_OFFSET_M = (-0.130, -0.142, 0.008)
+# 薯片类: 在饮料偏移基础上往右 0.5cm
+CHIP_GRASP_OFFSET_M = (-0.130, -0.137, 0.008)
+# 盲盒单独调: 现在往右 2cm
+MINISO_GRASP_OFFSET_M = (-0.130, -0.14, 0.008)
+# 百醇: 在非饮料偏移基础上向后 0.3cm, 再往前 0.2cm (净 +0.1cm)
+BAICHUN_GRASP_OFFSET_M = (-0.1205, -0.142, 0.008)
+# 桶装薯片: 在非饮料偏移基础上往前 1cm, 抓后多抬 0.5cm
+BUCKET_GRASP_OFFSET_M = (-0.143, -0.130, 0.008)
+BUCKET_GRASP_LIFT_EXTRA_MM = float(os.getenv("BUCKET_GRASP_LIFT_EXTRA_MM", "5"))
+# 奥利奥类: 在非饮料偏移基础往后 0.2cm
+OREO_GRASP_OFFSET_M = (-0.128, -0.142, 0.008)
+
 
 # 薯片组（原非饮料较柔参数）
 CHIP_AERO_FLEX_ENV = {
@@ -150,9 +186,9 @@ CHIP_AERO_FLEX_ENV = {
     "AERO_FLEX_SETTLE": os.getenv("NON_DRINK_AERO_FLEX_SETTLE", "0.05"),
     "AERO_FLEX_MIN_CMD": os.getenv("NON_DRINK_AERO_FLEX_MIN_CMD", "15"),
     "AERO_FLEX_CONSECUTIVE": os.getenv("NON_DRINK_AERO_FLEX_CONSECUTIVE", "2"),
-    "AERO_FLEX_PROFILE_DELTA_MA": os.getenv("NON_DRINK_AERO_FLEX_PROFILE_DELTA_MA", "100"),
+    "AERO_FLEX_PROFILE_DELTA_MA": os.getenv("NON_DRINK_AERO_FLEX_PROFILE_DELTA_MA", "120"),
     "AERO_FLEX_PROFILE_WINDOW_DEG": os.getenv("NON_DRINK_AERO_FLEX_PROFILE_WINDOW_DEG", "6"),
-    "AERO_FLEX_EXTRA_CLOSE": os.getenv("NON_DRINK_AERO_FLEX_EXTRA_CLOSE", "2"),
+    "AERO_FLEX_EXTRA_CLOSE": os.getenv("NON_DRINK_AERO_FLEX_EXTRA_CLOSE", "4"),
     "AERO_FLEX_ACTIVE_JOINTS": os.getenv("NON_DRINK_AERO_FLEX_ACTIVE_JOINTS", "1,2,3,4,5,6"),
     "AERO_FLEX_REQUIRED_FINGERS": os.getenv("NON_DRINK_AERO_FLEX_REQUIRED_FINGERS", "3,4,5,6"),
     "AERO_HOLD_TIGHTEN_ENABLE": os.getenv("NON_DRINK_AERO_HOLD_TIGHTEN_ENABLE", "0"),
@@ -202,7 +238,7 @@ def grasp_group_for(det):
         return "chip"
     return "chip" if is_non_drink(det) else "drink"
 # 上面抓: 盒宽 > 8cm, grip_mode 为 top_center。先沿用侧抓值, 实测后单独固化。
-TOP_GRASP_OFFSET_M = (-0.12, 0.015, 0.035)
+TOP_GRASP_OFFSET_M = (-0.12, 0.025, 0.035)
 
 # 上面抓取前把第六轴转到手心向下的实测角度
 TOP_J6_DEG = 8.3
@@ -232,9 +268,9 @@ PLACE_RETURN_MAX_Z_MM = float(os.getenv("PLACE_RETURN_MAX_Z_MM", "820"))  # 回�
 # 调试开关: 屏蔽手, 只测试手眼标定 + 机械臂走位
 SKIP_HAND = False
 # YOLO 显示/输出阈值。抓取现场默认放宽到 0.7，避免框不上。
-DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.7"))
+DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.55"))
 # 透明矿泉水/塑料瓶在复杂光照下置信度会明显偏低，只对饮料类单独放宽。
-WATER_CONF_THRESHOLD = float(os.getenv("WATER_CONF_THRESHOLD", "0.52"))
+WATER_CONF_THRESHOLD = float(os.getenv("WATER_CONF_THRESHOLD", "0.45"))
 DRINK_CLASS_IDS = set(range(70, 78)) | set(range(80, 87))
 # 当前默认使用电流反馈柔性抓取；原侧抓/上抓固定手势仍可通过 HAND_GRASP_MODE=bottle/auto 保留。
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "flex").lower()
@@ -2665,12 +2701,22 @@ def main():
 
             if grip_mode.endswith("_side") and not EDGE_MIDPOINT_GRASP_ENABLE:
                 if is_non_drink(target):
-                    corrected_pixel, original_clearance_m, bottom_clearance_m = (
-                        clamp_side_grasp_pixel_to_safe_clearance(
-                            target, grip_pixel, camera.fy,
+                    if grasp_group_for(target) == "chip":
+                        band_min, band_max, band_low = (
+                            CHIP_SIDE_GRASP_MIN_HEIGHT_M,
+                            CHIP_SIDE_GRASP_MAX_HEIGHT_M,
+                            CHIP_SIDE_GRASP_LOW_TARGET_HEIGHT_M,
+                        )
+                    else:
+                        band_min, band_max, band_low = (
                             NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M,
                             NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M,
                             NON_DRINK_SIDE_GRASP_LOW_TARGET_HEIGHT_M,
+                        )
+                    corrected_pixel, original_clearance_m, bottom_clearance_m = (
+                        clamp_side_grasp_pixel_to_safe_clearance(
+                            target, grip_pixel, camera.fy,
+                            band_min, band_max, band_low,
                         )
                     )
                 else:
@@ -2709,8 +2755,12 @@ def main():
                     print(f"  [抓点硬纠偏] 更新抓取点: ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
                 else:
                     if is_non_drink(target):
-                        band_min = NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M
-                        band_max = NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M
+                        if grasp_group_for(target) == "chip":
+                            band_min = CHIP_SIDE_GRASP_MIN_HEIGHT_M
+                            band_max = CHIP_SIDE_GRASP_MAX_HEIGHT_M
+                        else:
+                            band_min = NON_DRINK_SIDE_GRASP_MIN_HEIGHT_M
+                            band_max = NON_DRINK_SIDE_GRASP_MAX_HEIGHT_M
                     else:
                         band_min = SIDE_GRASP_MIN_HEIGHT_M
                         band_max = SIDE_GRASP_MAX_HEIGHT_M
@@ -2759,10 +2809,22 @@ def main():
             # ── 根据自动判定的抓取模式选择偏移参数 ──
             is_side_grasp = "side" in grip_mode
             if is_side_grasp:
-                if is_non_drink(target):
+                target_name = str(getattr(target, "class_name", "") or "").strip()
+                target_group = grasp_group_for(target)
+                if target_name in MINISO_GRASP_NAMES:
+                    grasp_offset_m = MINISO_GRASP_OFFSET_M
+                elif target_name in BAICHUN_GRASP_NAMES:
+                    grasp_offset_m = BAICHUN_GRASP_OFFSET_M
+                elif target_name in BUCKET_GRASP_NAMES:
+                    grasp_offset_m = BUCKET_GRASP_OFFSET_M
+                elif target_name in OREO_GRASP_NAMES:
+                    grasp_offset_m = OREO_GRASP_OFFSET_M
+                elif target_group == "chip":
+                    grasp_offset_m = CHIP_GRASP_OFFSET_M
+                elif is_non_drink(target):
                     grasp_offset_m = (
                         NECK_GRASP_OFFSET_M
-                        if grasp_group_for(target) == "neck"
+                        if target_group == "neck"
                         else NON_DRINK_SIDE_GRASP_OFFSET_M
                     )
                 else:
@@ -3162,6 +3224,9 @@ def main():
             # 5. 抓后先向上抬升，离开层板边缘后再水平后退
             if grasp_succeeded:
                 lift_mm = float(os.getenv("GRASP_LIFT_MM", "55"))
+                lift_target_name = str(getattr(target, "class_name", "") or "").strip()
+                if lift_target_name in BUCKET_GRASP_NAMES:
+                    lift_mm += BUCKET_GRASP_LIFT_EXTRA_MM
                 lift_speed = int(os.getenv("GRASP_LIFT_SPEED", "60"))
                 try:
                     lift_base = arm.get_pose()

@@ -337,15 +337,15 @@ class AeroGripper:
         joints = tuple(sorted(int(idx) for idx in joints))
         if not joints or os.getenv("AERO_HOLD_TIGHTEN_ENABLE", "1").lower() not in ("1", "true", "yes", "on"):
             return None
-        min_extra_ma = float(os.getenv("AERO_HOLD_MIN_EXTRA_MA", str(max(60.0, contact_delta_ma * 0.55))))
+        min_extra_ma = float(os.getenv("AERO_HOLD_MIN_EXTRA_MA", str(max(40.0, contact_delta_ma * 0.45))))
         normal_step = float(os.getenv("AERO_HOLD_TIGHTEN_STEP", os.getenv("AERO_FLEX_STEP", "3")))
         joint1_step = max(
             0.1,
-            float(os.getenv("AERO_HOLD_JOINT1_STEP", os.getenv("AERO_FLEX_JOINT1_STEP", "2"))),
+            float(os.getenv("AERO_HOLD_JOINT1_STEP", os.getenv("AERO_FLEX_JOINT1_STEP", "1.5"))),
         )
         joint2_step = max(
             0.1,
-            float(os.getenv("AERO_HOLD_JOINT2_STEP", os.getenv("AERO_FLEX_JOINT2_STEP", "5"))),
+            float(os.getenv("AERO_HOLD_JOINT2_STEP", os.getenv("AERO_FLEX_JOINT2_STEP", "2"))),
         )
         normal_interval_s = float(os.getenv("AERO_FLEX_SETTLE", "0.05"))
         normal_consecutive = int(os.getenv("AERO_FLEX_CONSECUTIVE", "2"))
@@ -504,15 +504,15 @@ class AeroGripper:
             start = float(os.getenv("AERO_FLEX_START", "0"))
             max_cmd = float(os.getenv("AERO_FLEX_MAX", "80"))
             step = float(os.getenv("AERO_FLEX_STEP", "3"))
-            joint1_step = max(0.1, float(os.getenv("AERO_FLEX_JOINT1_STEP", "2")))
-            joint2_step = max(0.1, float(os.getenv("AERO_FLEX_JOINT2_STEP", "5")))
+            joint1_step = max(0.1, float(os.getenv("AERO_FLEX_JOINT1_STEP", "1.5")))
+            joint2_step = max(0.1, float(os.getenv("AERO_FLEX_JOINT2_STEP", "2")))
             settle = float(os.getenv("AERO_FLEX_SETTLE", "0.05"))
             samples = int(os.getenv("AERO_FLEX_SAMPLES", "1"))
             sample_delay = float(os.getenv("AERO_FLEX_SAMPLE_DELAY", "0"))
             min_cmd = float(os.getenv("AERO_FLEX_MIN_CMD", "15"))
             consecutive = max(1, int(os.getenv("AERO_FLEX_CONSECUTIVE", "2")))
-            extra_close = float(os.getenv("AERO_FLEX_EXTRA_CLOSE", "8"))
-            profile_delta_ma = float(os.getenv("AERO_FLEX_PROFILE_DELTA_MA", "180"))
+            extra_close = float(os.getenv("AERO_FLEX_EXTRA_CLOSE", "9"))
+            profile_delta_ma = float(os.getenv("AERO_FLEX_PROFILE_DELTA_MA", "200"))
             profile_window_deg = float(os.getenv("AERO_FLEX_PROFILE_WINDOW_DEG", "6"))
             delta_ma = float(os.getenv("AERO_FLEX_DELTA_MA", "180"))
             abs_ma = float(os.getenv("AERO_FLEX_ABS_MA", "650"))
