@@ -13,7 +13,7 @@ import numpy as np
 
 
 CAMERA_AUTO_EXPOSURE = os.getenv("CAMERA_AUTO_EXPOSURE", "0").strip().lower() in ("1", "true", "yes", "on")
-CAMERA_EXPOSURE_US = float(os.getenv("CAMERA_EXPOSURE_US", "3000"))
+CAMERA_EXPOSURE_US = float(os.getenv("CAMERA_EXPOSURE_US", "4000"))
 CAMERA_AUTO_WB = os.getenv("CAMERA_AUTO_WB", "0").strip().lower() in ("1", "true", "yes", "on")
 CAMERA_GAIN = float(os.getenv("CAMERA_GAIN", "50"))
 
