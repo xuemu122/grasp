@@ -170,12 +170,14 @@ NECK_GRASP_OFFSET_M = (-0.130, -0.142, 0.008)
 # 薯片类: 在饮料偏移基础上往右 0.5cm
 CHIP_GRASP_OFFSET_M = (-0.130, -0.137, 0.008)
 # 盲盒单独调: 现在往右 2cm
-MINISO_GRASP_OFFSET_M = (-0.130, -0.14, 0.008)
+MINISO_GRASP_OFFSET_M = (-0.126, -0.130, 0.008)
 # 百醇: 在非饮料偏移基础上向后 0.3cm, 再往前 0.2cm (净 +0.1cm)
 BAICHUN_GRASP_OFFSET_M = (-0.1195, -0.142, 0.008)
 # 桶装薯片: 在非饮料偏移基础上往前 1cm, 抓后多抬 0.5cm
-BUCKET_GRASP_OFFSET_M = (-0.143, -0.127, 0.008)
+BUCKET_GRASP_OFFSET_M = (-0.137, -0.127, 0.008)
 BUCKET_GRASP_LIFT_EXTRA_MM = float(os.getenv("BUCKET_GRASP_LIFT_EXTRA_MM", "5"))
+# 饮料抓后额外多抬 0.8cm
+DRINK_GRASP_LIFT_EXTRA_MM = float(os.getenv("DRINK_GRASP_LIFT_EXTRA_MM", "8"))
 # 奥利奥类: 在非饮料偏移基础往后 0.2cm
 OREO_GRASP_OFFSET_M = (-0.128, -0.142, 0.008)
 
@@ -3223,10 +3225,12 @@ def main():
 
             # 5. 抓后先向上抬升，离开层板边缘后再水平后退
             if grasp_succeeded:
-                lift_mm = float(os.getenv("GRASP_LIFT_MM", "55"))
+                lift_mm = float(os.getenv("GRASP_LIFT_MM", "65"))
                 lift_target_name = str(getattr(target, "class_name", "") or "").strip()
                 if lift_target_name in BUCKET_GRASP_NAMES:
                     lift_mm += BUCKET_GRASP_LIFT_EXTRA_MM
+                elif not is_non_drink(target):
+                    lift_mm += DRINK_GRASP_LIFT_EXTRA_MM
                 lift_speed = int(os.getenv("GRASP_LIFT_SPEED", "60"))
                 try:
                     lift_base = arm.get_pose()

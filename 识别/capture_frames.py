@@ -2,6 +2,7 @@
 """Capture RGB / depth / mask frames from camera for dataset collection."""
 
 import argparse
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +10,48 @@ from typing import Optional
 
 import cv2
 import numpy as np
+
+
+CAMERA_AUTO_EXPOSURE = os.getenv("CAMERA_AUTO_EXPOSURE", "0").strip().lower() in ("1", "true", "yes", "on")
+CAMERA_EXPOSURE_US = float(os.getenv("CAMERA_EXPOSURE_US", "200"))
+CAMERA_AUTO_WB = os.getenv("CAMERA_AUTO_WB", "0").strip().lower() in ("1", "true", "yes", "on")
+CAMERA_GAIN = float(os.getenv("CAMERA_GAIN", "50"))
+
+
+def apply_color_sensor_options(profile):
+    """固定彩色相机曝光/白平衡/增益；找不到彩色传感器时静默跳过。"""
+    import pyrealsense2 as rs
+
+    try:
+        sensors = profile.get_device().query_sensors()
+    except Exception as exc:
+        print(f"[相机][警告] 读取传感器失败: {exc}")
+        return
+    for sensor in sensors:
+        try:
+            if not sensor.supports(rs.option.exposure):
+                continue
+            if CAMERA_AUTO_EXPOSURE:
+                sensor.set_option(rs.option.enable_auto_exposure, 1)
+            else:
+                sensor.set_option(rs.option.enable_auto_exposure, 0)
+                sensor.set_option(rs.option.exposure, CAMERA_EXPOSURE_US)
+            try:
+                sensor.set_option(rs.option.enable_auto_white_balance, 1 if CAMERA_AUTO_WB else 0)
+            except Exception:
+                pass
+            try:
+                sensor.set_option(rs.option.gain, CAMERA_GAIN)
+            except Exception:
+                pass
+            print(
+                f"[相机] 曝光: {'自动' if CAMERA_AUTO_EXPOSURE else f'手动 {CAMERA_EXPOSURE_US:.0f}us'}, "
+                f"白平衡: {'自动' if CAMERA_AUTO_WB else '手动'}, gain={CAMERA_GAIN:.0f}"
+            )
+            return
+        except Exception as exc:
+            print(f"[相机][警告] 设置彩色传感器参数失败: {exc}")
+            return
 
 
 class Camera:
@@ -36,6 +79,8 @@ class Camera:
             self._align = rs.align(rs.stream.color)
             self.use_realsense = True
             print(f"[相机] RealSense 已连接 ({self.width}x{self.height}@{self.fps}fps)")
+
+            apply_color_sensor_options(self.pipeline.get_active_profile())
 
             for _ in range(30):
                 self.pipeline.wait_for_frames()

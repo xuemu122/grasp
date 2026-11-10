@@ -18,6 +18,51 @@ from ultralytics import YOLO
 # EasyOCR 只在显式启用时延迟加载，默认识别流程不引入 OCR 开销。
 
 
+# 彩色传感器自动/手动曝光与白平衡（可用环境变量覆盖）
+CAMERA_AUTO_EXPOSURE = os.getenv("CAMERA_AUTO_EXPOSURE", "0").strip().lower() in ("1", "true", "yes", "on")
+CAMERA_EXPOSURE_US = float(os.getenv("CAMERA_EXPOSURE_US", "200"))
+CAMERA_AUTO_WB = os.getenv("CAMERA_AUTO_WB", "0").strip().lower() in ("1", "true", "yes", "on")
+CAMERA_GAIN = float(os.getenv("CAMERA_GAIN", "50"))
+
+
+def apply_color_sensor_options(profile):
+    """固定彩色相机的曝光/白平衡/增益；找不到彩色传感器时静默跳过。"""
+    try:
+        import pyrealsense2 as rs
+    except ImportError:
+        return
+    try:
+        sensors = profile.get_device().query_sensors()
+    except Exception as exc:
+        print(f"[相机][警告] 读取传感器失败: {exc}")
+        return
+    for sensor in sensors:
+        try:
+            if not sensor.supports(rs.option.exposure):
+                continue
+            if CAMERA_AUTO_EXPOSURE:
+                sensor.set_option(rs.option.enable_auto_exposure, 1)
+            else:
+                sensor.set_option(rs.option.enable_auto_exposure, 0)
+                sensor.set_option(rs.option.exposure, CAMERA_EXPOSURE_US)
+            try:
+                sensor.set_option(rs.option.enable_auto_white_balance, 1 if CAMERA_AUTO_WB else 0)
+            except Exception:
+                pass
+            try:
+                sensor.set_option(rs.option.gain, CAMERA_GAIN)
+            except Exception:
+                pass
+            print(
+                f"[相机] 曝光: {'自动' if CAMERA_AUTO_EXPOSURE else f'手动 {CAMERA_EXPOSURE_US:.0f}us'}, "
+                f"白平衡: {'自动' if CAMERA_AUTO_WB else '手动'}, gain={CAMERA_GAIN:.0f}"
+            )
+            return
+        except Exception as exc:
+            print(f"[相机][警告] 设置彩色传感器参数失败: {exc}")
+            return
+
+
 # ============================================================
 # RealSense D405 相机支持
 # ============================================================
@@ -70,12 +115,8 @@ class RealSenseCamera:
             self.use_sdk = True
             self._connected = True
 
-            # 启用自动曝光 + 暖机（让曝光稳定）
-            try:
-                sensor = self._pipeline.get_active_profile().get_device().query_sensors()[1]  # color sensor
-                sensor.set_option(rs.option.enable_auto_exposure, True)
-            except:
-                pass
+            # 彩色相机曝光/白平衡（默认关自动曝光，手动 200us）
+            apply_color_sensor_options(self._pipeline.get_active_profile())
             for _ in range(30):
                 frames = self._pipeline.wait_for_frames()
                 self._align.process(frames)
@@ -840,12 +881,12 @@ class RetailProductLocatorSystem:
                  ocr_interval: int = 90,
                  aux_model_path: Optional[str] = None,
                  aux_class_min_id: int = 0,
-                 enhance_mode: str = "auto",
-                 light_threshold: float = 90.0,
-                 clahe_clip: float = 2.5,
-                 clahe_tile: int = 8,
-                 enhance_gamma: float = 1.0,
-                 enhance_awb: bool = True,
+                 enhance_mode: str = os.getenv("ENHANCE_MODE", "force"),
+                 light_threshold: float = float(os.getenv("ENHANCE_LIGHT_THRESHOLD", "90")),
+                 clahe_clip: float = float(os.getenv("ENHANCE_CLAHE_CLIP", "2.0")),
+                 clahe_tile: int = int(os.getenv("ENHANCE_CLAHE_TILE", "8")),
+                 enhance_gamma: float = float(os.getenv("ENHANCE_GAMMA", "1.0")),
+                 enhance_awb: bool = os.getenv("ENHANCE_AWB", "0").strip().lower() in ("1", "true", "yes", "on"),
                  enhance_compare_enable: Optional[bool] = None,
                  enhance_compare_path: Optional[str] = None,
                  enhance_compare_interval: Optional[int] = None,
