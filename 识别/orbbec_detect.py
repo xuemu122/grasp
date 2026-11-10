@@ -20,7 +20,7 @@ from ultralytics import YOLO
 
 # 彩色传感器自动/手动曝光与白平衡（可用环境变量覆盖）
 CAMERA_AUTO_EXPOSURE = os.getenv("CAMERA_AUTO_EXPOSURE", "0").strip().lower() in ("1", "true", "yes", "on")
-CAMERA_EXPOSURE_US = float(os.getenv("CAMERA_EXPOSURE_US", "200"))
+CAMERA_EXPOSURE_US = float(os.getenv("CAMERA_EXPOSURE_US", "3000"))
 CAMERA_AUTO_WB = os.getenv("CAMERA_AUTO_WB", "0").strip().lower() in ("1", "true", "yes", "on")
 CAMERA_GAIN = float(os.getenv("CAMERA_GAIN", "50"))
 
