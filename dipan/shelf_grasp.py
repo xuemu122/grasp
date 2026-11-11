@@ -116,7 +116,7 @@ HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.130, -0.1205, 0.008)
+SIDE_GRASP_OFFSET_M = (-0.140, -0.1205, 0.008)  # 饮料再往右 1cm
 # 非饮料先复制侧抓偏移，后续可在这里单独改
 NON_DRINK_SIDE_GRASP_OFFSET_M = (-0.130, -0.092, 0.008)
 def _name_set(env_name, default):
@@ -166,20 +166,20 @@ OREO_GRASP_NAMES = _name_set(
 )
 
 # 鸭脖 / 盲盒 / 百醇单独调; 先复制饮料的 xyz 偏移
-NECK_GRASP_OFFSET_M = (-0.130, -0.092, 0.008)
+NECK_GRASP_OFFSET_M = (-0.135, -0.092, 0.008)  # 非盒装往右 0.5cm
 # 薯片类: 在饮料偏移基础上往右 0.5cm
-CHIP_GRASP_OFFSET_M = (-0.130, -0.087, 0.008)
+CHIP_GRASP_OFFSET_M = (-0.135, -0.087, 0.008)  # 非盒装往右 0.5cm
 # 盲盒单独调: 现在往右 2cm
-MINISO_GRASP_OFFSET_M = (-0.132, -0.087, 0.008)
+MINISO_GRASP_OFFSET_M = (-0.137, -0.087, 0.008)  # 非盒装往右 0.5cm
 # 百醇: 在非饮料偏移基础上向后 0.3cm, 再往前 0.2cm (净 +0.1cm)
-BAICHUN_GRASP_OFFSET_M = (-0.1195, -0.092, 0.008)
+BAICHUN_GRASP_OFFSET_M = (-0.1245, -0.092, 0.008)  # 非盒装往右 0.5cm
 # 桶装薯片: 在非饮料偏移基础上往前 1cm, 抓后多抬 0.5cm
-BUCKET_GRASP_OFFSET_M = (-0.143, -0.077, 0.008)
+BUCKET_GRASP_OFFSET_M = (-0.148, -0.077, 0.008)  # 非盒装往右 0.5cm
 BUCKET_GRASP_LIFT_EXTRA_MM = float(os.getenv("BUCKET_GRASP_LIFT_EXTRA_MM", "5"))
 # 饮料抓后额外多抬 0.8cm
 DRINK_GRASP_LIFT_EXTRA_MM = float(os.getenv("DRINK_GRASP_LIFT_EXTRA_MM", "8"))
 # 奥利奥类: 在非饮料偏移基础往后 0.2cm
-OREO_GRASP_OFFSET_M = (-0.128, -0.092, 0.008)
+OREO_GRASP_OFFSET_M = (-0.133, -0.092, 0.013)  # 非盒装往右 0.5cm + 往上 0.5cm
 
 
 # 薯片组（原非饮料较柔参数）
