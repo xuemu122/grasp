@@ -170,11 +170,11 @@ NECK_GRASP_OFFSET_M = (-0.130, -0.142, 0.008)
 # 薯片类: 在饮料偏移基础上往右 0.5cm
 CHIP_GRASP_OFFSET_M = (-0.130, -0.137, 0.008)
 # 盲盒单独调: 现在往右 2cm
-MINISO_GRASP_OFFSET_M = (-0.126, -0.130, 0.008)
+MINISO_GRASP_OFFSET_M = (-0.132, -0.137, 0.008)
 # 百醇: 在非饮料偏移基础上向后 0.3cm, 再往前 0.2cm (净 +0.1cm)
 BAICHUN_GRASP_OFFSET_M = (-0.1195, -0.142, 0.008)
 # 桶装薯片: 在非饮料偏移基础上往前 1cm, 抓后多抬 0.5cm
-BUCKET_GRASP_OFFSET_M = (-0.137, -0.127, 0.008)
+BUCKET_GRASP_OFFSET_M = (-0.143, -0.127, 0.008)
 BUCKET_GRASP_LIFT_EXTRA_MM = float(os.getenv("BUCKET_GRASP_LIFT_EXTRA_MM", "5"))
 # 饮料抓后额外多抬 0.8cm
 DRINK_GRASP_LIFT_EXTRA_MM = float(os.getenv("DRINK_GRASP_LIFT_EXTRA_MM", "8"))
@@ -273,7 +273,8 @@ SKIP_HAND = False
 DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.55"))
 # 透明矿泉水/塑料瓶在复杂光照下置信度会明显偏低，只对饮料类单独放宽。
 WATER_CONF_THRESHOLD = float(os.getenv("WATER_CONF_THRESHOLD", "0.45"))
-DRINK_CLASS_IDS = set(range(70, 78)) | set(range(80, 87))
+# best1/best 的饮料类别就是 0-18（旧 70+/80+ 是历史数据集编号，已不适用）
+DRINK_CLASS_IDS = set(range(0, 19))
 # 当前默认使用电流反馈柔性抓取；原侧抓/上抓固定手势仍可通过 HAND_GRASP_MODE=bottle/auto 保留。
 HAND_GRASP_MODE = os.getenv("HAND_GRASP_MODE", "flex").lower()
 HAND_BACKEND = os.getenv(
