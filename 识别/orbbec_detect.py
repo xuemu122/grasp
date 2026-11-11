@@ -28,7 +28,7 @@ CAMERA_GAIN = float(os.getenv("CAMERA_GAIN", "50"))
 # adaptive 模式参数：目标亮度、死区、调整间隔、曝光上下限
 CAMERA_ADAPT_TARGET = float(os.getenv("CAMERA_ADAPT_TARGET", "110"))
 CAMERA_ADAPT_DEADBAND = float(os.getenv("CAMERA_ADAPT_DEADBAND", "15"))
-CAMERA_ADAPT_INTERVAL = max(1, int(os.getenv("CAMERA_ADAPT_INTERVAL", "15")))
+CAMERA_ADAPT_INTERVAL_S = float(os.getenv("CAMERA_ADAPT_INTERVAL_S", "60"))
 CAMERA_EXPOSURE_MIN = float(os.getenv("CAMERA_EXPOSURE_MIN", "800"))
 CAMERA_EXPOSURE_MAX = float(os.getenv("CAMERA_EXPOSURE_MAX", "15000"))
 
@@ -104,7 +104,7 @@ class RealSenseCamera:
         self._depth_scale = None  # RealSense depth_units (m/raw)
         self._color_sensor = None
         self._exposure_us = float(CAMERA_EXPOSURE_US)
-        self._adapt_counter = 0
+        self._last_adapt_at = 0.0
         # 相机内参（像素单位）
         self.fx = self.DEFAULT_FX
         self.fy = self.DEFAULT_FY
@@ -229,30 +229,53 @@ class RealSenseCamera:
             print(f"[相机] 读取帧失败: {e}")
             return None, None
 
+    def _apply_exposure_from_mean(self, mean_v, max_factor=1.35):
+        """按 mean_v 与目标的偏差调整一次曝光；返回是否真的调整了。"""
+        import pyrealsense2 as rs
+
+        if abs(mean_v - CAMERA_ADAPT_TARGET) <= CAMERA_ADAPT_DEADBAND:
+            return False
+        factor = (CAMERA_ADAPT_TARGET / max(mean_v, 1.0)) ** 0.7
+        factor = max(1.0 / max_factor, min(max_factor, factor))
+        old = self._exposure_us
+        new = max(CAMERA_EXPOSURE_MIN, min(CAMERA_EXPOSURE_MAX, old * factor))
+        if abs(new - old) < 30:
+            return False
+        self._color_sensor.set_option(rs.option.exposure, float(new))
+        self._exposure_us = float(new)
+        print("[相机][自适应] mean_v=%.0f 曝光 %.0f→%.0fus" % (mean_v, old, new), flush=True)
+        return True
+
     def _maybe_adapt_exposure(self, color_img):
-        """adaptive 模式：按画面亮度动态调整曝光，目标 mean_v 附近 ±死区。"""
+        """adaptive 模式：最多每 CAMERA_ADAPT_INTERVAL_S 秒调整一次曝光。"""
         if CAMERA_EXPOSURE_MODE != "adaptive" or self._color_sensor is None or color_img is None:
             return
-        self._adapt_counter += 1
-        if self._adapt_counter < CAMERA_ADAPT_INTERVAL:
+        now = time.monotonic()
+        if now - self._last_adapt_at < CAMERA_ADAPT_INTERVAL_S:
             return
-        self._adapt_counter = 0
+        self._last_adapt_at = now
         try:
-            import pyrealsense2 as rs
             mean_v = float(cv2.cvtColor(color_img, cv2.COLOR_BGR2HSV)[:, :, 2].mean())
-            if abs(mean_v - CAMERA_ADAPT_TARGET) <= CAMERA_ADAPT_DEADBAND:
-                return
-            factor = (CAMERA_ADAPT_TARGET / max(mean_v, 1.0)) ** 0.7
-            factor = max(0.75, min(1.35, factor))
-            old = self._exposure_us
-            new = max(CAMERA_EXPOSURE_MIN, min(CAMERA_EXPOSURE_MAX, old * factor))
-            if abs(new - old) < 30:
-                return
-            self._color_sensor.set_option(rs.option.exposure, float(new))
-            self._exposure_us = float(new)
-            print("[相机][自适应] mean_v=%.0f 曝光 %.0f→%.0fus" % (mean_v, old, new), flush=True)
+            self._apply_exposure_from_mean(mean_v)
         except Exception as exc:
             print(f"[相机][自适应][警告] 调整曝光失败: {exc}", flush=True)
+
+    def tune_exposure_before_capture(self, iters=3):
+        """识别/拍照前快速收敛一次曝光（adaptive 模式）。"""
+        if CAMERA_EXPOSURE_MODE != "adaptive" or self._color_sensor is None:
+            return
+        try:
+            for _ in range(max(1, iters)):
+                color_img, _ = self.read()
+                if color_img is None:
+                    break
+                mean_v = float(cv2.cvtColor(color_img, cv2.COLOR_BGR2HSV)[:, :, 2].mean())
+                if not self._apply_exposure_from_mean(mean_v, max_factor=1.5):
+                    break
+                time.sleep(0.08)
+            self._last_adapt_at = time.monotonic()
+        except Exception as exc:
+            print(f"[相机][自适应][警告] 拍照前调整失败: {exc}", flush=True)
 
     def get_depth_at(self, depth_img, cx, cy, box=None, radius=15):
         """获取指定像素附近的中位数深度值（米），无效时返回 None。"""

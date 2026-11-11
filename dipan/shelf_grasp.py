@@ -2553,6 +2553,12 @@ def main():
                   f"rpy=({flange_pose[3]:.0f}, {flange_pose[4]:.0f}, {flange_pose[5]:.0f})")
             transformer.set_flange(flange_pose)
 
+            # ── 识别前先让动态曝光收敛一次 ──
+            try:
+                camera.tune_exposure_before_capture()
+            except AttributeError:
+                pass
+
             # ── 多帧择优拍照：快速连拍 N 帧, 按光照评分选最佳 ──
             frame_limit = DETECTION_CAPTURE_FRAMES
             warmup_frames = DETECTION_WARMUP_FRAMES
