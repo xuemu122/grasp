@@ -898,6 +898,9 @@ class RetailProductLocatorSystem:
         self.model = YOLO(model_path)
         self.aux_model = None
         self.aux_class_min_id = int(aux_class_min_id)
+        # 辅助模型兜底饮料：主模型(best1)漏掉的饮料(0-18)用辅助模型(best)补，按 IoU 去重
+        self.drink_fallback = os.getenv("SNACK_DRINK_FALLBACK_ENABLE", "1").strip().lower() not in (
+            "0", "false", "no", "off")
         if aux_model_path:
             aux_path = Path(aux_model_path)
             main_path = Path(model_path)
@@ -1206,9 +1209,21 @@ class RetailProductLocatorSystem:
                 verbose=False,
             )
             aux_result = aux_predictions[0]
-            for box in list(aux_result.boxes):
+            aux_boxes = list(aux_result.boxes)
+            for box in aux_boxes:
                 if int(box.cls[0]) >= self.aux_class_min_id:
                     combined_boxes.append((box, aux_result.names))
+            # 兜底：辅助模型里的饮料类别(0..min-1)，主模型没有重叠框才补进来
+            if getattr(self, "drink_fallback", False):
+                existing = [list(map(float, box.xyxy[0])) for box, _ in combined_boxes]
+                for box in aux_boxes:
+                    if int(box.cls[0]) >= self.aux_class_min_id:
+                        continue
+                    bbox = list(map(float, box.xyxy[0]))
+                    if any(self._bbox_iou(bbox, other) >= 0.5 for other in existing):
+                        continue
+                    combined_boxes.append((box, aux_result.names))
+                    existing.append(bbox)
         raw_boxes = combined_boxes
         self.raw_box_count = len(raw_boxes)
         self.filtered_box_count = 0
