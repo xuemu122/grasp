@@ -2704,7 +2704,7 @@ def main():
             print(f"抓取点 ({grip_mode}): ({wx:.3f}, {wy:.3f}, {wz:.3f})m")
             latest_failure_image = _draw_failure_diagnostic(best_img, detections, target, grip_pixel)
 
-            if grip_mode.endswith("_side") and not EDGE_MIDPOINT_GRASP_ENABLE:
+            if grip_mode.endswith("_side"):
                 if is_non_drink(target):
                     if grasp_group_for(target) == "chip":
                         band_min, band_max, band_low = (
