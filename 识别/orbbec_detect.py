@@ -901,6 +901,7 @@ class RetailProductLocatorSystem:
         # 辅助模型兜底饮料：主模型(best1)漏掉的饮料(0-18)用辅助模型(best)补，按 IoU 去重
         self.drink_fallback = os.getenv("SNACK_DRINK_FALLBACK_ENABLE", "1").strip().lower() not in (
             "0", "false", "no", "off")
+        self.drink_fallback_conf = float(os.getenv("SNACK_DRINK_FALLBACK_CONF", "0.30"))
         if aux_model_path:
             aux_path = Path(aux_model_path)
             main_path = Path(model_path)
@@ -1202,6 +1203,7 @@ class RetailProductLocatorSystem:
         )
         result = results[0]
         combined_boxes = [(box, result.names) for box in list(result.boxes)]
+        fallback_box_ids = set()
         if getattr(self, "aux_model", None) is not None:
             aux_predictions = self.aux_model.predict(
                 source=yolo_input,
@@ -1215,15 +1217,26 @@ class RetailProductLocatorSystem:
                     combined_boxes.append((box, aux_result.names))
             # 兜底：辅助模型里的饮料类别(0..min-1)，主模型没有重叠框才补进来
             if getattr(self, "drink_fallback", False):
+                aux_drinks = [box for box in aux_boxes if int(box.cls[0]) < self.aux_class_min_id]
                 existing = [list(map(float, box.xyxy[0])) for box, _ in combined_boxes]
-                for box in aux_boxes:
-                    if int(box.cls[0]) >= self.aux_class_min_id:
-                        continue
+                added_drinks = []
+                for box in aux_drinks:
                     bbox = list(map(float, box.xyxy[0]))
                     if any(self._bbox_iou(bbox, other) >= 0.5 for other in existing):
                         continue
                     combined_boxes.append((box, aux_result.names))
+                    fallback_box_ids.add(id(box))
                     existing.append(bbox)
+                    added_drinks.append(box)
+                if aux_drinks:
+                    max_conf = max(float(box.conf[0]) for box in aux_drinks)
+                    print(
+                        "[模型][兜底] 辅助饮料候选=%d 新增=%d 最大conf=%.2f%s" % (
+                            len(aux_drinks), len(added_drinks), max_conf,
+                            " (阈值 %.2f)" % self.drink_fallback_conf,
+                        ),
+                        flush=True,
+                    )
         raw_boxes = combined_boxes
         self.raw_box_count = len(raw_boxes)
         self.filtered_box_count = 0
@@ -1238,6 +1251,8 @@ class RetailProductLocatorSystem:
             conf_score = float(box.conf[0])
             class_name = names[cls_id]
             conf_threshold = self._threshold_for_class(cls_id)
+            if id(box) in fallback_box_ids:
+                conf_threshold = min(conf_threshold, self.drink_fallback_conf)
 
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             self.last_candidates.append({
