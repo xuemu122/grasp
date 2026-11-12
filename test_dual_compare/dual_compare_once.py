@@ -166,14 +166,14 @@ def build_local_detector(camera):
     return locator
 
 
-# 对比测试固定使用调整前的抓取点，避免主流程调偏移后两边不可比。
-ORIGINAL_SIDE_GRASP_OFFSET_M = (-0.130, -0.1155, 0.008)  # 原偏移 + 右 0.5cm
-ORIGINAL_NON_DRINK_GRASP_OFFSET_M = (-0.130, -0.087, 0.008)  # 原偏移 + 右 0.5cm
-ORIGINAL_CHIP_GRASP_OFFSET_M = (-0.130, -0.082, 0.008)  # 原偏移 + 右 0.5cm
-ORIGINAL_MINISO_GRASP_OFFSET_M = (-0.132, -0.082, 0.008)  # 原偏移 + 右 0.5cm
-ORIGINAL_BAICHUN_GRASP_OFFSET_M = (-0.1195, -0.087, 0.008)  # 原偏移 + 右 0.5cm
-ORIGINAL_BUCKET_GRASP_OFFSET_M = (-0.143, -0.072, 0.008)  # 原偏移 + 右 0.5cm
-ORIGINAL_TOP_GRASP_OFFSET_M = (-0.12, 0.075, 0.035)
+# 对比测试固定使用最开始（抓取点取中心时）的偏移，不受主流程后续调整影响。
+ORIGINAL_SIDE_GRASP_OFFSET_M = (-0.130, -0.1505, 0.008)
+ORIGINAL_NON_DRINK_GRASP_OFFSET_M = (-0.130, -0.142, 0.008)
+ORIGINAL_CHIP_GRASP_OFFSET_M = (-0.130, -0.137, 0.008)
+ORIGINAL_MINISO_GRASP_OFFSET_M = (-0.132, -0.137, 0.008)
+ORIGINAL_BAICHUN_GRASP_OFFSET_M = (-0.1195, -0.142, 0.008)
+ORIGINAL_BUCKET_GRASP_OFFSET_M = (-0.143, -0.127, 0.008)
+ORIGINAL_TOP_GRASP_OFFSET_M = (-0.12, 0.025, 0.035)
 
 
 def offset_for(target, mode):
