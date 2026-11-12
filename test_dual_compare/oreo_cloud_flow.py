@@ -26,7 +26,7 @@ for path in (HERE, RECOG, DIPAN):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from orbbec_detect import RealSenseCamera, DetectionResult  # noqa: E402
+from orbbec_detect import RealSenseCamera, DetectionResult, MedicineLocatorSystem  # noqa: E402
 from dobot_arm import DobotArm  # noqa: E402
 from hand_eye import HandEyeTransformer  # noqa: E402
 from grasp_planner import pick_target_box, plan_edge_grasp  # noqa: E402
@@ -55,6 +55,7 @@ def parse_args():
     parser.add_argument("--place-marker", default="")
     parser.add_argument("--charge-marker", default="")
     parser.add_argument("--no-tune", action="store_true", help="跳过 xyz 微调菜单，直接抓取")
+    parser.add_argument("--no-local", action="store_true", help="不跑本地模型参考，只做云端识别")
     return parser.parse_args()
 
 
@@ -107,7 +108,31 @@ def offset_for(target, mode):
     return sg.TOP_GRASP_OFFSET_M
 
 
-def capture_and_plan(args, camera, arm, hand):
+def build_local_detector(camera):
+    """本地双模型（best1 主 + best 辅助），只做参考，不参与实际抓取。"""
+    model_path = os.path.join(RECOG, "best1.engine")
+    if not os.path.exists(model_path):
+        model_path = os.path.join(RECOG, "best.engine")
+    aux = os.path.join(RECOG, "best.engine")
+    locator = MedicineLocatorSystem(
+        model_path=model_path,
+        aux_model_path=aux if os.path.abspath(aux) != os.path.abspath(model_path) else None,
+        aux_class_min_id=19,
+        mapping_path=os.path.join(RECOG, "shelf_mapping.yaml"),
+        conf_threshold=float(os.getenv("LOCAL_REF_CONF", "0.55")),
+        use_ocr=False,
+        enhance_mode=os.getenv("ENHANCE_MODE", "force"),
+        clahe_clip=float(os.getenv("ENHANCE_CLAHE_CLIP", "2.0")),
+        clahe_tile=int(os.getenv("ENHANCE_CLAHE_TILE", "8")),
+        enhance_gamma=float(os.getenv("ENHANCE_GAMMA", "1.0")),
+        enhance_awb=os.getenv("ENHANCE_AWB", "0").strip().lower() in ("1", "true", "yes", "on"),
+    )
+    locator.init_camera = lambda: None
+    locator.camera = camera
+    return locator
+
+
+def capture_and_plan(args, camera, arm, hand, local_locator=None):
     try:
         camera.tune_exposure_before_capture()
     except AttributeError:
@@ -166,6 +191,35 @@ def capture_and_plan(args, camera, arm, hand):
         target.class_name, target.class_id, target.confidence, list(target.bbox),
         target.depth_m, edge, grip_mode), flush=True)
 
+    local_ms = 0.0
+    local_dets = []
+    local_target = None
+    if local_locator is not None:
+        local_started = time.time()
+        try:
+            local_raw = local_locator.process_frame(color, depth) or []
+        except Exception as exc:
+            print("[本地参考][警告] 本地模型识别失败: %s" % exc, flush=True)
+            local_raw = []
+        local_ms = (time.time() - local_started) * 1000.0
+        local_dets = filter_detections_by_target_query(local_raw, args.target)
+        print("[本地参考] %d 个候选, %.0fms" % (len(local_dets), local_ms), flush=True)
+        for det in local_dets[:8]:
+            print("  - %s id=%s conf=%.2f bbox=%s depth=%s" % (
+                det.class_name, det.class_id, det.confidence, list(det.bbox),
+                ("%.3fm" % det.depth_m) if det.depth_m else "-"), flush=True)
+        if local_dets:
+            try:
+                local_target, _ = pick_target_box(
+                    local_dets, transformer=transformer, flange_pose=flange_pose)
+            except Exception as exc:
+                print("[本地参考][警告] 选择本地目标失败: %s" % exc, flush=True)
+                local_target = None
+            if local_target is not None:
+                print("[本地参考] 目标 %s id=%s conf=%.2f bbox=%s" % (
+                    local_target.class_name, local_target.class_id, local_target.confidence,
+                    list(local_target.bbox)), flush=True)
+
     if grip_mode.endswith("_side"):
         if sg.is_non_drink(target):
             if sg.grasp_group_for(target) == "chip":
@@ -211,6 +265,17 @@ def capture_and_plan(args, camera, arm, hand):
     cv2.putText(annotated, "GRASP (%d,%d)" % (gx0, gy0), (max(0, gx0 - 70), max(18, gy0 - 14)),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
     cv2.imwrite(os.path.join(args.outdir, frame_id + "_plan.jpg"), annotated)
+    if local_locator is not None:
+        local_viz = color.copy()
+        for det in local_dets:
+            x1, y1, x2, y2 = det.bbox
+            is_target = det is local_target
+            col = (255, 128, 0) if is_target else (0, 200, 0)
+            cv2.rectangle(local_viz, (x1, y1), (x2, y2), col, 3 if is_target else 1)
+            cv2.putText(local_viz, "L %s %.2f" % (det.class_id, det.confidence),
+                        (x1, max(16, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
+        cv2.putText(local_viz, "LOCAL REF", (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 0), 2)
+        cv2.imwrite(os.path.join(args.outdir, frame_id + "_local.jpg"), local_viz)
     with open(os.path.join(args.outdir, frame_id + "_plan.json"), "w", encoding="utf-8") as handle:
         json.dump({
             "frame_id": frame_id,
@@ -221,6 +286,15 @@ def capture_and_plan(args, camera, arm, hand):
             "detections": [{"class_id": d.class_id, "class_name": d.class_name,
                             "confidence": d.confidence, "bbox": list(d.bbox), "depth_m": d.depth_m}
                            for d in detections],
+            "local_reference": {
+                "elapsed_ms": round(local_ms, 1),
+                "target": ({"class_id": local_target.class_id, "class_name": local_target.class_name,
+                            "confidence": local_target.confidence, "bbox": list(local_target.bbox),
+                            "depth_m": local_target.depth_m} if local_target is not None else None),
+                "detections": [{"class_id": d.class_id, "class_name": d.class_name,
+                                "confidence": d.confidence, "bbox": list(d.bbox), "depth_m": d.depth_m}
+                               for d in local_dets],
+            },
         }, handle, ensure_ascii=False, indent=2)
 
     return {
@@ -354,12 +428,19 @@ def main():
         sg.servo_grasp()
 
         camera = RealSenseCamera(width=args.width, height=args.height, fps=args.fps)
+        local_locator = None
+        if not args.no_local:
+            try:
+                print("[本地参考] 加载本地双模型 ...", flush=True)
+                local_locator = build_local_detector(camera)
+            except Exception as exc:
+                print("[本地参考][警告] 本地模型加载失败, 仅用云端: %s" % exc, flush=True)
         hand = sg._create_hand(arm)
         sg._connect_and_open_hand(hand)
         hand.open()
 
         while True:
-            plan = capture_and_plan(args, camera, arm, hand)
+            plan = capture_and_plan(args, camera, arm, hand, local_locator)
             plan["arm"] = arm
             print("[抓取点位] 抓取像素=%s 指尖=(%.0f,%.0f,%.0f)mm 对齐=(%.0f,%.0f,%.0f)mm 探入=(%.0f,%.0f,%.0f)mm" % (
                 plan["grip_pixel"], plan["wx"] * 1000, plan["wy"] * 1000, plan["wz"] * 1000,

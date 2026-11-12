@@ -166,22 +166,32 @@ def build_local_detector(camera):
     return locator
 
 
+# 对比测试固定使用调整前的抓取点，避免主流程调偏移后两边不可比。
+ORIGINAL_SIDE_GRASP_OFFSET_M = (-0.130, -0.1205, 0.008)
+ORIGINAL_NON_DRINK_GRASP_OFFSET_M = (-0.130, -0.092, 0.008)
+ORIGINAL_CHIP_GRASP_OFFSET_M = (-0.130, -0.087, 0.008)
+ORIGINAL_MINISO_GRASP_OFFSET_M = (-0.132, -0.087, 0.008)
+ORIGINAL_BAICHUN_GRASP_OFFSET_M = (-0.1195, -0.092, 0.008)
+ORIGINAL_BUCKET_GRASP_OFFSET_M = (-0.143, -0.077, 0.008)
+ORIGINAL_TOP_GRASP_OFFSET_M = (-0.12, 0.075, 0.035)
+
+
 def offset_for(target, mode):
     name = str(getattr(target, "class_name", "") or "").strip()
     group = sg.grasp_group_for(target)
     if mode.endswith("_side"):
         if name in sg.MINISO_GRASP_NAMES:
-            return sg.MINISO_GRASP_OFFSET_M
+            return ORIGINAL_MINISO_GRASP_OFFSET_M
         if name in sg.BAICHUN_GRASP_NAMES:
-            return sg.BAICHUN_GRASP_OFFSET_M
+            return ORIGINAL_BAICHUN_GRASP_OFFSET_M
         if name in sg.BUCKET_GRASP_NAMES:
-            return sg.BUCKET_GRASP_OFFSET_M
+            return ORIGINAL_BUCKET_GRASP_OFFSET_M
         if group == "chip":
-            return sg.CHIP_GRASP_OFFSET_M
+            return ORIGINAL_CHIP_GRASP_OFFSET_M
         if sg.is_non_drink(target):
-            return sg.NECK_GRASP_OFFSET_M if group == "neck" else sg.NON_DRINK_SIDE_GRASP_OFFSET_M
-        return sg.SIDE_GRASP_OFFSET_M
-    return sg.TOP_GRASP_OFFSET_M
+            return ORIGINAL_NON_DRINK_GRASP_OFFSET_M
+        return ORIGINAL_SIDE_GRASP_OFFSET_M
+    return ORIGINAL_TOP_GRASP_OFFSET_M
 
 
 def grasp_for(dets, camera, depth, transformer, flange_pose):
