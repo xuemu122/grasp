@@ -172,7 +172,7 @@ CHIP_GRASP_OFFSET_M = (-0.130, -0.079, 0.008)  # 袋装往右 0.3cm
 # 盲盒单独调: 现在往右 2cm
 MINISO_GRASP_OFFSET_M = (-0.132, -0.082, 0.008)  # 非盒装往右 0.5cm
 # 百醇: 在非饮料偏移基础上向后 0.3cm, 再往前 0.2cm (净 +0.1cm)
-BAICHUN_GRASP_OFFSET_M = (-0.1165, -0.087, 0.008)  # 百醇往后 0.3cm
+BAICHUN_GRASP_OFFSET_M = (-0.1135, -0.087, 0.008)  # 百醇再往后 0.3cm
 # 桶装薯片: 在非饮料偏移基础上往前 1cm, 抓后多抬 0.5cm
 BUCKET_GRASP_OFFSET_M = (-0.143, -0.072, 0.008)  # 非盒装往右 0.5cm
 BUCKET_GRASP_LIFT_EXTRA_MM = float(os.getenv("BUCKET_GRASP_LIFT_EXTRA_MM", "5"))
