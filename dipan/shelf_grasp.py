@@ -116,7 +116,7 @@ HAND_W_X = HAND_BODY_DEPTH_X_M     # 手 X 方向宽度 (米)
 
 # 抓取参数 (基座系, 米): -X=前 +Y=右 +Z=上
 # 侧面抓: 盒宽 <= 8cm, grip_mode 为 left_side/right_side
-SIDE_GRASP_OFFSET_M = (-0.130, -0.1005, 0.008)  # 饮料往右 2cm
+SIDE_GRASP_OFFSET_M = (-0.130, -0.0705, 0.008)  # 饮料在 3cm 基础上再往右 2cm
 # 非饮料先复制侧抓偏移，后续可在这里单独改
 NON_DRINK_SIDE_GRASP_OFFSET_M = (-0.130, -0.092, 0.008)
 def _name_set(env_name, default):
