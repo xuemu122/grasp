@@ -13,45 +13,79 @@ import numpy as np
 
 
 CAMERA_AUTO_EXPOSURE = os.getenv("CAMERA_AUTO_EXPOSURE", "0").strip().lower() in ("1", "true", "yes", "on")
+CAMERA_EXPOSURE_MODE = os.getenv(
+    "CAMERA_EXPOSURE_MODE", "auto" if CAMERA_AUTO_EXPOSURE else "adaptive").strip().lower()
 CAMERA_EXPOSURE_US = float(os.getenv("CAMERA_EXPOSURE_US", "4000"))
-CAMERA_AUTO_WB = os.getenv("CAMERA_AUTO_WB", "0").strip().lower() in ("1", "true", "yes", "on")
+CAMERA_AUTO_WB = os.getenv("CAMERA_AUTO_WB", "1").strip().lower() in ("1", "true", "yes", "on")
 CAMERA_GAIN = float(os.getenv("CAMERA_GAIN", "50"))
+# 动态曝光参数
+CAMERA_ADAPT_TARGET = float(os.getenv("CAMERA_ADAPT_TARGET", "110"))
+CAMERA_ADAPT_DEADBAND = float(os.getenv("CAMERA_ADAPT_DEADBAND", "15"))
+CAMERA_ADAPT_INTERVAL_S = float(os.getenv("CAMERA_ADAPT_INTERVAL_S", "0.5"))
+CAMERA_EXPOSURE_MIN = float(os.getenv("CAMERA_EXPOSURE_MIN", "100"))
+CAMERA_EXPOSURE_MAX = float(os.getenv("CAMERA_EXPOSURE_MAX", "15000"))
+CAMERA_ADAPT_STEP = float(os.getenv("CAMERA_ADAPT_STEP", "1.5"))
 
 
 def apply_color_sensor_options(profile):
-    """固定彩色相机曝光/白平衡/增益；找不到彩色传感器时静默跳过。"""
+    """设置彩色相机曝光/白平衡/增益，返回彩色 sensor（动态曝光用）。"""
     import pyrealsense2 as rs
 
     try:
         sensors = profile.get_device().query_sensors()
     except Exception as exc:
         print(f"[相机][警告] 读取传感器失败: {exc}")
-        return
+        return None
+
+    def _looks_color(sensor):
+        try:
+            name = str(sensor.get_info(rs.camera_info.name)).lower()
+        except Exception:
+            name = ""
+        try:
+            has_wb = (sensor.supports(rs.option.white_balance)
+                      or sensor.supports(rs.option.enable_auto_white_balance))
+        except Exception:
+            has_wb = False
+        return has_wb or "rgb" in name or "color" in name
+
+    candidates = []
     for sensor in sensors:
         try:
-            if not sensor.supports(rs.option.exposure):
-                continue
-            if CAMERA_AUTO_EXPOSURE:
-                sensor.set_option(rs.option.enable_auto_exposure, 1)
-            else:
-                sensor.set_option(rs.option.enable_auto_exposure, 0)
-                sensor.set_option(rs.option.exposure, CAMERA_EXPOSURE_US)
-            try:
-                sensor.set_option(rs.option.enable_auto_white_balance, 1 if CAMERA_AUTO_WB else 0)
-            except Exception:
-                pass
-            try:
-                sensor.set_option(rs.option.gain, CAMERA_GAIN)
-            except Exception:
-                pass
-            print(
-                f"[相机] 曝光: {'自动' if CAMERA_AUTO_EXPOSURE else f'手动 {CAMERA_EXPOSURE_US:.0f}us'}, "
-                f"白平衡: {'自动' if CAMERA_AUTO_WB else '手动'}, gain={CAMERA_GAIN:.0f}"
-            )
-            return
-        except Exception as exc:
-            print(f"[相机][警告] 设置彩色传感器参数失败: {exc}")
-            return
+            if sensor.supports(rs.option.exposure):
+                candidates.append(sensor)
+        except Exception:
+            continue
+    candidates.sort(key=lambda s: 0 if _looks_color(s) else 1)
+
+    for sensor in candidates:
+        try:
+            sensor_name = sensor.get_info(rs.camera_info.name)
+        except Exception:
+            sensor_name = "?"
+        if CAMERA_EXPOSURE_MODE == "auto":
+            sensor.set_option(rs.option.enable_auto_exposure, 1)
+            exposure_text = "自动"
+        else:
+            sensor.set_option(rs.option.enable_auto_exposure, 0)
+            sensor.set_option(rs.option.exposure, CAMERA_EXPOSURE_US)
+            exposure_text = "手动 %.0fus" % CAMERA_EXPOSURE_US
+            if CAMERA_EXPOSURE_MODE == "adaptive":
+                exposure_text += "(动态)"
+        try:
+            sensor.set_option(rs.option.enable_auto_white_balance, 1 if CAMERA_AUTO_WB else 0)
+        except Exception:
+            pass
+        try:
+            sensor.set_option(rs.option.gain, CAMERA_GAIN)
+        except Exception:
+            pass
+        print(
+            f"[相机] 传感器={sensor_name} 曝光: {exposure_text}, "
+            f"白平衡: {'自动' if CAMERA_AUTO_WB else '手动'}, gain={CAMERA_GAIN:.0f}"
+        )
+        return sensor
+    return None
 
 
 class Camera:
@@ -80,7 +114,12 @@ class Camera:
             self.use_realsense = True
             print(f"[相机] RealSense 已连接 ({self.width}x{self.height}@{self.fps}fps)")
 
-            apply_color_sensor_options(self.pipeline.get_active_profile())
+            self._color_sensor = apply_color_sensor_options(self.pipeline.get_active_profile())
+            if self._color_sensor is not None and CAMERA_EXPOSURE_MODE != "auto":
+                try:
+                    self._exposure_us = float(self._color_sensor.get_option(rs.option.exposure))
+                except Exception:
+                    pass
 
             for _ in range(30):
                 self.pipeline.wait_for_frames()
@@ -97,6 +136,55 @@ class Camera:
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self.cap.set(cv2.CAP_PROP_FPS, self.fps)
         print(f"[相机] OpenCV 已连接 device_id={self.device_id}")
+
+    def _brightness_stats(self, color):
+        v = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)[:, :, 2]
+        return float(v.mean()), float((v >= 245).mean())
+
+    def _adapt_exposure(self, color):
+        if CAMERA_EXPOSURE_MODE != "adaptive" or self._color_sensor is None:
+            return
+        now = time.monotonic()
+        if now - self._last_adapt_at < CAMERA_ADAPT_INTERVAL_S:
+            return
+        self._last_adapt_at = now
+        try:
+            mean_v, sat = self._brightness_stats(color)
+            if sat >= 0.10:
+                factor = 0.45
+            elif sat >= 0.03:
+                factor = 0.70
+            elif sat >= 0.01:
+                factor = 0.85
+            elif sat <= 0.005 and mean_v < 60:
+                factor = 1.15
+            elif abs(mean_v - CAMERA_ADAPT_TARGET) <= CAMERA_ADAPT_DEADBAND:
+                return
+            else:
+                factor = (CAMERA_ADAPT_TARGET / max(mean_v, 1.0)) ** 0.7
+                factor = max(0.85, min(1.25, factor))
+            factor = max(1.0 / CAMERA_ADAPT_STEP, min(CAMERA_ADAPT_STEP, factor))
+            old = self._exposure_us
+            new = max(CAMERA_EXPOSURE_MIN, min(CAMERA_EXPOSURE_MAX, old * factor))
+            if abs(new - old) < max(5.0, old * 0.02):
+                return
+            import pyrealsense2 as rs
+            self._color_sensor.set_option(rs.option.exposure, float(new))
+            self._exposure_us = float(new)
+            print("[相机][自适应] mean_v=%.0f sat=%.1f%% 曝光 %.0f→%.0fus (x%.2f)" % (
+                mean_v, sat * 100.0, old, new, new / max(old, 1e-6)), flush=True)
+        except Exception as exc:
+            print(f"[相机][自适应][警告] 调整曝光失败: {exc}", flush=True)
+
+    def tune_exposure(self, iters=3):
+        if CAMERA_EXPOSURE_MODE != "adaptive" or self._color_sensor is None:
+            return
+        for _ in range(max(1, iters)):
+            self._last_adapt_at = 0.0
+            color, _ = self.read()
+            if color is None:
+                break
+            time.sleep(0.1)
 
     def read(self):
         if self.use_realsense:

@@ -168,11 +168,11 @@ OREO_GRASP_NAMES = _name_set(
 # 鸭脖 / 盲盒 / 百醇单独调; 先复制饮料的 xyz 偏移
 NECK_GRASP_OFFSET_M = (-0.130, -0.087, 0.008)  # 非盒装往右 0.5cm
 # 薯片类: 在饮料偏移基础上往右 0.5cm
-CHIP_GRASP_OFFSET_M = (-0.130, -0.079, 0.008)  # 袋装往右 0.3cm
+CHIP_GRASP_OFFSET_M = (-0.130, -0.076, 0.008)
 # 盲盒单独调: 现在往右 2cm
 MINISO_GRASP_OFFSET_M = (-0.132, -0.082, 0.008)  # 非盒装往右 0.5cm
 # 百醇: 在非饮料偏移基础上向后 0.3cm, 再往前 0.2cm (净 +0.1cm)
-BAICHUN_GRASP_OFFSET_M = (-0.1135, -0.087, 0.008)  # 百醇再往后 0.3cm
+BAICHUN_GRASP_OFFSET_M = (-0.1055, -0.087, 0.008)  # 百醇再往后 0.5cm
 # 桶装薯片: 在非饮料偏移基础上往前 1cm, 抓后多抬 0.5cm
 BUCKET_GRASP_OFFSET_M = (-0.143, -0.072, 0.008)  # 非盒装往右 0.5cm
 BUCKET_GRASP_LIFT_EXTRA_MM = float(os.getenv("BUCKET_GRASP_LIFT_EXTRA_MM", "5"))
@@ -271,6 +271,11 @@ PLACE_RETURN_MAX_Z_MM = float(os.getenv("PLACE_RETURN_MAX_Z_MM", "820"))  # 回�
 SKIP_HAND = False
 # YOLO 显示/输出阈值。抓取现场默认放宽到 0.7，避免框不上。
 DETECT_CONF_THRESHOLD = float(os.getenv("DETECT_CONF_THRESHOLD", "0.55"))
+# POPMART 两个新品类在 best.engine 里置信度偏低，单独放宽阈值
+POPMART_CLASS_IDS = {
+    int(part) for part in os.getenv("POPMART_CLASS_IDS", "37,38").split(",") if part.strip().isdigit()
+}
+POPMART_CONF_THRESHOLD = float(os.getenv("POPMART_CONF_THRESHOLD", "0.30"))
 # 透明矿泉水/塑料瓶在复杂光照下置信度会明显偏低，只对饮料类单独放宽。
 WATER_CONF_THRESHOLD = float(os.getenv("WATER_CONF_THRESHOLD", "0.45"))
 # best1/best 的饮料类别就是 0-18（旧 70+/80+ 是历史数据集编号，已不适用）
@@ -2217,8 +2222,62 @@ def _create_hand(arm=None):
     )
 
 
+class _TeeStream:
+    def __init__(self, stream, handle):
+        self.stream = stream
+        self.handle = handle
+
+    def write(self, data):
+        try:
+            self.stream.write(data)
+        except Exception:
+            pass
+        try:
+            self.handle.write(data)
+            self.handle.flush()
+        except Exception:
+            pass
+        return len(data) if isinstance(data, str) else 0
+
+    def flush(self):
+        try:
+            self.stream.flush()
+        except Exception:
+            pass
+        try:
+            self.handle.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        return False
+
+    def fileno(self):
+        return self.stream.fileno()
+
+
+def _setup_run_logging():
+    """把 worker 输出同时写入按天日志，便于事后排查（含 Aero 温度）。"""
+    if os.getenv("SHELF_GRASP_LOG_ENABLE", "1").strip().lower() in ("0", "false", "no", "off"):
+        return
+    default_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+    log_dir = os.getenv("SHELF_GRASP_LOG_DIR", default_dir)
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        path = os.path.join(log_dir, "shelf_grasp_%s.log" % time.strftime("%Y%m%d"))
+        handle = open(path, "a", encoding="utf-8", buffering=1)
+        handle.write("\n===== %s RUN START pid=%s =====\n" % (
+            time.strftime("%Y-%m-%d %H:%M:%S"), os.getpid()))
+        sys.stdout = _TeeStream(sys.stdout, handle)
+        sys.stderr = _TeeStream(sys.stderr, handle)
+        print(f"[日志] 运行日志保存到: {path}", flush=True)
+    except Exception as exc:
+        print(f"[日志][警告] 开启日志保存失败: {exc}", flush=True)
+
+
 def main():
     global _current_layer_idx
+    _setup_run_logging()
 
     print("=" * 60)
     print("  货架边缘抓取系统")
@@ -2305,7 +2364,10 @@ def main():
         model_path=model_path,
         mapping_path=os.environ.get("SHELF_MAPPING_PATH", os.path.join(_recognition_dir, "shelf_mapping.yaml")),
         conf_threshold=DETECT_CONF_THRESHOLD,
-        class_conf_thresholds={cls_id: WATER_CONF_THRESHOLD for cls_id in DRINK_CLASS_IDS},
+        class_conf_thresholds={
+            **{cls_id: WATER_CONF_THRESHOLD for cls_id in DRINK_CLASS_IDS},
+            **{cls_id: POPMART_CONF_THRESHOLD for cls_id in POPMART_CLASS_IDS},
+        },
         use_ocr=False,
         aux_model_path=aux_model_path or None,
         aux_class_min_id=aux_class_min_id,

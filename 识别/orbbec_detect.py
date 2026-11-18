@@ -25,12 +25,17 @@ CAMERA_EXPOSURE_MODE = os.getenv("CAMERA_EXPOSURE_MODE", "auto" if CAMERA_AUTO_E
 CAMERA_EXPOSURE_US = float(os.getenv("CAMERA_EXPOSURE_US", "4000"))
 CAMERA_AUTO_WB = os.getenv("CAMERA_AUTO_WB", "0").strip().lower() in ("1", "true", "yes", "on")
 CAMERA_GAIN = float(os.getenv("CAMERA_GAIN", "50"))
-# adaptive 模式参数：目标亮度、死区、调整间隔、曝光上下限
+# adaptive 模式参数：目标亮度、死区、调整间隔、曝光上下限与调整幅度
 CAMERA_ADAPT_TARGET = float(os.getenv("CAMERA_ADAPT_TARGET", "110"))
 CAMERA_ADAPT_DEADBAND = float(os.getenv("CAMERA_ADAPT_DEADBAND", "15"))
 CAMERA_ADAPT_INTERVAL_S = float(os.getenv("CAMERA_ADAPT_INTERVAL_S", "60"))
-CAMERA_EXPOSURE_MIN = float(os.getenv("CAMERA_EXPOSURE_MIN", "800"))
+CAMERA_EXPOSURE_MIN = float(os.getenv("CAMERA_EXPOSURE_MIN", "100"))
 CAMERA_EXPOSURE_MAX = float(os.getenv("CAMERA_EXPOSURE_MAX", "15000"))
+# 单次调整幅度：后台周期调整 / 识别前快速收敛；指数越大越接近线性
+CAMERA_ADAPT_STEP_PERIODIC = float(os.getenv("CAMERA_ADAPT_STEP_PERIODIC", "2.0"))
+CAMERA_ADAPT_STEP_PRECAPTURE = float(os.getenv("CAMERA_ADAPT_STEP_PRECAPTURE", "3.0"))
+CAMERA_ADAPT_PRECAPTURE_ITERS = max(1, int(os.getenv("CAMERA_ADAPT_PRECAPTURE_ITERS", "4")))
+CAMERA_ADAPT_EXPONENT = float(os.getenv("CAMERA_ADAPT_EXPONENT", "0.9"))
 
 
 def apply_color_sensor_options(profile):
@@ -44,10 +49,35 @@ def apply_color_sensor_options(profile):
     except Exception as exc:
         print(f"[相机][警告] 读取传感器失败: {exc}")
         return None
+
+    def _looks_color(sensor):
+        try:
+            name = str(sensor.get_info(rs.camera_info.name)).lower()
+        except Exception:
+            name = ""
+        try:
+            has_wb = (sensor.supports(rs.option.white_balance)
+                      or sensor.supports(rs.option.enable_auto_white_balance))
+        except Exception:
+            has_wb = False
+        return has_wb or "rgb" in name or "color" in name
+
+    candidates = []
     for sensor in sensors:
         try:
-            if not sensor.supports(rs.option.exposure):
-                continue
+            if sensor.supports(rs.option.exposure):
+                candidates.append(sensor)
+        except Exception:
+            continue
+    # 彩色传感器优先：支持白平衡或名字含 RGB/Color；否则退回第一个可调曝光传感器
+    candidates.sort(key=lambda s: 0 if _looks_color(s) else 1)
+
+    for sensor in candidates:
+        try:
+            try:
+                sensor_name = sensor.get_info(rs.camera_info.name)
+            except Exception:
+                sensor_name = "?"
             if CAMERA_EXPOSURE_MODE == "auto":
                 sensor.set_option(rs.option.enable_auto_exposure, 1)
                 exposure_text = "自动"
@@ -66,7 +96,7 @@ def apply_color_sensor_options(profile):
             except Exception:
                 pass
             print(
-                f"[相机] 曝光: {exposure_text}, 白平衡: {'自动' if CAMERA_AUTO_WB else '手动'}, gain={CAMERA_GAIN:.0f}"
+                f"[相机] 传感器={sensor_name} 曝光: {exposure_text}, 白平衡: {'自动' if CAMERA_AUTO_WB else '手动'}, gain={CAMERA_GAIN:.0f}"
                 + (" target=%.0f±%.0f" % (CAMERA_ADAPT_TARGET, CAMERA_ADAPT_DEADBAND)
                    if CAMERA_EXPOSURE_MODE == "adaptive" else "")
             )
@@ -229,21 +259,38 @@ class RealSenseCamera:
             print(f"[相机] 读取帧失败: {e}")
             return None, None
 
-    def _apply_exposure_from_mean(self, mean_v, max_factor=1.35):
-        """按 mean_v 与目标的偏差调整一次曝光；返回是否真的调整了。"""
+    def _brightness_stats(self, color_img):
+        v = cv2.cvtColor(color_img, cv2.COLOR_BGR2HSV)[:, :, 2]
+        return float(v.mean()), float((v >= 245).mean())
+
+    def _apply_exposure_from_mean(self, mean_v, max_factor=None, sat_ratio=0.0):
+        """高光优先的曝光控制：先压过曝，无过曝时再看平均亮度。"""
         import pyrealsense2 as rs
 
-        if abs(mean_v - CAMERA_ADAPT_TARGET) <= CAMERA_ADAPT_DEADBAND:
+        if max_factor is None:
+            max_factor = CAMERA_ADAPT_STEP_PERIODIC
+        if sat_ratio >= 0.10:
+            factor = 0.45
+        elif sat_ratio >= 0.03:
+            factor = 0.70
+        elif sat_ratio >= 0.01:
+            factor = 0.85
+        elif sat_ratio <= 0.005 and mean_v < 60:
+            factor = 1.15
+        elif abs(mean_v - CAMERA_ADAPT_TARGET) <= CAMERA_ADAPT_DEADBAND:
             return False
-        factor = (CAMERA_ADAPT_TARGET / max(mean_v, 1.0)) ** 0.7
+        else:
+            factor = (CAMERA_ADAPT_TARGET / max(mean_v, 1.0)) ** 0.7
+            factor = max(0.85, min(1.25, factor))
         factor = max(1.0 / max_factor, min(max_factor, factor))
         old = self._exposure_us
         new = max(CAMERA_EXPOSURE_MIN, min(CAMERA_EXPOSURE_MAX, old * factor))
-        if abs(new - old) < 30:
+        if abs(new - old) < max(5.0, old * 0.02):
             return False
         self._color_sensor.set_option(rs.option.exposure, float(new))
         self._exposure_us = float(new)
-        print("[相机][自适应] mean_v=%.0f 曝光 %.0f→%.0fus" % (mean_v, old, new), flush=True)
+        print("[相机][自适应] mean_v=%.0f sat=%.1f%% 曝光 %.0f→%.0fus (x%.2f)" % (
+            mean_v, sat_ratio * 100.0, old, new, new / max(old, 1e-6)), flush=True)
         return True
 
     def _maybe_adapt_exposure(self, color_img):
@@ -255,24 +302,32 @@ class RealSenseCamera:
             return
         self._last_adapt_at = now
         try:
-            mean_v = float(cv2.cvtColor(color_img, cv2.COLOR_BGR2HSV)[:, :, 2].mean())
-            self._apply_exposure_from_mean(mean_v)
+            mean_v, sat_ratio = self._brightness_stats(color_img)
+            self._apply_exposure_from_mean(
+                mean_v, max_factor=CAMERA_ADAPT_STEP_PERIODIC, sat_ratio=sat_ratio)
         except Exception as exc:
             print(f"[相机][自适应][警告] 调整曝光失败: {exc}", flush=True)
 
-    def tune_exposure_before_capture(self, iters=3):
-        """识别/拍照前快速收敛一次曝光（adaptive 模式）。"""
+    def tune_exposure_before_capture(self, iters=None):
+        """识别/拍照前快速收敛曝光，允许更大的单次调整幅度（adaptive 模式）。"""
         if CAMERA_EXPOSURE_MODE != "adaptive" or self._color_sensor is None:
             return
+        if iters is None:
+            iters = CAMERA_ADAPT_PRECAPTURE_ITERS
         try:
             for _ in range(max(1, iters)):
+                # 丢掉曝光生效前的旧帧，避免用滞后画面来回震荡
+                for _ in range(2):
+                    self.read()
+                time.sleep(0.05)
                 color_img, _ = self.read()
                 if color_img is None:
                     break
-                mean_v = float(cv2.cvtColor(color_img, cv2.COLOR_BGR2HSV)[:, :, 2].mean())
-                if not self._apply_exposure_from_mean(mean_v, max_factor=1.5):
+                mean_v, sat_ratio = self._brightness_stats(color_img)
+                if not self._apply_exposure_from_mean(
+                        mean_v, max_factor=CAMERA_ADAPT_STEP_PRECAPTURE, sat_ratio=sat_ratio):
                     break
-                time.sleep(0.08)
+                time.sleep(0.05)
             self._last_adapt_at = time.monotonic()
         except Exception as exc:
             print(f"[相机][自适应][警告] 拍照前调整失败: {exc}", flush=True)
